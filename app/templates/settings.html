@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}Settings · Trading Journal{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-semibold text-white mb-4">Settings & sync</h1>
+{% if flash %}<div class="card border-indigo-500/40 bg-indigo-500/10 text-indigo-100 p-3 mb-4 text-sm">{{ flash }}</div>{% endif %}
+
+<div class="grid grid-cols-1 xl:grid-cols-2 gap-4 mb-4">
+  <div class="card p-5">
+    <div class="flex items-center justify-between mb-3">
+      <div class="card-h">Automated data sources</div>
+      <button hx-post="/sync" hx-target="#sync-panel" class="btn btn-p text-xs">Sync now</button>
+    </div>
+    <div id="sync-panel" class="mb-3">{% if active_run %}{% with run = active_run %}{% include "partials/sync_status.html" %}{% endwith %}{% endif %}</div>
+    {% for src, st in sources %}
+    <div class="rounded-lg border border-slate-700/70 p-4 mb-3">
+      <div class="flex items-center gap-2">
+        <span class="h-2.5 w-2.5 rounded-full {{ 'bg-emerald-400' if st.ready else 'bg-amber-400' if st.configured else 'bg-slate-600' }}"></span>
+        <span class="text-white font-medium">{{ src.name }}</span>
+        <span class="pill {{ 'bg-emerald-500/15 text-emerald-300' if st.ready else 'bg-slate-700 text-slate-300' }}">{{ 'enabled' if st.configured else 'disabled' }}</span>
+      </div>
+      <div class="text-sm text-slate-400 mt-1">{{ src.description }}</div>
+      <div class="text-sm mt-2 {{ 'text-rose-300' if st.level == 'error' else 'text-amber-300' if st.level == 'warning' else 'text-slate-300' }}">{{ st.message }}
+        {% if st.expires_in_seconds is not none and st.expires_in_seconds > 0 %} · login valid for <b>{{ (st.expires_in_seconds|int // 3600) }}h</b> (Schwab refresh tokens last 7 days){% endif %}</div>
+      {% if src.key == 'schwab_api' and st.configured %}
+      <div class="flex flex-wrap gap-2 mt-3">
+        <a href="/auth/schwab/connect" class="btn btn-p text-xs">{{ 'Reconnect' if st.expires_in_seconds is not none else 'Connect' }} Schwab</a>
+        {% if st.expires_in_seconds is not none %}<form method="post" action="/auth/schwab/disconnect"><button class="btn btn-d text-xs">Disconnect</button></form>{% endif %}
+      </div>
+      <form method="post" action="/auth/schwab/paste" class="mt-3 flex gap-2">
+        <input name="redirect_url" class="inp flex-1 text-xs" placeholder="Using https://127.0.0.1:8182? Paste the full redirected URL here">
+        <button class="btn btn-s text-xs">Submit</button>
+      </form>
+      <div class="text-xs text-slate-500 mt-1">Callback URL: <code>{{ s.schwab_callback_url }}</code></div>
+      {% endif %}
+    </div>
+    {% endfor %}
+    <div class="text-xs text-slate-500">CSV import is always available on the <a href="/import" class="underline">Import</a> page. New automated sources (e.g. an aggregator) plug into <code>app/sources/</code>; “Sync now” and the scheduled job run every enabled source, then rebuild trades.</div>
+  </div>
+
+  <div class="card p-5">
+    <div class="card-h mb-3">Sync history</div>
+    <div id="sync-runs" hx-get="/sync/runs" hx-trigger="sync-finished from:body">{% include "partials/sync_runs.html" %}</div>
+  </div>
+</div>
+
+<div class="card p-5 mb-4 overflow-x-auto">
+  <div class="card-h mb-3">Accounts</div>
+  <table class="w-full text-sm tbl">
+    <thead><tr><th>Name</th><th>Broker</th><th>Account</th><th class="text-right">Fills</th><th class="text-right">Trades</th><th>Unmatched closes</th><th></th></tr></thead>
+    <tbody>
+    {% for row in acct_rows %}{% set a = row.a %}
+    <tr>
+      <td><form method="post" action="/settings/accounts/{{ a.id }}" class="flex gap-2"><input name="name" value="{{ a.name }}" class="inp text-xs w-56"><button class="text-xs text-indigo-300">Rename</button></form></td>
+      <td class="text-slate-400">{{ a.broker }}{% if a.is_demo %} <span class="pill bg-amber-500/20 text-amber-300">sample</span>{% endif %}</td>
+      <td class="text-slate-400">{{ a.account_number_masked or '—' }}</td>
+      <td class="text-right">{{ row.executions }}</td><td class="text-right">{{ row.trades }}</td>
+      <td class="text-slate-400 text-xs whitespace-normal max-w-[320px]">{% if row.orphans %}<span class="text-amber-300">{{ row.orphans|length }}</span> fills closed positions opened before your imported history{% for o in row.orphans[:4] %} · {{ o.symbol }} {{ o.quantity|qty }}{% endfor %}{% if row.orphans|length > 4 %} …{% endif %}. Import older history to match them.{% else %}—{% endif %}</td>
+      <td>{% if not a.is_demo %}<form method="post" action="/settings/accounts/{{ a.id }}/delete" class="flex gap-1" onsubmit="return confirm('Delete this account and ALL its fills and trades?')"><input name="confirm" class="inp text-xs w-28" placeholder="type name"><button class="text-xs text-rose-300">Delete</button></form>{% endif %}</td>
+    </tr>
+    {% else %}<tr><td colspan="7" class="text-slate-500">No accounts yet — they're created on first import.</td></tr>{% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+  <div class="card p-5">
+    <div class="card-h mb-2">Sample data</div>
+    <p class="text-sm text-slate-400 mb-3">Generated demo trades for previewing the UI. Always labelled “Sample data” and kept in a separate account.</p>
+    <div class="flex gap-2">
+      <form method="post" action="/settings/demo/load"><button class="btn btn-s text-xs">Load sample data</button></form>
+      {% if has_demo %}<form method="post" action="/settings/demo/clear"><button class="btn btn-d text-xs">Clear sample data</button></form>{% endif %}
+    </div>
+  </div>
+  <div class="card p-5">
+    <div class="card-h mb-2">Maintenance</div>
+    <p class="text-sm text-slate-400 mb-3">Rebuild all round-trip trades from stored fills (journal notes, tags and ratings are kept).</p>
+    <form method="post" action="/settings/rebuild"><button class="btn btn-s text-xs">Rebuild trades</button></form>
+  </div>
+  <div class="card p-5 text-sm text-slate-400">
+    <div class="card-h mb-2">Environment</div>
+    <div>Display timezone: <span class="text-slate-200">{{ s.display_tz }}</span></div>
+    <div>Price charts: <span class="text-slate-200">{{ s.price_provider }}</span>{% if s.polygon_api_key %} (Polygon key set){% endif %}</div>
+    <div>Reminder emails: <span class="text-slate-200">{{ 'on' if s.reminders_enabled and s.smtp_host else 'off' }}</span></div>
+    <div>Database: <span class="text-slate-200">{{ 'PostgreSQL' if s.database_url.startswith('postgresql') else 'SQLite' }}</span></div>
+  </div>
+</div>
+{% endblock %}

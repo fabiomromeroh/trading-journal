@@ -1,0 +1,12 @@
+<table class="w-full text-sm tbl">
+  <thead><tr><th>#</th><th>Started</th><th>Trigger</th><th>Status</th><th>Sources</th><th class="text-right">New</th><th class="text-right">Trades</th></tr></thead>
+  <tbody>
+  {% for r in runs %}
+  <tr title="{{ (r.message or '') ~ ' ' ~ (r.error or '') }}">
+    <td class="text-slate-500">{{ r.id }}</td><td class="text-slate-400">{{ r.started_at|local_dt }}</td><td>{{ r.trigger }}</td>
+    <td><span class="pill {{ 'bg-emerald-500/15 text-emerald-300' if r.status == 'success' else 'bg-indigo-500/15 text-indigo-300' if r.status == 'running' else 'bg-slate-700 text-slate-300' if r.status == 'skipped' else 'bg-rose-500/15 text-rose-300' }}">{{ r.status }}</span></td>
+    <td class="text-slate-400">{{ r.sources or 'none enabled' }}</td><td class="text-right">{{ r.inserted }}</td><td class="text-right">{{ r.trades_built }}</td>
+  </tr>
+  {% else %}<tr><td colspan="7" class="text-slate-500">No syncs yet.</td></tr>{% endfor %}
+  </tbody>
+</table>

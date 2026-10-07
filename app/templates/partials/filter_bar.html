@@ -1,0 +1,17 @@
+<form method="get" class="flex flex-wrap items-center gap-2" x-data>
+  <div class="flex rounded-lg border border-slate-700 overflow-hidden text-xs">
+    {% for key, label in presets %}
+    <a href="?{{ f.query_string(preset=key, start='', end='') }}{{ extra_qs|default('') }}"
+       class="px-3 py-1.5 {{ 'bg-indigo-600 text-white' if f.preset == key else 'text-slate-400 hover:bg-slate-800' }}">{{ label }}</a>
+    {% endfor %}
+  </div>
+  <input type="date" name="start" value="{{ f.start or '' }}" class="inp text-xs">
+  <span class="text-slate-500 text-xs">to</span>
+  <input type="date" name="end" value="{{ f.end or '' }}" class="inp text-xs">
+  <select name="account" class="inp text-xs" onchange="this.form.submit()">
+    <option value="">All accounts</option>
+    {% for a in accounts %}<option value="{{ a.id }}" {{ 'selected' if f.account_id == a.id }}>{{ a.name }}</option>{% endfor %}
+  </select>
+  {% block extra_fields %}{% endblock %}
+  <button class="btn btn-s text-xs">Apply</button>
+</form>

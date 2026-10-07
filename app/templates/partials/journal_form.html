@@ -1,0 +1,25 @@
+<form hx-post="/trades/{{ t.id }}/journal" hx-swap="outerHTML" class="space-y-3" x-data="{ rating: {{ t.rating or 0 }} }">
+  <div>
+    <label class="card-h">Setup</label>
+    <input name="setup" list="setup-list" value="{{ t.setup or '' }}" placeholder="e.g. Breakout, Episodic pivot" class="inp w-full mt-1">
+    <datalist id="setup-list">{% for s in setups %}<option value="{{ s }}">{% endfor %}</datalist>
+  </div>
+  <div>
+    <label class="card-h">Tags <span class="normal-case text-slate-500">(comma separated)</span></label>
+    <input name="tags" value="{{ t.tags|map(attribute='name')|join(', ') }}" placeholder="A+ setup, followed plan" class="inp w-full mt-1">
+    <div class="flex flex-wrap gap-1 mt-2">{% for n in all_tags %}<button type="button" class="pill bg-slate-800 text-slate-300 hover:bg-indigo-500/30"
+      @click="let i=$root.querySelector('[name=tags]'); let v=i.value.split(',').map(s=>s.trim()).filter(Boolean); if(!v.includes('{{ n }}')){v.push('{{ n }}')}; i.value=v.join(', ')">+ {{ n }}</button>{% endfor %}</div>
+  </div>
+  <div>
+    <label class="card-h">Rating</label>
+    <input type="hidden" name="rating" :value="rating || ''">
+    <div class="flex gap-1 mt-1 text-2xl">
+      <template x-for="i in 5"><button type="button" @click="rating = (rating === i ? 0 : i)" :class="i <= rating ? 'text-amber-300' : 'text-slate-600'">★</button></template>
+    </div>
+  </div>
+  <div>
+    <label class="card-h">Notes</label>
+    <textarea name="notes" rows="7" class="inp w-full mt-1" placeholder="Why did you take it? What went well / badly?">{{ t.notes or '' }}</textarea>
+  </div>
+  <div class="flex items-center gap-3"><button class="btn btn-p">Save journal</button>{% if saved %}<span class="text-emerald-400 text-sm">Saved ✓</span>{% endif %}</div>
+</form>

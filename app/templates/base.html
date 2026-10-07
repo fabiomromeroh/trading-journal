@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Trading Journal{% endblock %}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = { darkMode: 'class', theme: { extend: { fontFamily: { sans: ['Inter', 'ui-sans-serif', 'system-ui'] } } } }
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+  <script defer src="https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="/static/app.css">
+  {% block head %}{% endblock %}
+</head>
+<body class="bg-[#0b0f17] text-slate-200 font-sans antialiased">
+<div class="flex min-h-screen">
+  <aside class="w-56 shrink-0 bg-[#0f1520] border-r border-slate-800/80 flex flex-col">
+    <div class="px-5 py-5 flex items-center gap-2">
+      <div class="h-8 w-8 rounded-lg bg-gradient-to-br from-indigo-500 to-cyan-400 grid place-items-center font-bold text-slate-900">TJ</div>
+      <div>
+        <div class="font-semibold text-white leading-tight">Trading Journal</div>
+        <div class="text-[11px] text-slate-500">Schwab edition</div>
+      </div>
+    </div>
+    <nav class="px-3 space-y-1 text-sm">
+      {% set items = [('dashboard','/','Dashboard','M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z'),
+                      ('trades','/trades','Trades','M4 6h16M4 12h16M4 18h10'),
+                      ('import','/import','Import','M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2'),
+                      ('settings','/settings','Settings & Sync','M10.3 4.3c.4-1.7 3-1.7 3.4 0a1.7 1.7 0 002.6 1.1c1.5-.9 3.3.8 2.4 2.4a1.7 1.7 0 001 2.5c1.8.4 1.8 3 0 3.4a1.7 1.7 0 00-1 2.6c.9 1.5-.9 3.3-2.4 2.4a1.7 1.7 0 00-2.6 1c-.4 1.8-3 1.8-3.4 0a1.7 1.7 0 00-2.5-1c-1.6.9-3.3-.9-2.4-2.4a1.7 1.7 0 00-1.1-2.6c-1.7-.4-1.7-3 0-3.4a1.7 1.7 0 001.1-2.5c-.9-1.6.8-3.3 2.4-2.4a1.7 1.7 0 002.5-1.1zM15 12a3 3 0 11-6 0 3 3 0 016 0z')] %}
+      {% for key, href, label, icon in items %}
+      <a href="{{ href }}" class="flex items-center gap-3 px-3 py-2 rounded-lg {{ 'bg-indigo-500/15 text-white' if nav == key else 'text-slate-400 hover:text-white hover:bg-slate-800/60' }}">
+        <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="{{ icon }}"/></svg>
+        {{ label }}
+      </a>
+      {% endfor %}
+    </nav>
+    <div class="mt-auto p-4 space-y-3">
+      <button hx-post="/sync" hx-target="#sync-toast" hx-swap="innerHTML"
+              class="w-full text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white py-2 font-medium flex items-center justify-center gap-2">
+        <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.6M20 20v-5h-.6M5 9a8 8 0 0114.4-2M19 15a8 8 0 01-14.4 2"/></svg>
+        Sync now
+      </button>
+      <div id="sync-toast" class="text-xs"></div>
+      <form method="post" action="/logout"><button class="w-full text-xs text-slate-500 hover:text-slate-300">Log out</button></form>
+    </div>
+  </aside>
+  <main class="flex-1 min-w-0">
+    {% if has_demo %}
+    <div class="bg-amber-500/15 border-b border-amber-500/30 text-amber-200 text-sm px-6 py-2 flex items-center gap-3">
+      <span class="font-semibold uppercase tracking-wide text-[11px] bg-amber-500/25 rounded px-2 py-0.5">Sample data</span>
+      <span>Charts and trades include generated demo data from “Sample account (demo)”. It is not real trading history.</span>
+      <form method="post" action="/settings/demo/clear" class="ml-auto"><button class="underline hover:text-white">Clear sample data</button></form>
+    </div>
+    {% endif %}
+    {% for b in banners %}
+    <div class="{{ 'bg-rose-500/15 border-rose-500/30 text-rose-200' if b.level == 'error' else 'bg-amber-500/10 border-amber-500/30 text-amber-200' }} border-b text-sm px-6 py-2 flex gap-3">
+      <span>{{ b.text }}</span><a class="ml-auto underline" href="{{ b.link }}">{{ b.link_text }}</a>
+    </div>
+    {% endfor %}
+    <div class="px-6 py-6 max-w-[1500px]">
+      {% block content %}{% endblock %}
+    </div>
+  </main>
+</div>
+{% block scripts %}{% endblock %}
+</body>
+</html>

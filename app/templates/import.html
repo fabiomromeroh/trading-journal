@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}Import · Trading Journal{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-semibold text-white mb-1">Import trades</h1>
+<p class="text-sm text-slate-500 mb-5">Re-importing overlapping files is safe: fills already imported are recognised and skipped, and a matching fill from another file type is merged (e.g. thinkorswim adds exact times, Schwab.com adds fees).</p>
+{% if error %}<div class="card border-rose-500/40 bg-rose-500/10 text-rose-200 p-3 mb-4 text-sm">{{ error }}</div>{% endif %}
+{% if request.query_params.get('done') %}<div class="card border-emerald-500/40 bg-emerald-500/10 text-emerald-200 p-3 mb-4 text-sm">Import complete. Trades rebuilt. <a href="/trades" class="underline">View trades →</a></div>{% endif %}
+
+<div class="grid grid-cols-1 xl:grid-cols-3 gap-4 mb-6">
+  <form method="post" action="/import/upload" enctype="multipart/form-data" class="card p-5 xl:col-span-2"
+        x-data="{ name: '', drag: false }">
+    <label class="dropzone block border-2 border-dashed border-slate-700 rounded-xl p-10 text-center cursor-pointer transition"
+           :class="drag && 'drag'" @dragover.prevent="drag = true" @dragleave.prevent="drag = false"
+           @drop.prevent="drag = false; $refs.file.files = $event.dataTransfer.files; name = $event.dataTransfer.files[0]?.name">
+      <input x-ref="file" type="file" name="file" accept=".csv,text/csv" class="hidden" required @change="name = $event.target.files[0]?.name">
+      <div class="text-4xl mb-2">⬆</div>
+      <div class="text-white font-medium" x-text="name || 'Drop your CSV here or click to choose'"></div>
+      <div class="text-xs text-slate-500 mt-1">Schwab.com Transactions export or thinkorswim Account Statement · detected automatically</div>
+    </label>
+    <div class="flex flex-wrap items-end gap-3 mt-4">
+      <div>
+        <label class="card-h block mb-1">Account</label>
+        <select name="account" class="inp">
+          <option value="">Auto (from file / new account)</option>
+          {% for a in accounts if not a.is_demo %}<option value="{{ a.id }}">{{ a.name }}</option>{% endfor %}
+        </select>
+      </div>
+      <div>
+        <label class="card-h block mb-1">…or new account name</label>
+        <input name="new_account_name" class="inp" placeholder="Schwab ...285">
+      </div>
+      <button class="btn btn-p ml-auto">Upload & preview</button>
+    </div>
+  </form>
+  <div class="card p-5 text-sm text-slate-300 space-y-3">
+    <div class="card-h">How to export</div>
+    <div><span class="text-white font-medium">Schwab.com (recommended)</span>
+      <ol class="list-decimal ml-5 text-slate-400 space-y-0.5 mt-1">
+        <li>Log in → <b>Accounts → History</b> → <b>Transactions</b></li>
+        <li>Pick the account, filter <b>All transactions</b>, set a date range</li>
+        <li><b>Export → CSV</b>. Keep exports ≲1,500 rows (≈ a quarter for active traders) — larger exports can download empty.</li>
+      </ol>
+      <div class="text-xs text-slate-500 mt-1">Includes fees, expirations & assignments; no execution times.</div>
+    </div>
+    <div><span class="text-white font-medium">thinkorswim (adds exact times)</span>
+      <ol class="list-decimal ml-5 text-slate-400 space-y-0.5 mt-1">
+        <li><b>Monitor → Account Statement</b>, set the date range</li>
+        <li>Menu (top-right) → <b>Export to file</b> → CSV</li>
+      </ol>
+      <div class="text-xs text-slate-500 mt-1">Fill-level times for hold-time & hour-of-day stats; no fees. Import both for the best data.</div>
+    </div>
+  </div>
+</div>
+
+<div class="card p-4 overflow-x-auto">
+  <div class="card-h mb-2">Import history</div>
+  <table class="w-full text-sm tbl">
+    <thead><tr><th>When</th><th>File</th><th>Format</th><th>Account</th><th>Range</th><th class="text-right">Rows</th><th class="text-right">Fills</th><th class="text-right">New</th><th class="text-right">Merged</th><th class="text-right">Dupes</th><th class="text-right">Skipped</th><th>Status</th><th></th></tr></thead>
+    <tbody>
+    {% for b in history %}
+    <tr>
+      <td class="text-slate-400">{{ (b.committed_at or b.created_at)|local_dt }}</td><td class="text-white max-w-[220px] truncate">{{ b.filename }}</td>
+      <td class="text-slate-400">{{ labels.get(b.file_format, b.file_format) }}</td><td>{{ b.account.name if b.account else '—' }}</td>
+      <td class="text-slate-400">{{ b.date_from or '' }} → {{ b.date_to or '' }}</td>
+      <td class="text-right">{{ b.rows_total }}</td><td class="text-right">{{ b.rows_trades }}</td><td class="text-right text-emerald-300">{{ b.inserted }}</td>
+      <td class="text-right text-sky-300">{{ b.merged }}</td><td class="text-right text-slate-400">{{ b.duplicates }}</td><td class="text-right text-slate-500">{{ b.skipped }}</td>
+      <td>{% if b.status == 'committed' %}<span class="pill bg-emerald-500/15 text-emerald-300">imported</span>{% else %}<span class="pill bg-slate-600/30 text-slate-400">{{ b.status }}</span>{% endif %}</td>
+      <td>{% if b.status == 'committed' %}<form method="post" action="/import/{{ b.id }}/undo" onsubmit="return confirm('Remove the fills added by this import?')"><button class="text-xs text-rose-300 hover:underline">Undo</button></form>{% endif %}</td>
+    </tr>
+    {% else %}<tr><td colspan="13" class="text-slate-500 text-center py-6">No imports yet.</td></tr>{% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

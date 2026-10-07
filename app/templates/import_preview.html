@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Preview import · Trading Journal{% endblock %}
+{% block content %}
+<a href="/import" class="text-slate-400 hover:text-white text-sm">← Import</a>
+<h1 class="text-2xl font-semibold text-white mt-2 mb-1">Preview: {{ batch.filename }}</h1>
+<p class="text-sm text-slate-500 mb-4">{{ label }} · account <b class="text-slate-300">{{ batch.account.name }}</b> · {{ batch.date_from }} → {{ batch.date_to }}</p>
+<div class="grid grid-cols-2 md:grid-cols-6 gap-3 mb-4">
+  {% for label_, v, cls in [('Rows in file', result.rows_total, 'text-white'), ('Trade fills', result.records|length, 'text-white'), ('New', counts.get('new', 0), 'text-emerald-300'), ('Merge with existing', counts.get('merge', 0), 'text-sky-300'), ('Already imported', counts.get('duplicate', 0), 'text-slate-400'), ('Symbols', symbols, 'text-white')] %}
+  <div class="card p-3"><div class="card-h">{{ label_ }}</div><div class="text-xl font-semibold {{ cls }}">{{ v }}</div></div>
+  {% endfor %}
+</div>
+{% for w in result.warnings %}<div class="card border-amber-500/40 bg-amber-500/10 text-amber-200 p-3 mb-3 text-sm">{{ w }}</div>{% endfor %}
+{% if result.skipped %}
+<div class="card p-3 mb-4 text-sm text-slate-400"><span class="card-h">Non-trade rows skipped:</span>
+  {% for k, v in result.skipped.most_common() %}<span class="pill bg-slate-800 text-slate-300 ml-1">{{ k }} × {{ v }}</span>{% endfor %}</div>
+{% endif %}
+<div class="flex gap-3 mb-4">
+  <form method="post" action="/import/{{ batch.id }}/commit"><button class="btn btn-p" {{ 'disabled' if not result.records }}>Import {{ counts.get('new', 0) }} new{% if counts.get('merge') %} + merge {{ counts.get('merge') }}{% endif %}</button></form>
+  <form method="post" action="/import/{{ batch.id }}/discard"><button class="btn btn-s">Cancel</button></form>
+</div>
+<div class="card overflow-x-auto">
+<table class="w-full text-sm tbl">
+  <thead><tr><th>Status</th><th>Date</th><th>Symbol</th><th>Side</th><th>Effect</th><th class="text-right">Qty</th><th class="text-right">Price</th><th class="text-right">Fees</th><th>Type</th><th>Description</th></tr></thead>
+  <tbody>
+  {% for row in rows %}{% set r = row.r %}
+  <tr>
+    <td>{% if row.action == 'new' %}<span class="pill bg-emerald-500/15 text-emerald-300">new</span>{% elif row.action == 'merge' %}<span class="pill bg-sky-500/15 text-sky-300">merge</span>{% else %}<span class="pill bg-slate-600/30 text-slate-400">duplicate</span>{% endif %}</td>
+    <td class="text-slate-400">{{ r.executed_at|local_dt('%Y-%m-%d %H:%M:%S' if r.time_known else '%Y-%m-%d') }}</td>
+    <td class="text-white">{{ r.symbol }}</td><td class="{{ 'text-emerald-300' if r.side == 'BUY' else 'text-rose-300' }}">{{ r.side or '—' }}</td>
+    <td class="text-slate-400">{{ r.position_effect or '' }}</td><td class="text-right">{{ r.quantity|qty }}</td><td class="text-right">{{ r.price|num(4 if r.price < 10 else 2) }}</td>
+    <td class="text-right text-slate-400">{{ r.fees|money }}</td><td class="text-slate-400">{{ r.kind|lower }}</td><td class="text-slate-500 max-w-[280px] truncate">{{ r.description or '' }}</td>
+  </tr>
+  {% endfor %}
+  {% if more %}<tr><td colspan="10" class="text-slate-500">… and {{ more }} more</td></tr>{% endif %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

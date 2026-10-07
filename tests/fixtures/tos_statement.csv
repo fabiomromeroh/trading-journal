@@ -1,0 +1,23 @@
+This document was exported from the paperMoney platform.
+
+Account Statement for 12345285 (ira) since 9/10/26 through 9/16/26
+
+Cash Balance
+DATE,TIME,TYPE,REF #,DESCRIPTION,Misc Fees,Commissions & Fees,AMOUNT,BALANCE
+9/11/26,10:01:02,TRD,="1234",BOT +50 TSLA @245.00,,,"-12,250.00","10,000.00"
+
+Account Order History
+Notes,,Time Placed,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,PRICE,,TIF,Status
+
+Account Trade History
+,Exec Time,Spread,Side,Qty,Pos Effect,Symbol,Exp,Strike,Type,Price,Net Price,Order Type
+,9/16/26 14:05:11,STOCK,SELL,-100,TO CLOSE,AAPL,,,STOCK,231.50,231.50,LMT
+,9/12/26 09:45:00,SINGLE,SELL,-2,TO OPEN,SPY,19 SEP 26,580,PUT,1.25,1.25,LMT
+,9/12/26 09:41:30,STOCK,BUY,+100,TO OPEN,AAPL,,,STOCK,225.00,225.00,LMT
+,9/11/26 15:20:00,STOCK,SELL,-50,TO CLOSE,TSLA,,,STOCK,240.00,240.00,MKT
+,9/11/26 10:01:02,STOCK,BUY,+50,TO OPEN,TSLA,,,STOCK,245.00,245.00,LMT
+,9/11/26 11:00:00,VERTICAL,BUY,+1,TO OPEN,QQQ,18 SEP 26,480,CALL,3.00,1.10,LMT
+,,,SELL,-1,TO OPEN,QQQ,18 SEP 26,490,CALL,1.90,1.10,LMT
+
+Profits and Losses
+Symbol,Description,P/L Open,P/L %,P/L Day,P/L YTD,P/L Diff,Margin Req,Mark Value

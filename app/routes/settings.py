@@ -1,0 +1,161 @@
+from __future__ import annotations
+
+import json
+import secrets
+
+from fastapi import APIRouter, Depends, Form, Request
+from fastapi.responses import RedirectResponse
+from sqlalchemy import delete, func, select
+from sqlalchemy.orm import Session
+
+from app.config import get_settings
+from app.db import get_db
+from app.models import Account, Execution, ImportBatch, OAuthToken, SyncRun, Trade
+from app.services import get_state, rebuild_trades
+from app.sources import all_sources
+from app.sync import running_sync, start_background
+from app.web import base_context, templates
+
+router = APIRouter()
+
+
+def _settings_ctx(request, db, **kw):
+    sources = [(s, s.status(db)) for s in all_sources()]
+    runs = list(db.scalars(select(SyncRun).order_by(SyncRun.id.desc()).limit(15)))
+    accounts = list(db.scalars(select(Account).order_by(Account.name)))
+    acct_rows = []
+    for a in accounts:
+        n_exec = db.scalar(select(func.count(Execution.id)).where(Execution.account_id == a.id)) or 0
+        n_trades = db.scalar(select(func.count(Trade.id)).where(Trade.account_id == a.id)) or 0
+        orphans = json.loads(get_state(db, f"orphans:{a.id}") or "[]")
+        acct_rows.append({"a": a, "executions": n_exec, "trades": n_trades, "orphans": orphans})
+    s = get_settings()
+    return base_context(request, db, nav="settings", sources=sources, runs=runs, acct_rows=acct_rows,
+                        active_run=running_sync(db), s=s, **kw)
+
+
+@router.get("/settings")
+def settings_page(request: Request, db: Session = Depends(get_db)):
+    msg = request.session.pop("flash", None)
+    return templates.TemplateResponse(request, "settings.html", _settings_ctx(request, db, flash=msg))
+
+
+# ---------------------------------------------------------------- sync
+@router.post("/sync")
+def sync_now(request: Request, db: Session = Depends(get_db)):
+    run_id = start_background("manual")
+    run = db.get(SyncRun, run_id)
+    return templates.TemplateResponse(request, "partials/sync_status.html", {"request": request, "run": run})
+
+
+@router.get("/sync/{run_id}/status")
+def sync_status(run_id: int, request: Request, db: Session = Depends(get_db)):
+    db.expire_all()
+    run = db.get(SyncRun, run_id)
+    resp = templates.TemplateResponse(request, "partials/sync_status.html", {"request": request, "run": run})
+    if run and run.status != "running":
+        resp.headers["HX-Trigger"] = "sync-finished"
+    return resp
+
+
+@router.get("/sync/runs")
+def sync_runs(request: Request, db: Session = Depends(get_db)):
+    runs = list(db.scalars(select(SyncRun).order_by(SyncRun.id.desc()).limit(15)))
+    return templates.TemplateResponse(request, "partials/sync_runs.html", {"request": request, "runs": runs})
+
+
+# ---------------------------------------------------------------- Schwab OAuth (optional source)
+@router.get("/auth/schwab/connect")
+def schwab_connect(request: Request, db: Session = Depends(get_db)):
+    from app.sources.schwab_api import SchwabApiSource, SchwabClient
+    if not SchwabApiSource().is_configured():
+        request.session["flash"] = "Schwab API is not configured on this server."
+        return RedirectResponse("/settings", status_code=303)
+    state = secrets.token_urlsafe(16)
+    request.session["schwab_state"] = state
+    return RedirectResponse(SchwabClient(db).authorize_url(state), status_code=303)
+
+
+def _finish_schwab(request: Request, db: Session, code_or_url: str) -> None:
+    from app.sources.schwab_api import SchwabAuthError, SchwabClient
+    try:
+        client = SchwabClient(db)
+        client.exchange_code(client.code_from_redirect(code_or_url))
+        request.session["flash"] = "Schwab connected. Run 'Sync now' to pull your history."
+    except (SchwabAuthError, RuntimeError) as exc:
+        request.session["flash"] = f"Schwab connection failed: {exc}"
+
+
+@router.get("/auth/schwab/callback")
+def schwab_callback(request: Request, code: str = "", state: str | None = None, db: Session = Depends(get_db)):
+    expected = request.session.pop("schwab_state", None)
+    # Schwab may not echo `state`; when it does, it must match.
+    if state is not None and expected is not None and state != expected:
+        request.session["flash"] = "Schwab callback rejected (state mismatch). Try connecting again."
+    elif not code:
+        request.session["flash"] = "Schwab callback had no code."
+    else:
+        _finish_schwab(request, db, code)
+    return RedirectResponse("/settings", status_code=303)
+
+
+@router.post("/auth/schwab/paste")
+def schwab_paste(request: Request, redirect_url: str = Form(...), db: Session = Depends(get_db)):
+    _finish_schwab(request, db, redirect_url)
+    return RedirectResponse("/settings", status_code=303)
+
+
+@router.post("/auth/schwab/disconnect")
+def schwab_disconnect(request: Request, db: Session = Depends(get_db)):
+    db.execute(delete(OAuthToken).where(OAuthToken.provider == "schwab"))
+    db.commit()
+    request.session["flash"] = "Schwab disconnected (tokens deleted)."
+    return RedirectResponse("/settings", status_code=303)
+
+
+# ---------------------------------------------------------------- data management
+@router.post("/settings/accounts/{account_id}")
+def rename_account(account_id: int, request: Request, name: str = Form(...), db: Session = Depends(get_db)):
+    a = db.get(Account, account_id)
+    if a and name.strip():
+        a.name = name.strip()[:120]
+        db.commit()
+    return RedirectResponse("/settings", status_code=303)
+
+
+@router.post("/settings/accounts/{account_id}/delete")
+def delete_account(account_id: int, request: Request, confirm: str = Form(""), db: Session = Depends(get_db)):
+    a = db.get(Account, account_id)
+    if a and confirm == a.name:
+        db.execute(delete(ImportBatch).where(ImportBatch.account_id == a.id))
+        db.delete(a)
+        db.commit()
+        request.session["flash"] = f"Deleted account {a.name} and all its trades."
+    else:
+        request.session["flash"] = "Type the account name exactly to confirm deletion."
+    return RedirectResponse("/settings", status_code=303)
+
+
+@router.post("/settings/demo/clear")
+def clear_demo(request: Request, db: Session = Depends(get_db)):
+    for a in db.scalars(select(Account).where(Account.is_demo.is_(True))):
+        db.delete(a)
+    db.commit()
+    request.session["flash"] = "Sample data removed."
+    return RedirectResponse("/settings", status_code=303)
+
+
+@router.post("/settings/demo/load")
+def load_demo(request: Request, db: Session = Depends(get_db)):
+    from app.seed_demo import seed
+    seed(db)
+    request.session["flash"] = "Sample data loaded (clearly labelled; remove it any time)."
+    return RedirectResponse("/", status_code=303)
+
+
+@router.post("/settings/rebuild")
+def rebuild(request: Request, db: Session = Depends(get_db)):
+    n = rebuild_trades(db)
+    db.commit()
+    request.session["flash"] = f"Rebuilt {n} trades from executions."
+    return RedirectResponse("/settings", status_code=303)

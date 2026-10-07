@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block title %}{{ t.symbol }} · Trade #{{ t.id }}{% endblock %}
+{% block head %}<script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+  <div class="flex items-center gap-3">
+    <a href="/trades" class="text-slate-400 hover:text-white text-sm">← Trades</a>
+    <h1 class="text-2xl font-semibold text-white">{{ t.symbol }}</h1>
+    <span class="pill {{ 'bg-emerald-500/15 text-emerald-300' if t.direction == 'LONG' else 'bg-rose-500/15 text-rose-300' }}">{{ t.direction }}</span>
+    <span class="pill bg-slate-700/60 text-slate-300">{{ 'Option' if t.asset_type == 'OPTION' else 'Stock' }}</span>
+    {% if t.status == 'OPEN' %}<span class="pill bg-sky-500/15 text-sky-300">OPEN</span>{% else %}
+    <span class="pill {{ 'bg-emerald-500/15 text-emerald-300' if t.net_pnl > 0 else 'bg-rose-500/15 text-rose-300' if t.net_pnl < 0 else 'bg-slate-500/20 text-slate-300' }}">{{ 'WIN' if t.net_pnl > 0 else 'LOSS' if t.net_pnl < 0 else 'BREAK-EVEN' }}</span>{% endif %}
+    {% if t.is_demo %}<span class="pill bg-amber-500/20 text-amber-300">SAMPLE DATA</span>{% endif %}
+  </div>
+  <div class="flex gap-2 text-sm">
+    {% if prev_id %}<a href="/trades/{{ prev_id }}" class="btn btn-s">← Prev</a>{% endif %}
+    {% if next_id %}<a href="/trades/{{ next_id }}" class="btn btn-s">Next →</a>{% endif %}
+  </div>
+</div>
+
+<div class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-3 mb-4">
+  {% macro kv(label, value, cls='') %}<div class="card p-3"><div class="card-h">{{ label }}</div><div class="text-lg font-semibold {{ cls or 'text-white' }}">{{ value }}</div></div>{% endmacro %}
+  {{ kv('Net P&L', t.net_pnl|money(true), t.net_pnl|pnl_class) }}
+  {{ kv('Gross P&L', t.gross_pnl|money(true), t.gross_pnl|pnl_class) }}
+  {{ kv('Fees', t.fees|money) }}
+  {{ kv('Return', (t.return_pct|num(2) ~ '%') if t.return_pct is not none else '—', t.return_pct|pnl_class) }}
+  {{ kv('Entry / exit', t.entry_price|num(2) ~ ' → ' ~ t.exit_price|num(2)) }}
+  {{ kv('Max size', t.quantity|qty ~ (' contracts' if t.asset_type == 'OPTION' else ' sh')) }}
+  {{ kv('Hold time', ((t.closed_at - t.opened_at)|td if t.closed_at else 'open') ~ ('' if t.time_known else ' (date only)')) }}
+  <div class="card p-3"><div class="card-h">MFE / MAE</div><div id="mfe" class="text-lg font-semibold text-white">{{ (t.mfe|money ~ ' / ' ~ t.mae|money) if t.mfe is not none else '—' }}</div></div>
+</div>
+
+<div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
+  <div class="xl:col-span-2 space-y-4">
+    <div class="card p-4">
+      <div class="flex justify-between items-center mb-2">
+        <div class="card-h">Price chart {% if t.asset_type == 'OPTION' %}<span class="normal-case text-slate-500">— underlying {{ t.underlying }}; markers show option fills</span>{% endif %}</div>
+        <div id="chart-src" class="text-xs text-slate-500"></div>
+      </div>
+      <div id="chart" class="h-[380px] w-full relative">
+        <div id="chart-placeholder" class="absolute inset-0 grid place-items-center text-slate-500 text-sm">Loading chart…</div>
+      </div>
+    </div>
+    <div class="card p-4 overflow-x-auto">
+      <div class="card-h mb-2">Executions</div>
+      <table class="w-full text-sm tbl">
+        <thead><tr><th>Time ({{ settings().display_tz.split('/')[-1].replace('_',' ') }})</th><th>Action</th><th>Role</th><th class="text-right">Qty</th><th class="text-right">Price</th><th class="text-right">Value</th><th class="text-right">Fees</th><th>Source</th></tr></thead>
+        <tbody>
+        {% for f in t.fills %}
+        <tr>
+          <td class="text-slate-300">{{ f.executed_at|local_dt('%Y-%m-%d %H:%M:%S' if (f.execution and f.execution.time_known) else '%Y-%m-%d') }}</td>
+          <td><span class="{{ 'text-emerald-300' if f.side == 'BUY' else 'text-rose-300' }} font-medium">{{ f.side }}</span>
+              {% if f.execution and f.execution.kind != 'TRADE' %}<span class="text-xs text-slate-500">({{ f.execution.kind|lower }})</span>{% elif not f.execution %}<span class="text-xs text-slate-500">(expired, inferred)</span>{% endif %}</td>
+          <td class="text-slate-400">{{ f.role|lower }}</td>
+          <td class="text-right">{{ f.quantity|qty }}</td><td class="text-right">{{ f.price|num(4 if f.price < 10 else 2) }}</td>
+          <td class="text-right text-slate-400">{{ (f.quantity * f.price * t.multiplier)|money }}</td>
+          <td class="text-right text-slate-400">{{ f.fees|money }}</td>
+          <td class="text-xs text-slate-500">{{ f.execution.source if f.execution else '—' }}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      <div class="text-xs text-slate-500 mt-2">Account: {{ t.account.name }} · P&L uses FIFO matching{% if t.asset_type == 'OPTION' %} · multiplier ×{{ t.multiplier|qty }}{% endif %}{% if t.close_reason and t.close_reason != 'TRADE' %} · closed by {{ t.close_reason|lower }}{% endif %}</div>
+    </div>
+  </div>
+  <div class="card p-4">
+    <div class="card-h mb-3">Journal</div>
+    {% include "partials/journal_form.html" %}
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(async function () {
+  const el = document.getElementById('chart'), ph = document.getElementById('chart-placeholder');
+  let data;
+  try { data = await (await fetch('/trades/{{ t.id }}/chart.json')).json(); } catch (e) { data = { candles: [] }; }
+  if (!data.candles || !data.candles.length) {
+    ph.innerHTML = '<div class="text-center px-6"><div class="text-3xl mb-2">📈</div><div class="text-slate-300">No price data available for this trade.</div>' +
+      '<div class="text-xs mt-1">Set POLYGON_API_KEY or PRICE_PROVIDER=yahoo to enable charts (Schwab market data is used automatically if the Schwab API source is connected).</div></div>';
+    return;
+  }
+  ph.remove();
+  document.getElementById('chart-src').textContent = (data.interval === '5m' ? '5-min' : 'Daily') + ' · ' + data.provider_label;
+  const chart = LightweightCharts.createChart(el, { autoSize: true,
+    layout: { background: { color: '#111827' }, textColor: '#94a3b8' },
+    grid: { vertLines: { color: 'rgba(51,65,85,.25)' }, horzLines: { color: 'rgba(51,65,85,.25)' } },
+    timeScale: { timeVisible: data.interval !== '1d', borderColor: '#334155', tickMarkFormatter: (t) => new Date(t * 1000).toLocaleString('en-US', data.interval === '1d' ? { timeZone: 'UTC', month: 'short', day: 'numeric' } : { timeZone: '{{ settings().display_tz }}', hour: '2-digit', minute: '2-digit', hour12: false }) }, rightPriceScale: { borderColor: '#334155' },
+    localization: { locale: 'en-US', timeFormatter: t => new Date(t * 1000).toLocaleString('en-US', { timeZone: '{{ settings().display_tz }}', month: 'short', day: 'numeric', hour: data.interval === '1d' ? undefined : '2-digit', minute: data.interval === '1d' ? undefined : '2-digit' }) } });
+  const s = chart.addCandlestickSeries({ upColor: '#10b981', downColor: '#f43f5e', borderVisible: false, wickUpColor: '#10b981', wickDownColor: '#f43f5e' });
+  s.setData(data.candles);
+  {% if t.asset_type == 'STOCK' %}
+  s.createPriceLine({ price: {{ t.entry_price }}, color: '#818cf8', lineWidth: 1, lineStyle: 2, title: 'avg entry' });
+  {% if t.exit_price %}s.createPriceLine({ price: {{ t.exit_price }}, color: '#f59e0b', lineWidth: 1, lineStyle: 2, title: 'avg exit' });{% endif %}
+  {% endif %}
+  const times = data.candles.map(c => c.time);
+  const snap = t => times.reduce((a, b) => Math.abs(b - t) < Math.abs(a - t) ? b : a, times[0]);
+  s.setMarkers(data.markers.map(m => ({ ...m, time: snap(m.time) })).sort((a, b) => a.time - b.time));
+  chart.timeScale().fitContent();
+  if (data.mfe !== null && data.mfe !== undefined) {
+    const f = v => (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    document.getElementById('mfe').textContent = f(data.mfe) + ' / ' + f(data.mae);
+  }
+})();
+</script>
+{% endblock %}

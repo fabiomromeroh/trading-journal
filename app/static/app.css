@@ -1,0 +1,15 @@
+.card { background: #111827; border: 1px solid rgba(51,65,85,.6); border-radius: .9rem; }
+.card-h { font-size: .75rem; text-transform: uppercase; letter-spacing: .05em; color: #94a3b8; font-weight: 600; }
+.kpi-v { font-size: 1.45rem; font-weight: 700; color: #f8fafc; }
+.tbl th { font-size: .7rem; text-transform: uppercase; letter-spacing: .05em; color: #94a3b8; font-weight: 600; text-align: left; padding: .6rem .75rem; border-bottom: 1px solid #1f2937; white-space: nowrap; }
+.tbl td { padding: .55rem .75rem; border-bottom: 1px solid rgba(31,41,55,.7); white-space: nowrap; }
+.tbl tbody tr:hover { background: rgba(99,102,241,.06); }
+.inp { background: #0b1220; border: 1px solid #334155; border-radius: .5rem; padding: .4rem .6rem; font-size: .85rem; color: #e2e8f0; }
+.inp:focus { outline: none; border-color: #6366f1; }
+.btn { border-radius: .5rem; padding: .45rem .9rem; font-size: .85rem; font-weight: 500; }
+.btn-p { background: #4f46e5; color: white; } .btn-p:hover { background: #6366f1; }
+.btn-s { background: #1f2937; color: #e2e8f0; border: 1px solid #334155; } .btn-s:hover { background: #273449; }
+.btn-d { background: rgba(244,63,94,.15); color: #fda4af; border: 1px solid rgba(244,63,94,.3); }
+.pill { font-size: .7rem; padding: .1rem .5rem; border-radius: 999px; font-weight: 600; }
+.cal-cell { min-height: 58px; border-radius: .45rem; padding: .3rem .4rem; font-size: .7rem; }
+.dropzone.drag { border-color: #6366f1; background: rgba(99,102,241,.08); }

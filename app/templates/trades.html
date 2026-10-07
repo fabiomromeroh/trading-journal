@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Trades · Trading Journal{% endblock %}
+{% macro sort_link(key, label, right=False) %}
+  {% set p = dict(params) %}{% set _ = p.update({'sort': key, 'dir': ('asc' if sort == key and desc else 'desc')}) %}
+  <a href="?{{ p|urlencode }}" class="hover:text-white {{ 'text-indigo-300' if sort == key }}">{{ label }}{% if sort == key %} {{ '↓' if desc else '↑' }}{% endif %}</a>
+{% endmacro %}
+{% block content %}
+<div class="flex flex-wrap items-end justify-between gap-4 mb-4">
+  <div>
+    <h1 class="text-2xl font-semibold text-white">Trades</h1>
+    <p class="text-sm text-slate-500">{{ total }} trades · closed net P&L in view <span class="{{ filtered_pnl|pnl_class }}">{{ filtered_pnl|money(true) }}</span></p>
+  </div>
+</div>
+<form method="get" class="card p-3 mb-4 flex flex-wrap items-center gap-2 text-xs">
+  <div class="flex rounded-lg border border-slate-700 overflow-hidden">
+    {% for key, label in presets %}<button name="preset" value="{{ key }}" class="px-3 py-1.5 {{ 'bg-indigo-600 text-white' if f.preset == key else 'text-slate-400 hover:bg-slate-800' }}">{{ label }}</button>{% endfor %}
+  </div>
+  <input type="date" name="start" value="{{ f.start or '' }}" class="inp text-xs">
+  <input type="date" name="end" value="{{ f.end or '' }}" class="inp text-xs">
+  <input name="symbol" value="{{ q.get('symbol','') }}" placeholder="Symbol" class="inp text-xs w-24">
+  <select name="account" class="inp text-xs"><option value="">All accounts</option>{% for a in accounts %}<option value="{{ a.id }}" {{ 'selected' if f.account_id == a.id }}>{{ a.name }}</option>{% endfor %}</select>
+  <select name="direction" class="inp text-xs"><option value="">Long & short</option>{% for v in ['LONG','SHORT'] %}<option {{ 'selected' if q.get('direction') == v }}>{{ v }}</option>{% endfor %}</select>
+  <select name="asset" class="inp text-xs"><option value="">Stocks & options</option><option value="STOCK" {{ 'selected' if q.get('asset') == 'STOCK' }}>Stocks</option><option value="OPTION" {{ 'selected' if q.get('asset') == 'OPTION' }}>Options</option></select>
+  <select name="status" class="inp text-xs"><option value="">Open & closed</option>{% for v in ['OPEN','CLOSED'] %}<option {{ 'selected' if q.get('status') == v }}>{{ v }}</option>{% endfor %}</select>
+  <select name="outcome" class="inp text-xs"><option value="">Wins & losses</option><option value="win" {{ 'selected' if q.get('outcome') == 'win' }}>Winners</option><option value="loss" {{ 'selected' if q.get('outcome') == 'loss' }}>Losers</option></select>
+  <select name="setup" class="inp text-xs"><option value="">Any setup</option>{% for s in setups %}<option {{ 'selected' if q.get('setup') == s }}>{{ s }}</option>{% endfor %}</select>
+  <select name="tag" class="inp text-xs"><option value="">Any tag</option>{% for s in tags %}<option {{ 'selected' if q.get('tag') == s }}>{{ s }}</option>{% endfor %}</select>
+  <button class="btn btn-p text-xs">Filter</button><a href="/trades" class="text-slate-400 hover:text-white">Reset</a>
+</form>
+<div class="card overflow-x-auto">
+<table class="w-full text-sm tbl">
+  <thead><tr>
+    <th>{{ sort_link('opened', 'Opened') }}</th><th>{{ sort_link('closed', 'Closed') }}</th><th>{{ sort_link('symbol', 'Symbol') }}</th><th>Side</th><th>Status</th>
+    <th class="text-right">{{ sort_link('qty', 'Qty') }}</th><th class="text-right">Entry</th><th class="text-right">Exit</th>
+    <th class="text-right">{{ sort_link('fees', 'Fees') }}</th><th class="text-right">{{ sort_link('pnl', 'Net P&L') }}</th><th class="text-right">{{ sort_link('return', 'Return') }}</th>
+    <th>Hold</th><th>Setup / tags</th><th>Rating</th>
+  </tr></thead>
+  <tbody>
+  {% for t in trades %}
+  <tr class="cursor-pointer" onclick="location='/trades/{{ t.id }}'">
+    <td class="text-slate-400">{{ t.opened_at|local_dt('%Y-%m-%d %H:%M' if t.time_known else '%Y-%m-%d') }}</td>
+    <td class="text-slate-400">{{ t.closed_at|local_dt('%Y-%m-%d %H:%M' if t.time_known else '%Y-%m-%d') if t.closed_at else '—' }}</td>
+    <td><a href="/trades/{{ t.id }}" class="text-white font-medium hover:underline">{{ t.symbol }}</a>{% if t.is_demo %} <span class="pill bg-amber-500/20 text-amber-300">demo</span>{% endif %}</td>
+    <td><span class="pill {{ 'bg-emerald-500/15 text-emerald-300' if t.direction == 'LONG' else 'bg-rose-500/15 text-rose-300' }}">{{ t.direction }}</span></td>
+    <td>{% if t.status == 'OPEN' %}<span class="pill bg-sky-500/15 text-sky-300">OPEN</span>{% else %}<span class="pill {{ 'bg-emerald-500/15 text-emerald-300' if t.net_pnl > 0 else 'bg-rose-500/15 text-rose-300' if t.net_pnl < 0 else 'bg-slate-500/20 text-slate-300' }}">{{ 'WIN' if t.net_pnl > 0 else 'LOSS' if t.net_pnl < 0 else 'BE' }}</span>{% if t.close_reason and t.close_reason != 'TRADE' %} <span class="text-[10px] text-slate-500">{{ t.close_reason|lower }}</span>{% endif %}{% endif %}</td>
+    <td class="text-right">{{ t.quantity|qty }}</td><td class="text-right">{{ t.entry_price|num(2) }}</td><td class="text-right">{{ t.exit_price|num(2) }}</td>
+    <td class="text-right text-slate-400">{{ t.fees|money }}</td>
+    <td class="text-right font-semibold {{ t.net_pnl|pnl_class }}">{{ t.net_pnl|money }}</td>
+    <td class="text-right {{ t.return_pct|pnl_class }}">{{ (t.return_pct|num(1) ~ '%') if t.return_pct is not none else '—' }}</td>
+    <td class="text-slate-400">{{ ((t.closed_at - t.opened_at)|td) if t.closed_at else '—' }}</td>
+    <td class="text-slate-400 max-w-[220px] truncate">{{ t.setup or '' }}{% for tg in t.tags %} <span class="pill bg-indigo-500/15 text-indigo-300">{{ tg.name }}</span>{% endfor %}</td>
+    <td class="text-amber-300">{{ '★' * (t.rating or 0) }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="14" class="text-center text-slate-500 py-10">No trades match. <a class="text-indigo-300 underline" href="/import">Import a CSV</a></td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% if pages > 1 %}
+<div class="flex justify-center gap-2 mt-4 text-sm">
+  {% for p in range(1, pages + 1) %}{% set pp = dict(params) %}{% set _ = pp.update({'page': p, 'sort': sort, 'dir': 'desc' if desc else 'asc'}) %}
+  <a href="?{{ pp|urlencode }}" class="px-3 py-1 rounded {{ 'bg-indigo-600 text-white' if p == page else 'bg-slate-800 text-slate-400' }}">{{ p }}</a>{% endfor %}
+</div>
+{% endif %}
+{% endblock %}

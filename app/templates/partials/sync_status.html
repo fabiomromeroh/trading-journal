@@ -1,0 +1,10 @@
+{% if run %}
+<div {% if run.status == 'running' %}hx-get="/sync/{{ run.id }}/status" hx-trigger="every 2s" hx-swap="outerHTML"{% endif %}
+     class="rounded-lg px-3 py-2 text-xs {{ 'bg-indigo-500/15 text-indigo-200' if run.status == 'running' else 'bg-emerald-500/15 text-emerald-200' if run.status == 'success' else 'bg-slate-700/50 text-slate-200' if run.status == 'skipped' else 'bg-amber-500/15 text-amber-200' }}">
+  {% if run.status == 'running' %}<span class="animate-pulse">⟳ Syncing… (run #{{ run.id }})</span>
+  {% else %}<b>Sync #{{ run.id }}: {{ run.status }}</b> · {{ run.inserted }} new fills · {{ run.trades_built }} trades
+    {% if run.message %}<div class="mt-1 opacity-80 whitespace-pre-line">{{ run.message }}</div>{% endif %}
+    {% if run.error %}<div class="mt-1 text-rose-300 whitespace-pre-line">{{ run.error[:400] }}</div>{% endif %}
+  {% endif %}
+</div>
+{% endif %}

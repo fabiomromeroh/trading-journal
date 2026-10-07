@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+{% block title %}Dashboard · Trading Journal{% endblock %}
+{% block content %}
+<div class="flex flex-wrap items-end justify-between gap-4 mb-5">
+  <div>
+    <h1 class="text-2xl font-semibold text-white">Dashboard</h1>
+    <p class="text-sm text-slate-500">
+      {% if last_import %}Last import {{ last_import.committed_at|local_dt }} ({{ last_import.filename }}){% else %}No imports yet{% endif %}
+      · times in {{ settings().display_tz }}
+    </p>
+  </div>
+  {% include "partials/filter_bar.html" %}
+</div>
+
+{% if not has_any %}
+<div class="card p-10 text-center">
+  <h2 class="text-xl text-white font-semibold mb-2">No trades yet</h2>
+  <p class="text-slate-400 mb-6">Import your Schwab transaction history (schwab.com → Accounts → History → Transactions → Export → CSV).</p>
+  <div class="flex justify-center gap-3">
+    <a href="/import" class="btn btn-p">Import CSV</a>
+    <form method="post" action="/settings/demo/load"><button class="btn btn-s">Load sample data</button></form>
+  </div>
+</div>
+{% else %}
+
+<div class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-3 mb-4">
+  {% macro kpi(label, value, cls='', sub='') %}
+  <div class="card p-4"><div class="card-h">{{ label }}</div><div class="kpi-v {{ cls }}">{{ value }}</div>{% if sub %}<div class="text-xs text-slate-500 mt-1">{{ sub }}</div>{% endif %}</div>
+  {% endmacro %}
+  {{ kpi('Net P&L', st.net_pnl|money(true), st.net_pnl|pnl_class, 'Gross ' ~ st.gross_pnl|money ~ ' · Fees ' ~ st.fees|money) }}
+  {{ kpi('Win rate', st.win_rate|num(1) ~ '%', '', st.wins ~ 'W / ' ~ st.losses ~ 'L / ' ~ st.scratches ~ ' BE') }}
+  {{ kpi('Profit factor', st.profit_factor|num(2), '', 'Gross wins ÷ gross losses') }}
+  {{ kpi('Expectancy', st.expectancy|money(true), st.expectancy|pnl_class, 'Avg net P&L per trade') }}
+  {{ kpi('Avg win / loss', st.avg_win|money ~ ' / ' ~ st.avg_loss|money, '', 'Ratio ' ~ st.win_loss_ratio|num(2)) }}
+  {{ kpi('Total trades', st.total_trades, '', st.open_trades ~ ' open') }}
+  {{ kpi('Largest win', st.largest_win|money, 'text-emerald-400') }}
+  {{ kpi('Largest loss', st.largest_loss|money, 'text-rose-400') }}
+  {{ kpi('Avg hold', st.avg_hold|td, '', 'Win ' ~ st.avg_hold_win|td ~ ' · Loss ' ~ st.avg_hold_loss|td) }}
+  {{ kpi('Max drawdown', st.max_drawdown|money, 'text-rose-300', 'Peak-to-trough, closed P&L') }}
+  {{ kpi('Streaks', st.max_consec_wins ~ 'W / ' ~ st.max_consec_losses ~ 'L', '', 'Max consecutive') }}
+  {{ kpi('Best / worst day', (st.best_day[1]|money if st.best_day else '—'), 'text-emerald-400', 'Worst ' ~ (st.worst_day[1]|money if st.worst_day else '—')) }}
+</div>
+
+<div class="grid grid-cols-1 xl:grid-cols-3 gap-4 mb-4">
+  <div class="card p-4 xl:col-span-2"><div class="card-h mb-2">Equity curve (cumulative net P&L)</div><div class="h-64"><canvas id="ch-equity"></canvas></div></div>
+  <div class="card p-4"><div class="card-h mb-2">Win / loss</div><div class="h-64"><canvas id="ch-winloss"></canvas></div></div>
+</div>
+<div class="card p-4 mb-4"><div class="card-h mb-2">Daily net P&L</div><div class="h-52"><canvas id="ch-daily"></canvas></div></div>
+
+<div class="card p-4 mb-4">
+  <div class="card-h mb-3">P&L calendar</div>
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
+  {% for m in months %}
+    <div>
+      <div class="flex justify-between text-sm mb-2"><span class="text-white font-medium">{{ m.title }}</span><span class="{{ m.pnl|pnl_class }}">{{ m.pnl|money(true) }}</span></div>
+      <div class="grid grid-cols-8 gap-1 text-[10px] text-slate-500 mb-1">{% for d in ['Mon','Tue','Wed','Thu','Fri','Sat','Sun','Week'] %}<div class="text-center">{{ d }}</div>{% endfor %}</div>
+      {% for w in m.weeks %}
+      <div class="grid grid-cols-8 gap-1 mb-1">
+        {% for c in w.days %}
+          {% if not c.in_month %}<div class="cal-cell"></div>
+          {% elif c.pnl is none %}<div class="cal-cell bg-slate-800/30 text-slate-600">{{ c.date.day }}</div>
+          {% else %}
+            {% set intensity = [ (c.pnl|abs) / 1500, 1 ]|min %}
+            <a href="/trades?start={{ c.date }}&end={{ c.date }}" class="cal-cell block {{ 'bg-emerald-500' if c.pnl > 0 else 'bg-rose-500' }}" style="--tw-bg-opacity: {{ 0.15 + intensity * 0.55 }}">
+              <div class="text-slate-200/80">{{ c.date.day }}</div>
+              <div class="font-semibold text-white">{{ c.pnl|money(false, 0) }}</div>
+              <div class="text-white/60">{{ c.count }} tr</div>
+            </a>
+          {% endif %}
+        {% endfor %}
+        <div class="cal-cell bg-slate-800/50 text-center"><div class="text-slate-500">wk</div><div class="{{ w.pnl|pnl_class }} font-semibold">{{ w.pnl|money(false, 0) if w.count else '' }}</div></div>
+      </div>
+      {% endfor %}
+    </div>
+  {% endfor %}
+  </div>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+  <div class="card p-4"><div class="card-h mb-2">P&L by symbol (top 12)</div><div class="h-64"><canvas id="ch-symbol"></canvas></div></div>
+  <div class="card p-4"><div class="card-h mb-2">P&L by day of week (entry)</div><div class="h-64"><canvas id="ch-weekday"></canvas></div></div>
+  <div class="card p-4"><div class="card-h mb-2">P&L by hour of entry {% if not st.hours_known %}<span class="normal-case text-amber-300">(needs execution times — import thinkorswim statement)</span>{% endif %}</div><div class="h-64"><canvas id="ch-hour"></canvas></div></div>
+  <div class="card p-4"><div class="card-h mb-2">P&L by holding time</div><div class="h-64"><canvas id="ch-hold"></canvas></div></div>
+</div>
+
+<div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 mb-4">
+  {% macro btable(title, rows) %}
+  <div class="card p-4">
+    <div class="card-h mb-2">{{ title }}</div>
+    <table class="w-full text-sm tbl"><thead><tr><th></th><th class="text-right">Trades</th><th class="text-right">Win %</th><th class="text-right">Net P&L</th></tr></thead><tbody>
+    {% for b in rows %}<tr><td class="text-slate-300 truncate max-w-[140px]">{{ b.label }}</td><td class="text-right">{{ b.count }}</td><td class="text-right">{{ b.win_rate|num(0) }}%</td><td class="text-right {{ b.pnl|pnl_class }}">{{ b.pnl|money }}</td></tr>
+    {% else %}<tr><td colspan="4" class="text-slate-500">No data</td></tr>{% endfor %}
+    </tbody></table>
+  </div>
+  {% endmacro %}
+  {{ btable('Long vs short', st.by_direction) }}
+  {{ btable('Stocks vs options', st.by_asset) }}
+  {{ btable('By setup', st.by_setup) }}
+  {{ btable('By tag', st.by_tag) }}
+</div>
+
+<div class="card p-4">
+  <div class="flex justify-between mb-2"><div class="card-h">Recent closed trades</div><a href="/trades" class="text-xs text-indigo-300 hover:underline">All trades →</a></div>
+  <table class="w-full text-sm tbl"><thead><tr><th>Closed</th><th>Symbol</th><th>Side</th><th class="text-right">Qty</th><th class="text-right">Entry</th><th class="text-right">Exit</th><th class="text-right">Net P&L</th><th>Setup</th></tr></thead><tbody>
+  {% for t in recent %}
+  <tr class="cursor-pointer" onclick="location='/trades/{{ t.id }}'"><td class="text-slate-400">{{ t.closed_at|local_dt }}</td><td class="text-white font-medium">{{ t.symbol }}</td>
+  <td><span class="pill {{ 'bg-emerald-500/15 text-emerald-300' if t.direction == 'LONG' else 'bg-rose-500/15 text-rose-300' }}">{{ t.direction }}</span></td>
+  <td class="text-right">{{ t.quantity|qty }}</td><td class="text-right">{{ t.entry_price|num(2) }}</td><td class="text-right">{{ t.exit_price|num(2) }}</td>
+  <td class="text-right font-medium {{ t.net_pnl|pnl_class }}">{{ t.net_pnl|money }}</td><td class="text-slate-400">{{ t.setup or '' }}</td></tr>
+  {% endfor %}
+  </tbody></table>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% if has_any %}
+<script>
+const C = {{ charts|tojson }};
+Chart.defaults.color = '#94a3b8'; Chart.defaults.borderColor = 'rgba(51,65,85,.35)'; Chart.defaults.font.family = 'ui-sans-serif, system-ui, sans-serif';
+const money = v => (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString(undefined, {maximumFractionDigits: 0});
+const pnlColors = arr => arr.map(v => v >= 0 ? 'rgba(16,185,129,.75)' : 'rgba(244,63,94,.75)');
+const baseOpts = { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false },
+  tooltip: { callbacks: { label: c => money(c.parsed.y ?? c.parsed.x) } } }, scales: { y: { ticks: { callback: money } } } };
+const ctxE = document.getElementById('ch-equity').getContext('2d');
+const grad = ctxE.createLinearGradient(0, 0, 0, 260); grad.addColorStop(0, 'rgba(99,102,241,.35)'); grad.addColorStop(1, 'rgba(99,102,241,0)');
+new Chart(ctxE, { type: 'line', data: { labels: C.equity.labels, datasets: [{ data: C.equity.values, borderColor: '#818cf8', backgroundColor: grad, fill: true, pointRadius: 0, tension: .25, borderWidth: 2 }] },
+  options: { ...baseOpts, scales: { x: { ticks: { maxTicksLimit: 8, callback: function(v) { return this.getLabelForValue(v).slice(0, 10); } } }, y: { ticks: { callback: money } } } } });
+new Chart(document.getElementById('ch-winloss'), { type: 'doughnut', data: { labels: ['Wins', 'Losses', 'Break-even'], datasets: [{ data: C.winloss, backgroundColor: ['#10b981', '#f43f5e', '#64748b'], borderWidth: 0 }] },
+  options: { responsive: true, maintainAspectRatio: false, cutout: '68%', plugins: { legend: { position: 'bottom' } } } });
+const bar = (id, s, horizontal=false) => new Chart(document.getElementById(id), { type: 'bar',
+  data: { labels: s.labels, datasets: [{ data: s.pnl, backgroundColor: pnlColors(s.pnl), borderRadius: 4 }] },
+  options: { ...baseOpts, indexAxis: horizontal ? 'y' : 'x', scales: horizontal ? { x: { ticks: { callback: money } } } : { y: { ticks: { callback: money } } },
+    plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => money(c.raw) + (s.count ? `  (${s.count[c.dataIndex]} trades, ${s.win_rate[c.dataIndex]}% win)` : '') } } } } });
+bar('ch-daily', C.daily); bar('ch-symbol', C.symbol, true); bar('ch-weekday', C.weekday); bar('ch-hour', C.hour); bar('ch-hold', C.hold);
+</script>
+{% endif %}
+{% endblock %}
