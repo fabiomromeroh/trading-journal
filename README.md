@@ -40,7 +40,8 @@ per-trade pages with a price chart, and journal notes, tags, setups and ratings.
 - **Trade detail page**:
   - Executions table, P&L, fees, return %, hold time.
   - MFE/MAE (max favourable / adverse excursion) from price bars.
-  - Candlestick chart with entry and exit markers (TradingView lightweight-charts).
+  - Full-screen candlestick chart (TradingView lightweight-charts) with entry/exit markers, timeframe
+    picker (1m-1W), volume + MA(20) and indicators (SMA, EMA, VWAP, Bollinger, RSI, MACD, ATR).
   - Journal: notes, tags, setup, 1–5 star rating. These are kept when trades are rebuilt.
 - **Sync engine with pluggable data sources** (`app/sources/`). Syncing is manual: the "Sync now"
   button (or `python -m app.sync` from a shell) runs every enabled source and then rebuilds trades.
@@ -107,7 +108,23 @@ pytest -q                       # tests
 3. Yahoo Finance's public chart endpoint. This is unofficial, best effort and may break.
 
 Set `PRICE_PROVIDER=none` to turn charts off. Option trades are charted on the underlying stock.
-Intraday trades use 5-minute bars. Multi-day trades use daily bars, so their MFE/MAE is approximate.
+
+The trade page opens full screen (sidebar collapsed, toggle with the ☰ button; the journal is a
+right-hand panel you can hide). Chart timeframes: 1m, 5m, 15m, 30m, 1h, 4h, 1D, 1W
+(`/trades/{id}/chart.json?tf=5m`). Defaults: multi-day (swing) trades and trades whose fills have no
+time of day open on 1D; intraday trades with real times open on 5m (or 1h once 5m history is gone).
+The last timeframe you picked for a trade is remembered in the browser.
+Intraday history limits follow Yahoo: 1m for ~30 days (7 days per chart), 5m/15m/30m for ~60 days,
+1h/4h for ~2 years; unavailable timeframes are disabled with the reason. 4h bars are built from 1h
+bars (09:30 and 13:30 ET). Date-only fills are drawn on the day's last intraday bar and labelled
+"time n/a". A volume pane with a 20-period volume MA sits under price.
+
+Indicators are computed in the browser (TradingView's own indicator library can't be embedded in
+lightweight-charts): SMA/EMA with any period (presets 10/20/21/50/200), VWAP (intraday, resets each
+session), Bollinger Bands, RSI, MACD and ATR in their own panes. The selection is saved in the
+browser's localStorage. "Open in TradingView" opens the symbol on tradingview.com.
+MFE/MAE is computed on the default timeframe; for multi-day trades it uses whole daily bars, so it is
+approximate.
 
 ## Schwab via SnapTrade (recommended; works for Schwab International)
 [SnapTrade Personal](https://snaptrade.com/personal) is free for your own accounts.

@@ -16,9 +16,9 @@
   <link rel="stylesheet" href="/static/app.css">
   {% block head %}{% endblock %}
 </head>
-<body class="bg-[#0b0f17] text-slate-200 font-sans antialiased">
+<body class="bg-[#0b0f17] text-slate-200 font-sans antialiased" x-data="{ side: {{ 'false' if fullscreen else 'true' }} }">
 <div class="flex min-h-screen">
-  <aside class="w-56 shrink-0 bg-[#0f1520] border-r border-slate-800/80 flex flex-col">
+  <aside class="w-56 shrink-0 bg-[#0f1520] border-r border-slate-800/80 flex flex-col{{ ' sticky top-0 h-screen' if fullscreen else '' }}"{% if fullscreen %} x-show="side" style="display:none"{% endif %}>
     <div class="px-5 py-5 flex items-center gap-2">
       <div class="h-8 w-8 rounded-lg bg-gradient-to-br from-indigo-500 to-cyan-400 grid place-items-center font-bold text-slate-900">TJ</div>
       <div>
@@ -61,7 +61,7 @@
       <span>{{ b.text }}</span><a class="ml-auto underline" href="{{ b.link }}">{{ b.link_text }}</a>
     </div>
     {% endfor %}
-    <div class="px-6 py-6 max-w-[1500px]">
+    <div class="{{ 'px-3 py-3' if fullscreen else 'px-6 py-6 max-w-[1500px]' }}">
       {% block content %}{% endblock %}
     </div>
   </main>

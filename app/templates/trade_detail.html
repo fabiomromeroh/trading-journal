@@ -1,25 +1,29 @@
 {% extends "base.html" %}
 {% block title %}{{ t.symbol }} · Trade #{{ t.id }}{% endblock %}
-{% block head %}<script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>{% endblock %}
+{% block head %}<script src="https://unpkg.com/lightweight-charts@5.2.1/dist/lightweight-charts.standalone.production.js"></script>{% endblock %}
 {% block content %}
-<div class="flex items-center justify-between mb-4">
-  <div class="flex items-center gap-3">
-    <a href="/trades" class="text-slate-400 hover:text-white text-sm">← Trades</a>
-    <h1 class="text-2xl font-semibold text-white">{{ t.symbol }}</h1>
-    <span class="pill {{ 'bg-emerald-500/15 text-emerald-300' if t.direction == 'LONG' else 'bg-rose-500/15 text-rose-300' }}">{{ t.direction }}</span>
-    <span class="pill bg-slate-700/60 text-slate-300">{{ 'Option' if t.asset_type == 'OPTION' else 'Stock' }}</span>
-    {% if t.status == 'OPEN' %}<span class="pill bg-sky-500/15 text-sky-300">OPEN</span>{% else %}
-    <span class="pill {{ 'bg-emerald-500/15 text-emerald-300' if t.net_pnl > 0 else 'bg-rose-500/15 text-rose-300' if t.net_pnl < 0 else 'bg-slate-500/20 text-slate-300' }}">{{ 'WIN' if t.net_pnl > 0 else 'LOSS' if t.net_pnl < 0 else 'BREAK-EVEN' }}</span>{% endif %}
-    {% if t.is_demo %}<span class="pill bg-amber-500/20 text-amber-300">SAMPLE DATA</span>{% endif %}
-  </div>
-  <div class="flex gap-2 text-sm">
-    {% if prev_id %}<a href="/trades/{{ prev_id }}" class="btn btn-s">← Prev</a>{% endif %}
-    {% if next_id %}<a href="/trades/{{ next_id }}" class="btn btn-s">Next →</a>{% endif %}
+<div x-data="{ journal: localStorage.getItem('tj.journalPanel') !== '0' }" x-init="$watch('journal', v => localStorage.setItem('tj.journalPanel', v ? '1' : '0'))">
+<div class="flex flex-wrap items-center gap-x-3 gap-y-2 mb-2">
+  <button type="button" @click="side = !side" class="btn btn-s !px-2 !py-1.5" :title="side ? 'Hide menu' : 'Show menu'" aria-label="Toggle menu">
+    <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" d="M4 6h16M4 12h16M4 18h16"/></svg>
+  </button>
+  <a href="/trades" class="text-slate-400 hover:text-white text-sm">← Trades</a>
+  <h1 class="text-xl font-semibold text-white">{{ t.symbol }}</h1>
+  <span class="pill {{ 'bg-emerald-500/15 text-emerald-300' if t.direction == 'LONG' else 'bg-rose-500/15 text-rose-300' }}">{{ t.direction }}</span>
+  <span class="pill bg-slate-700/60 text-slate-300">{{ 'Option' if t.asset_type == 'OPTION' else 'Stock' }}</span>
+  {% if t.status == 'OPEN' %}<span class="pill bg-sky-500/15 text-sky-300">OPEN</span>{% else %}
+  <span class="pill {{ 'bg-emerald-500/15 text-emerald-300' if t.net_pnl > 0 else 'bg-rose-500/15 text-rose-300' if t.net_pnl < 0 else 'bg-slate-500/20 text-slate-300' }}">{{ 'WIN' if t.net_pnl > 0 else 'LOSS' if t.net_pnl < 0 else 'BREAK-EVEN' }}</span>{% endif %}
+  {% if t.is_demo %}<span class="pill bg-amber-500/20 text-amber-300">SAMPLE DATA</span>{% endif %}
+  <span class="text-xs text-slate-500">{{ t.opened_at|local_dt('%b %d, %Y') }}{% if t.closed_at %} → {{ t.closed_at|local_dt('%b %d, %Y') }}{% endif %}</span>
+  <div class="ml-auto flex gap-2 text-sm">
+    {% if prev_id %}<a href="/trades/{{ prev_id }}" class="btn btn-s !py-1">← Prev</a>{% endif %}
+    {% if next_id %}<a href="/trades/{{ next_id }}" class="btn btn-s !py-1">Next →</a>{% endif %}
+    <button type="button" class="btn btn-s !py-1" @click="journal = !journal" x-text="journal ? 'Hide journal' : 'Journal'">Journal</button>
   </div>
 </div>
 
-<div class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-3 mb-4">
-  {% macro kv(label, value, cls='') %}<div class="card p-3"><div class="card-h">{{ label }}</div><div class="text-lg font-semibold {{ cls or 'text-white' }}">{{ value }}</div></div>{% endmacro %}
+{% macro kv(label, value, cls='', id='') %}<div class="rounded-lg border border-slate-800 bg-[#111827] px-3 py-1.5 min-w-0"><div class="text-[10px] uppercase tracking-wide text-slate-500 font-semibold truncate">{{ label }}</div><div {% if id %}id="{{ id }}" {% endif %}class="text-sm font-semibold truncate {{ cls or 'text-white' }}">{{ value }}</div></div>{% endmacro %}
+<div class="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-8 gap-2 mb-2">
   {{ kv('Net P&L', t.net_pnl|money(true), t.net_pnl|pnl_class) }}
   {{ kv('Gross P&L', t.gross_pnl|money(true), t.gross_pnl|pnl_class) }}
   {{ kv('Fees', t.fees|money) }}
@@ -27,18 +31,30 @@
   {{ kv('Entry / exit', t.entry_price|num(2) ~ ' → ' ~ t.exit_price|num(2)) }}
   {{ kv('Max size', t.quantity|qty ~ (' contracts' if t.asset_type == 'OPTION' else ' sh')) }}
   {{ kv('Hold time', ((t.closed_at - t.opened_at)|td if t.closed_at else 'open') ~ ('' if t.time_known else ' (date only)')) }}
-  <div class="card p-3"><div class="card-h">MFE / MAE</div><div id="mfe" class="text-lg font-semibold text-white">{{ (t.mfe|money ~ ' / ' ~ t.mae|money) if t.mfe is not none else '—' }}</div></div>
+  {{ kv('MFE / MAE', (t.mfe|money ~ ' / ' ~ t.mae|money) if t.mfe is not none else '—', '', 'mfe') }}
 </div>
 
-<div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
-  <div class="xl:col-span-2 space-y-4">
-    <div class="card p-4">
-      <div class="flex justify-between items-center mb-2">
-        <div class="card-h">Price chart {% if t.asset_type == 'OPTION' %}<span class="normal-case text-slate-500">— underlying {{ t.underlying }}; markers show option fills</span>{% endif %}</div>
-        <div id="chart-src" class="text-xs text-slate-500"></div>
+<div class="flex flex-col lg:flex-row gap-3 items-start">
+  <section class="flex-1 min-w-0 w-full space-y-3">
+    <div class="card overflow-hidden">
+      <div class="flex flex-wrap items-center gap-2 px-3 py-2 border-b border-slate-800">
+        <div id="tf-bar" class="flex flex-wrap rounded-lg bg-[#0b1220] border border-slate-700/60 p-0.5" role="group" aria-label="Timeframe"></div>
+        <div class="relative">
+          <button id="ind-btn" type="button" class="btn btn-s !py-1 text-xs flex items-center gap-1"><span class="italic font-serif">ƒx</span> Indicators</button>
+          <div id="ind-menu" class="hidden absolute left-0 top-full mt-1 z-30 w-[340px] max-h-[70vh] overflow-auto rounded-xl border border-slate-700 bg-[#0f1520] p-3 shadow-2xl"></div>
+        </div>
+        <div id="ind-chips" class="flex flex-wrap gap-1"></div>
+        <div class="ml-auto flex items-center gap-3 text-xs text-slate-500">
+          {% if t.asset_type == 'OPTION' %}<span>underlying {{ t.underlying }}; markers show option fills</span>{% endif %}
+          <span id="chart-src"></span>
+          <a href="https://www.tradingview.com/chart/?symbol={{ t.underlying|urlencode }}" target="_blank" rel="noopener" class="text-indigo-300 hover:text-white whitespace-nowrap">Open in TradingView ↗</a>
+        </div>
       </div>
-      <div id="chart" class="h-[380px] w-full relative">
-        <div id="chart-placeholder" class="absolute inset-0 grid place-items-center text-slate-500 text-sm">Loading chart…</div>
+      <div id="chart-note" class="hidden text-[11px] text-amber-300/80 px-3 py-1 border-b border-slate-800"></div>
+      <div id="chart-wrap" class="relative w-full" style="height: calc(100vh - 205px); min-height: 460px;">
+        <div id="chart" class="absolute inset-0"></div>
+        <div id="chart-legend" class="absolute left-2 top-1 z-10 text-[11px] text-slate-400 pointer-events-none space-y-0.5"></div>
+        <div id="chart-placeholder" class="absolute inset-0 grid place-items-center text-slate-500 text-sm bg-[#0f1520] z-20">Loading chart…</div>
       </div>
     </div>
     <div class="card p-4 overflow-x-auto">
@@ -62,45 +78,20 @@
       </table>
       <div class="text-xs text-slate-500 mt-2">Account: {{ t.account.name }} · P&L uses FIFO matching{% if t.asset_type == 'OPTION' %} · multiplier ×{{ t.multiplier|qty }}{% endif %}{% if t.close_reason and t.close_reason != 'TRADE' %} · closed by {{ t.close_reason|lower }}{% endif %}</div>
     </div>
-  </div>
-  <div class="card p-4">
-    <div class="card-h mb-3">Journal</div>
-    {% include "partials/journal_form.html" %}
-  </div>
+  </section>
+  <aside class="w-full lg:w-[340px] shrink-0 lg:sticky lg:top-3" x-show="journal">
+    <div class="card p-4 lg:max-h-[calc(100vh-24px)] lg:overflow-auto">
+      <div class="card-h mb-3">Journal</div>
+      {% include "partials/journal_form.html" %}
+    </div>
+  </aside>
+</div>
 </div>
 {% endblock %}
 {% block scripts %}
 <script>
-(async function () {
-  const el = document.getElementById('chart'), ph = document.getElementById('chart-placeholder');
-  let data;
-  try { data = await (await fetch('/trades/{{ t.id }}/chart.json')).json(); } catch (e) { data = { candles: [] }; }
-  if (!data.candles || !data.candles.length) {
-    ph.innerHTML = '<div class="text-center px-6"><div class="text-3xl mb-2">📈</div><div class="text-slate-300">No price data available for this trade.</div>' +
-      '<div class="text-xs mt-1">Set POLYGON_API_KEY or PRICE_PROVIDER=yahoo to enable charts (Schwab market data is used automatically if the Schwab API source is connected).</div></div>';
-    return;
-  }
-  ph.remove();
-  document.getElementById('chart-src').textContent = (data.interval === '5m' ? '5-min' : 'Daily') + ' · ' + data.provider_label;
-  const chart = LightweightCharts.createChart(el, { autoSize: true,
-    layout: { background: { color: '#111827' }, textColor: '#94a3b8' },
-    grid: { vertLines: { color: 'rgba(51,65,85,.25)' }, horzLines: { color: 'rgba(51,65,85,.25)' } },
-    timeScale: { timeVisible: data.interval !== '1d', borderColor: '#334155', tickMarkFormatter: (t) => new Date(t * 1000).toLocaleString('en-US', data.interval === '1d' ? { timeZone: 'UTC', month: 'short', day: 'numeric' } : { timeZone: '{{ settings().display_tz }}', hour: '2-digit', minute: '2-digit', hour12: false }) }, rightPriceScale: { borderColor: '#334155' },
-    localization: { locale: 'en-US', timeFormatter: t => new Date(t * 1000).toLocaleString('en-US', { timeZone: '{{ settings().display_tz }}', month: 'short', day: 'numeric', hour: data.interval === '1d' ? undefined : '2-digit', minute: data.interval === '1d' ? undefined : '2-digit' }) } });
-  const s = chart.addCandlestickSeries({ upColor: '#10b981', downColor: '#f43f5e', borderVisible: false, wickUpColor: '#10b981', wickDownColor: '#f43f5e' });
-  s.setData(data.candles);
-  {% if t.asset_type == 'STOCK' %}
-  s.createPriceLine({ price: {{ t.entry_price }}, color: '#818cf8', lineWidth: 1, lineStyle: 2, title: 'avg entry' });
-  {% if t.exit_price %}s.createPriceLine({ price: {{ t.exit_price }}, color: '#f59e0b', lineWidth: 1, lineStyle: 2, title: 'avg exit' });{% endif %}
-  {% endif %}
-  const times = data.candles.map(c => c.time);
-  const snap = t => times.reduce((a, b) => Math.abs(b - t) < Math.abs(a - t) ? b : a, times[0]);
-  s.setMarkers(data.markers.map(m => ({ ...m, time: snap(m.time) })).sort((a, b) => a.time - b.time));
-  chart.timeScale().fitContent();
-  if (data.mfe !== null && data.mfe !== undefined) {
-    const f = v => (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    document.getElementById('mfe').textContent = f(data.mfe) + ' / ' + f(data.mae);
-  }
-})();
+window.TJ_CHART = { tradeId: {{ t.id }}, symbol: {{ t.underlying|tojson }}, tz: {{ settings().display_tz|tojson }},
+  isStock: {{ 'true' if t.asset_type == 'STOCK' else 'false' }}, entry: {{ t.entry_price|tojson }}, exit: {{ t.exit_price|tojson }} };
 </script>
+<script src="/static/trade_chart.js?v=2"></script>
 {% endblock %}

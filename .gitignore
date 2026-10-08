@@ -8,3 +8,6 @@ __pycache__/
 *.db-journal
 .db-external
 backups/
+
+# real-data screenshots from the live site
+screenshots/live-*.png

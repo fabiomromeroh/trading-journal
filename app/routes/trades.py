@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models import Tag, Trade, TradeFill
-from app.prices import compute_excursions, get_chart, markers
+from app.prices import compute_excursions, get_chart
 from app.web import apply_trade_filters, base_context, parse_filters, templates
 
 router = APIRouter()
@@ -76,7 +76,7 @@ def trade_detail(trade_id: int, request: Request, db: Session = Depends(get_db))
     setups = sorted(s for s in db.scalars(select(Trade.setup).where(Trade.setup.is_not(None)).distinct()) if s)
     return templates.TemplateResponse(request, "trade_detail.html", base_context(
         request, db, nav="trades", t=t, prev_id=prev_id, next_id=next_id, all_tags=all_tags, setups=setups,
-        saved=False))
+        saved=False, fullscreen=True))
 
 
 @router.post("/trades/{trade_id}/journal")
@@ -107,12 +107,12 @@ def save_journal(trade_id: int, request: Request, notes: str = Form(""), setup: 
 
 
 @router.get("/trades/{trade_id}/chart.json")
-def trade_chart(trade_id: int, db: Session = Depends(get_db)):
+def trade_chart(trade_id: int, tf: str | None = None, db: Session = Depends(get_db)):
+    """Candles (+volume) for one timeframe, fill markers snapped to bars, and timeframe availability."""
     t = _get_trade(db, trade_id)
-    data = get_chart(db, t)
-    data["markers"] = markers(t, data["interval"]) if data["candles"] else []
-    if data["candles"] and t.status == "CLOSED":
-        mfe, mae = compute_excursions(t, data["candles"])
+    data = get_chart(db, t, tf)
+    if data["candles"] and t.status == "CLOSED" and data["tf"] == data["default_tf"]:
+        mfe, mae = compute_excursions(t, data["candles"], data["tf"])
         if mfe is not None and (t.mfe != mfe or t.mae != mae):
             t.mfe, t.mae = mfe, mae
             db.commit()
