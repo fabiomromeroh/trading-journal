@@ -79,6 +79,27 @@ pytest -q                       # tests
 - Free web instances sleep after about 15 minutes idle, so the first request after that is slow.
 - There is intentionally no cron job: sync runs only when you click "Sync now".
 
+## P&L figures and ticker renames
+
+- **Realized P&L** (dashboard) = net P&L of closed trades **plus** partial exits of
+  still-open positions, after fees. Plain FIFO, no wash-sale adjustment (Schwab adds
+  disallowed losses to the new lot's basis, so its realized/unrealized split can
+  differ while the total is the same).
+- **Unrealized (open)** = remaining FIFO lots marked at the latest SnapTrade price.
+- **Total P&L** = realized + unrealized, checked against the broker:
+  account value − net deposits (cash transfers in/out recorded by SnapTrade sync).
+  A ✓ means the journal agrees with the account to within $1. This is the number to
+  compare with a thinkorswim Account Statement "P/L Diff" covering the whole history
+  (P/L Diff = P/L YTD at end − P/L YTD at start, open + closed positions).
+- **Ticker renames:** SnapTrade keeps the old ticker on past activities while
+  thinkorswim rewrites history with the new one (e.g. EchoStar SATS → ECHO on
+  2026-06-24). The journal maps old → new so fills from both sources merge and a
+  position continues across the rename. Built-in renames are listed in
+  Settings → Ticker renames; renames are also detected automatically when two
+  sources report ≥ 2 identical fills under different tickers, and you can add or
+  disable mappings there (`OLD=NEW`, or `OLD=` to disable). Saving re-matches all
+  imports and rebuilds trades.
+
 ## Price charts
 `PRICE_PROVIDER=auto` tries, in order:
 1. Schwab market data (if the Schwab API source is connected).

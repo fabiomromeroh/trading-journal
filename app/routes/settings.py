@@ -33,6 +33,14 @@ def _snaptrade_ctx(db) -> dict | None:
             "checked_at": _parse_dt(snap.get("checked_at")), "last_success": last}
 
 
+def _alias_ctx(db):
+    from app.services import get_state
+    from app.symbols import USER_STATE, describe
+    user = json.loads(get_state(db, USER_STATE) or "{}")
+    return {"alias_rows": describe(db),
+            "alias_text": "\n".join(f"{k}={v}" for k, v in user.items())}
+
+
 def _settings_ctx(request, db, **kw):
     for src in all_sources():
         if src.key == "snaptrade" and src.is_configured():
@@ -51,7 +59,7 @@ def _settings_ctx(request, db, **kw):
         acct_rows.append({"a": a, "executions": n_exec, "trades": n_trades, "orphans": orphans})
     s = get_settings()
     return base_context(request, db, nav="settings", sources=sources, runs=runs, acct_rows=acct_rows,
-                        active_run=running_sync(db), s=s, snaptrade=_snaptrade_ctx(db), **kw)
+                        active_run=running_sync(db), s=s, snaptrade=_snaptrade_ctx(db), **_alias_ctx(db), **kw)
 
 
 @router.get("/settings")
@@ -261,8 +269,29 @@ def load_demo(request: Request, db: Session = Depends(get_db)):
     return RedirectResponse("/", status_code=303)
 
 
+@router.post("/settings/aliases")
+def save_aliases(request: Request, aliases: str = Form(""), db: Session = Depends(get_db)):
+    """Ticker renames (OLD=NEW). Saving re-matches imported fills and rebuilds trades."""
+    from app.services import get_state, rematch_imports, set_state
+    from app.symbols import USER_STATE, parse_alias_text
+    try:
+        table = parse_alias_text(aliases)
+    except ValueError as exc:
+        request.session["flash"] = str(exc)
+        return RedirectResponse("/settings#aliases", status_code=303)
+    set_state(db, USER_STATE, json.dumps(table))
+    st = rematch_imports(db)
+    n = rebuild_trades(db)
+    db.commit()
+    request.session["flash"] = (f"Ticker aliases saved. Re-matched imports ({st.merged} fills merged); "
+                                f"rebuilt {n} trades.")
+    return RedirectResponse("/settings#aliases", status_code=303)
+
+
 @router.post("/settings/rebuild")
 def rebuild(request: Request, db: Session = Depends(get_db)):
+    from app.services import rematch_imports
+    rematch_imports(db)
     n = rebuild_trades(db)
     db.commit()
     request.session["flash"] = f"Rebuilt {n} trades from executions."

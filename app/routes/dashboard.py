@@ -33,6 +33,7 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
     last_sync = db.scalar(select(SyncRun).where(SyncRun.status.in_(("success", "partial")), SyncRun.sources.is_not(None))
                           .order_by(SyncRun.id.desc()))
     recent = sorted([t for t in trades if t.status == "CLOSED"], key=lambda t: t.closed_at, reverse=True)[:8]
+    anchor = _anchor(db, f, trades, st)
     daily = list(st.daily.values())
     charts = {
         "equity": {"labels": [e[0] for e in st.equity], "values": [e[1] for e in st.equity]},
@@ -48,4 +49,29 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
     return templates.TemplateResponse(request, "dashboard.html", base_context(
         request, db, nav="dashboard", f=f, st=st, charts=charts, months=calendar_months(st.daily, max_months=3),
         recent=recent, has_any=has_any, last_import=last_import,
-        last_sync=last_sync))
+        last_sync=last_sync, anchor=anchor))
+
+
+def _anchor(db: Session, f, trades, st):
+    """Unrealized P&L of open trades at SnapTrade's latest prices, and the account check
+    (value - net deposits vs journal realized + unrealized). Only for the unfiltered view."""
+    from app.models import Account
+    from app.sources.snaptrade import portfolio_summary
+    from app.stats import unrealized
+    from app.symbols import canonical_symbol, load_aliases
+    if f.start or f.end:
+        return None
+    accts = [a.id for a in db.scalars(select(Account).where(Account.is_demo.is_(False)))
+             if not f.account_id or a.id == f.account_id]
+    port = portfolio_summary(db, accts)
+    if port is None:
+        return None
+    aliases = load_aliases(db)
+    prices = {canonical_symbol(sym, aliases): p["price"] for sym, p in port["positions"].items()}
+    unreal, rows = unrealized(trades, prices)
+    journal_total = st.realized + unreal
+    return {"unrealized": unreal, "rows": rows, "value": port["value"], "cash": port["cash"],
+            "net_deposits": port["net_deposits"], "total_pnl": port["total_pnl"], "as_of": port["as_of"],
+            "journal_total": journal_total, "diff": journal_total - port["total_pnl"],
+            "missing_prices": [r["symbol"] for r in rows if r["price"] is None],
+            "securities_transfers": port["securities_transfers"]}

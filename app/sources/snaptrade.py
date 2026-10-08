@@ -130,6 +130,13 @@ class SnapTradeClient:
             if len(page) < PAGE or (total is not None and offset >= total):
                 return out
 
+    def balances(self, account_id: str) -> list[dict]:
+        return self.request("GET", f"/accounts/{account_id}/balances") or []
+
+    def positions(self, account_id: str) -> list[dict]:
+        data = self.request("GET", f"/accounts/{account_id}/positions/all") or {}
+        return data.get("results", []) if isinstance(data, dict) else data
+
     def login_url(self, *, reconnect: str | None = None, broker: str | None = "SCHWAB",
                   redirect: str | None = None) -> str:
         body: dict = {"connectionType": "read", "darkMode": True}
@@ -359,6 +366,82 @@ def refresh_status(db: Session, client: SnapTradeClient | None = None, *, commit
     return snap
 
 
+# --------------------------------------------------------------- portfolio anchor (value vs deposits)
+CASHFLOW_STATE = "snaptrade:cashflows:"     # per account: {activity id: {...}} external money in/out
+PORTFOLIO_STATE = "snaptrade:portfolio:"    # per account: latest balances + positions snapshot
+CASHFLOW_TYPES = {"TRANSFER", "CONTRIBUTION", "DEPOSIT", "WITHDRAWAL", "EXTERNAL_ASSET_TRANSFER_IN",
+                  "EXTERNAL_ASSET_TRANSFER_OUT", "JOURNAL"}
+
+
+def _record_cashflows(db: Session, account_id: int, acts: list[dict]) -> None:
+    """Remember deposits / withdrawals / transfers (ignored as fills) so net deposits can be shown.
+    A transfer that moves securities (units != 0) is valued at units x price and flagged."""
+    key = CASHFLOW_STATE + str(account_id)
+    cur = json.loads(get_state(db, key) or "{}")
+    for a in acts:
+        typ = (a.get("type") or "").upper()
+        if typ not in CASHFLOW_TYPES:
+            continue
+        units = float(a.get("units") or 0)
+        sym = (a.get("symbol") or {}).get("symbol") if isinstance(a.get("symbol"), dict) else None
+        amount = float(a.get("amount") or 0)
+        securities = abs(units) > 1e-9 and not amount
+        if securities:
+            amount = units * float(a.get("price") or 0)
+        cur[a.get("id") or f"{a.get('trade_date')}:{amount}"] = {
+            "type": typ, "date": (a.get("trade_date") or "")[:10], "amount": round(amount, 2),
+            "description": a.get("description"), "symbol": sym, "units": units, "securities": securities}
+    set_state(db, key, json.dumps(cur))
+
+
+def _snapshot_portfolio(db: Session, client: "SnapTradeClient", account_id: int, sa: dict, ctx=None) -> None:
+    try:
+        bals = client.balances(sa["id"])
+        poss = client.positions(sa["id"])
+    except Exception as exc:  # positions/balances are informational; never fail the sync
+        if ctx is not None:
+            ctx.info(f"Could not read balances/positions from SnapTrade: {str(exc)[:120]}")
+        return
+    cash = sum(float(b.get("cash") or 0) for b in bals if ((b.get("currency") or {}).get("code") or "USD") == "USD")
+    positions = []
+    for p in poss:
+        inst = p.get("instrument") or {}
+        positions.append({"symbol": inst.get("symbol") or inst.get("raw_symbol"), "kind": inst.get("kind"),
+                          "units": float(p.get("units") or 0), "price": float(p.get("price") or 0),
+                          "cost_basis": float(p.get("cost_basis") or 0) if p.get("cost_basis") else None})
+    mv = sum(x["units"] * x["price"] * (100 if x["kind"] == "option" else 1) for x in positions)
+    set_state(db, PORTFOLIO_STATE + str(account_id), json.dumps({
+        "as_of": utcnow().isoformat(), "cash": round(cash, 2), "market_value": round(mv, 2),
+        "value": round(cash + mv, 2), "positions": positions}))
+
+
+def portfolio_summary(db: Session, account_ids: list[int]) -> dict | None:
+    """Account value vs net deposits from the latest SnapTrade snapshot (None if unavailable)."""
+    out = {"value": 0.0, "cash": 0.0, "net_deposits": 0.0, "positions": {}, "as_of": None,
+           "securities_transfers": []}
+    found = False
+    for aid in account_ids:
+        snap = get_state(db, PORTFOLIO_STATE + str(aid))
+        flows = get_state(db, CASHFLOW_STATE + str(aid))
+        if not snap or flows is None:
+            continue
+        found = True
+        snap = json.loads(snap)
+        out["value"] += snap["value"]
+        out["cash"] += snap["cash"]
+        out["as_of"] = max(filter(None, [out["as_of"], snap["as_of"]]))
+        for p in snap["positions"]:
+            out["positions"][p["symbol"]] = p
+        for f in json.loads(flows).values():
+            out["net_deposits"] += f["amount"]
+            if f.get("securities"):
+                out["securities_transfers"].append(f)
+    if not found:
+        return None
+    out["total_pnl"] = round(out["value"] - out["net_deposits"], 2)
+    return out
+
+
 def mark_reconnected(db: Session, authorization_id: str | None) -> None:
     """Called when the user returns from the Connection Portal."""
     if authorization_id:
@@ -452,9 +535,12 @@ class SnapTradeSource(DataSource):
                 st = SourceState(source=self.key, account_id=acct.id)
                 db.add(st)
             start = None
-            if st.synced_through:
+            have_flows = get_state(db, CASHFLOW_STATE + str(acct.id)) is not None
+            if st.synced_through and have_flows:  # (first run after an upgrade re-reads all history once)
                 start = (st.synced_through - timedelta(days=s.sync_overlap_days)).date()
             acts = client.activities(sa["id"], start=start)
+            _record_cashflows(db, acct.id, acts)
+            _snapshot_portfolio(db, client, acct.id, sa, ctx)
             records, ignored = parse_activities(acts)
             stats = ingest_records(db, acct.id, self.key, records)
             res.fetched += len(acts)

@@ -36,7 +36,8 @@ class Stats:
     wins: int = 0
     losses: int = 0
     scratches: int = 0
-    net_pnl: float = 0.0
+    net_pnl: float = 0.0          # closed trades only
+    open_realized: float = 0.0    # realized P&L of partial exits inside still-open trades
     gross_pnl: float = 0.0
     fees: float = 0.0
     gross_wins: float = 0.0
@@ -61,6 +62,11 @@ class Stats:
     by_setup: list[Bucket] = field(default_factory=list)
     by_tag: list[Bucket] = field(default_factory=list)
     by_hold: list[Bucket] = field(default_factory=list)
+
+    @property
+    def realized(self) -> float:
+        """All realized P&L: closed trades plus partial exits of open trades."""
+        return self.net_pnl + self.open_realized
     hours_known: bool = True
 
     @property
@@ -105,6 +111,7 @@ def hold_bucket(td: timedelta) -> str:
 
 def compute(trades, tz: str, open_count: int = 0) -> Stats:
     st = Stats(open_trades=open_count)
+    st.open_realized = sum(t.net_pnl or 0.0 for t in trades if t.status == "OPEN")
     closed = sorted([t for t in trades if t.status == "CLOSED" and t.closed_at],
                     key=lambda t: (t.closed_at, t.id or 0))
     sym, wd, hr = defaultdict(lambda: None), {}, {}
@@ -225,3 +232,41 @@ def fmt_td(td: timedelta | None) -> str:
     if secs < 86400:
         return f"{secs // 3600}h {secs % 3600 // 60}m"
     return f"{secs // 86400}d {secs % 86400 // 3600}h"
+
+
+def open_lots(trade) -> list[tuple[float, float]]:
+    """Remaining (quantity, price) lots of an open trade, FIFO."""
+    lots: list[list[float]] = []
+    for f in sorted(trade.fills, key=lambda f: f.position):
+        if f.role == "OPEN":
+            lots.append([f.quantity, f.price])
+        else:
+            q = f.quantity
+            while q > 1e-9 and lots:
+                take = min(q, lots[0][0])
+                lots[0][0] -= take
+                q -= take
+                if lots[0][0] <= 1e-9:
+                    lots.pop(0)
+    return [(q, p) for q, p in lots if q > 1e-9]
+
+
+def unrealized(trades, prices: dict[str, float]) -> tuple[float, list[dict]]:
+    """Unrealized P&L of open trades at the given prices (symbol -> price). Returns (total, rows)."""
+    total, rows = 0.0, []
+    for t in trades:
+        if t.status != "OPEN":
+            continue
+        px = prices.get(t.symbol)
+        lots = open_lots(t)
+        qty = sum(q for q, _ in lots)
+        cost = sum(q * p for q, p in lots)
+        if px is None or not qty:
+            rows.append({"symbol": t.symbol, "qty": qty, "avg": cost / qty if qty else None, "price": None,
+                         "pnl": None})
+            continue
+        sign = 1 if t.direction == "LONG" else -1
+        pnl = sign * (px * qty - cost) * (t.multiplier or 1)
+        total += pnl
+        rows.append({"symbol": t.symbol, "qty": qty, "avg": cost / qty, "price": px, "pnl": pnl})
+    return total, rows

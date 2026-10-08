@@ -93,6 +93,22 @@
   </table>
 </div>
 
+<div class="card p-5 mb-4" id="aliases">
+  <div class="card-h mb-2">Ticker renames</div>
+  <p class="text-sm text-slate-400 mb-3">Some brokers keep the old ticker for past trades while thinkorswim shows the new one
+    (e.g. EchoStar SATS → ECHO on 2026-06-24). Fills under either ticker are treated as one symbol, shown under the new ticker.
+    Renames are also detected automatically when an import's fills match synced fills exactly except for the ticker.</p>
+  <table class="w-full text-sm tbl mb-3"><thead><tr><th>Old</th><th>New</th><th>Source</th><th>Note</th></tr></thead><tbody>
+  {% for r in alias_rows %}<tr class="{{ 'opacity-50 line-through' if r.disabled }}"><td class="text-white">{{ r.old }}</td><td class="text-white">{{ r.new }}</td><td class="text-slate-400">{{ r.origin }}</td><td class="text-slate-500">{{ r.note }}</td></tr>
+  {% else %}<tr><td colspan="4" class="text-slate-500">No renames.</td></tr>{% endfor %}
+  </tbody></table>
+  <form method="post" action="/settings/aliases" class="flex flex-col md:flex-row gap-2 md:items-end">
+    <label class="flex-1"><span class="card-h block mb-1">Your aliases (one per line, OLD=NEW; "OLD=" turns off a built-in/detected one)</span>
+      <textarea name="aliases" rows="3" class="inp w-full font-mono text-xs" placeholder="SATS=ECHO">{{ alias_text }}</textarea></label>
+    <button class="btn btn-s text-xs">Save &amp; rebuild</button>
+  </form>
+</div>
+
 <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
   <div class="card p-5">
     <div class="card-h mb-2">Sample data</div>

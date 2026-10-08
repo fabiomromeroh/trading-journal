@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from dataclasses import dataclass, replace
-from datetime import time
+from datetime import time, timedelta
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -26,6 +26,7 @@ class IngestStats:
     inserted: int = 0
     merged: int = 0
     duplicates: int = 0
+    detected_aliases: dict | None = None
 
     def as_dict(self):
         return {"inserted": self.inserted, "merged": self.merged, "duplicates": self.duplicates}
@@ -91,10 +92,57 @@ class _Target:
     outcome: dict | None = None   # shared by a group's records: {"changed": bool}
 
 
-def plan_ingest(db: Session, account_id: int, source: str, records: list[ExecRecord]):
+class Plan(list):
+    """List of (action, record, target) with the ticker renames detected while planning."""
+    detected_aliases: dict
+
+
+RENAME_PRICE_EPS = 0.00011
+
+
+def _detect_renames(inc: list[Item], exi: list[Item], matched: list, source: str) -> dict[str, tuple[str, str]]:
+    """Unmatched fills that agree exactly (day, side, qty, price to 4 dp) with an unmatched fill of a
+    different ticker point to a ticker rename. Requires >= 2 such fills for the pair and no
+    conflicting pairing. The thinkorswim ticker is taken as current (it rewrites history)."""
+    used_in = {id(i) for m in matched for i in m.incoming}
+    used_ex = {id(e) for m in matched for e in m.existing}
+    li = [i for i in inc if id(i) not in used_in and " " not in i.symbol and i.kind == "TRADE"]
+    le = [e for e in exi if id(e) not in used_ex and " " not in e.symbol and e.kind == "TRADE"]
+    pairs: dict[tuple[str, str], int] = defaultdict(int)
+    for i in li:
+        hits = {e.symbol for e in le if e.symbol != i.symbol and e.day == i.day and e.side == i.side
+                and abs(e.qty - i.qty) < 1e-9 and abs(e.price - i.price) <= RENAME_PRICE_EPS}
+        if len(hits) == 1:
+            pairs[(i.symbol, hits.pop())] += 1
+    out: dict[str, tuple[str, str]] = {}
+    by_in: dict[str, list] = defaultdict(list)
+    for (a, b), n in pairs.items():
+        by_in[a].append((b, n))
+    for a, lst in by_in.items():
+        if len(lst) != 1 or lst[0][1] < 2:
+            continue
+        b, n = lst[0]
+        if source == "tos_statement":
+            old, new = b, a
+        else:
+            old, new = a, b
+        exs = next((e for e in le if e.symbol == b), None)
+        src_other = getattr(exs.ref, "source", "") if exs else ""
+        if src_other == "tos_statement":
+            old, new = a, b
+        out[old] = (new, f"{n} fills identical except ticker ({a} in {source}, {b} in {src_other or 'existing'})")
+    return out
+
+
+def plan_ingest(db: Session, account_id: int, source: str, records: list[ExecRecord],
+                aliases: dict[str, str] | None = None) -> Plan:
     """Classify records as new / merge / duplicate without writing (used for import preview).
 
-    Returns (action, record, target) tuples; target is a _Target for merges."""
+    Returns (action, record, target) tuples; target is a _Target for merges. Symbols are compared
+    after applying ticker aliases; renames detected on the fly are applied and reported in
+    plan.detected_aliases (persisted by ingest_records)."""
+    from app.symbols import canonical_symbol, load_aliases, symbols_for
+    aliases = dict(load_aliases(db) if aliases is None else aliases)
     ext_ids = {r.external_id for r in records}
     existing_ext = set()
     if ext_ids:
@@ -111,17 +159,29 @@ def plan_ingest(db: Session, account_id: int, source: str, records: list[ExecRec
             seen_ext.add(r.external_id)
             fresh.append(r)
     pos = {id(r): i for i, r in enumerate(records)}
-    symbols = {r.symbol for r in fresh}
     cand_rows: list[Execution] = []
-    if symbols:
-        cand_rows = list(db.scalars(select(Execution).where(
-            Execution.account_id == account_id, Execution.source != source,
-            Execution.symbol.in_(symbols)).order_by(Execution.id)))
-    inc = [Item(ref=r, day=_rec_day(r), symbol=r.symbol, side=r.side, kind=r.kind, qty=r.quantity,
-                price=r.price, order=(r.executed_at, r.seq, pos[id(r)])) for r in fresh]
-    exi = [Item(ref=e, day=_row_day(e), symbol=e.symbol, side=e.side, kind=e.kind, qty=e.quantity,
-                price=e.price, order=(e.executed_at, e.seq or 0, e.id)) for e in cand_rows]
-    for m in match(inc, exi):
+    if fresh:
+        days = [_rec_day(r) for r in fresh]
+        lo, hi = min(days) - timedelta(days=2), max(days) + timedelta(days=2)
+        cand_rows = [e for e in db.scalars(select(Execution).where(
+            Execution.account_id == account_id, Execution.source != source).order_by(Execution.id))
+            if lo <= (_row_day(e) or lo) <= hi]
+
+    def items(al):
+        inc = [Item(ref=r, day=_rec_day(r), symbol=canonical_symbol(r.symbol, al), side=r.side, kind=r.kind,
+                    qty=r.quantity, price=r.price, order=(r.executed_at, r.seq, pos[id(r)])) for r in fresh]
+        exi = [Item(ref=e, day=_row_day(e), symbol=canonical_symbol(e.symbol, al), side=e.side, kind=e.kind,
+                    qty=e.quantity, price=e.price, order=(e.executed_at, e.seq or 0, e.id)) for e in cand_rows]
+        return inc, exi
+
+    inc, exi = items(aliases)
+    matches = match(inc, exi)
+    detected = _detect_renames(inc, exi, matches, source)
+    if detected:
+        aliases.update({old: new for old, (new, _e) in detected.items()})
+        inc, exi = items(aliases)
+        matches = match(inc, exi)
+    for m in matches:
         recs = [i.ref for i in m.incoming]
         rows = [e.ref for e in m.existing]
         agg = _aggregate(recs)
@@ -129,9 +189,8 @@ def plan_ingest(db: Session, account_id: int, source: str, records: list[ExecRec
         for k, r in enumerate(sorted(recs, key=lambda r: pos[id(r)])):
             actions[pos[id(r)]] = ("merge", r, _Target(rows=rows, agg=agg, lead=(k == 0), group_size=len(recs),
                                                        outcome=outcome))
-    plan = []
-    for idx, r in enumerate(records):
-        plan.append(actions.get(idx) or ("new", r, None))
+    plan = Plan(actions.get(idx) or ("new", r, None) for idx, r in enumerate(records))
+    plan.detected_aliases = detected
     return plan
 
 
@@ -171,7 +230,12 @@ def ingest_records(db: Session, account_id: int, source: str, records: list[Exec
     id(record) -> list of execution rows now representing that record."""
     stats = IngestStats()
     tr_ = trace if trace is not None else {}
-    for action, rec, target in plan_ingest(db, account_id, source, records):
+    plan = plan_ingest(db, account_id, source, records)
+    if plan.detected_aliases:
+        from app.symbols import save_auto
+        save_auto(db, plan.detected_aliases)
+    stats.detected_aliases = plan.detected_aliases
+    for action, rec, target in plan:
         if action == "duplicate":
             stats.duplicates += 1
             if source in REFRESHABLE_SOURCES:  # API data can be corrected after the fact; refresh it.
@@ -266,6 +330,23 @@ class MoveResult:
     source_account_removed: bool
 
 
+def rematch_imports(db: Session, account_ids: list[int] | None = None) -> IngestStats:
+    """Re-run cross-source matching for every committed import (in its own account), e.g. after a
+    ticker alias was added so fills recorded under the old and new ticker are merged."""
+    from app.models import ImportBatch
+    total = IngestStats()
+    q = select(ImportBatch).where(ImportBatch.status == "committed").order_by(ImportBatch.id)
+    for b in db.scalars(q):
+        if account_ids and b.account_id not in account_ids:
+            continue
+        if db.scalar(select(Execution.id).where(Execution.import_batch_id == b.id).limit(1)) is None:
+            continue
+        r = reassign_batch(db, b, b.account_id)
+        total.merged += r.stats.merged
+        total.inserted += r.stats.inserted
+    return total
+
+
 def reassign_batch(db: Session, batch, target_account_id: int) -> MoveResult:
     """Move a committed import's fills to another account, re-running cross-source matching there
     (so fills already present, e.g. from SnapTrade, are merged instead of duplicated). Journal fields
@@ -290,6 +371,25 @@ def reassign_batch(db: Session, batch, target_account_id: int) -> MoveResult:
     stats = ingest_records(db, target_account_id, batch.file_format, recs, batch_id=batch.id, trace=trace)
     batch.account_id = target_account_id
     batch.inserted, batch.merged, batch.duplicates = stats.inserted, stats.merged, stats.duplicates
+
+    def new_ids(tid):
+        ids = set()
+        for old_eid in jexec[tid]:
+            rec = rec_by_row.get(old_eid)
+            ids |= {x.id for x in trace.get(id(rec), [])} if rec is not None else {old_eid}
+        return ids
+
+    if src_id == target_account_id:  # re-match in place (e.g. after adding a ticker alias)
+        links = db.info.setdefault("trade_exec_links", defaultdict(set))
+        for tid in journal:
+            links[tid] |= new_ids(tid)
+        if tz or stats.merged:
+            note = "Re-matched" + (f"; exec times re-read as {tz}" if tz else "") + "."
+            batch.notes = ((batch.notes or "") + " " + note).strip()
+        rebuild_trades(db, [target_account_id])
+        db.flush()
+        return MoveResult(moved=len(rows), stats=stats, timezone=tz, journal_moved=0,
+                          source_account_removed=False)
     note = f"Moved from account #{src_id}" + (f"; exec times re-read as {tz}" if tz else "") + "."
     batch.notes = ((batch.notes or "") + " " + note).strip()
     rebuild_trades(db, [target_account_id])
@@ -298,10 +398,7 @@ def reassign_batch(db: Session, batch, target_account_id: int) -> MoveResult:
         tgt = list(db.scalars(select(Trade).where(Trade.account_id == target_account_id)))
         tgt_execs = {t.id: {f.execution_id for f in t.fills if f.execution_id} for t in tgt}
         for tid, old in journal.items():
-            ids = set()
-            for old_eid in jexec[tid]:
-                rec = rec_by_row.get(old_eid)
-                ids |= {x.id for x in trace.get(id(rec), [])} if rec is not None else set()
+            ids = new_ids(tid)
             before = (old.notes, old.setup, old.rating, len(old.tags))
             _carry_journal(old, ids, [(t, tgt_execs[t.id]) for t in tgt])
             moved_j += bool(ids) and any(before)
@@ -324,8 +421,10 @@ def _expiry_close_utc(d):
 
 def rebuild_trades(db: Session, account_ids: list[int] | None = None) -> int:
     """Rebuild all trades for the given accounts from executions, preserving journal fields."""
+    from app.symbols import canonical_symbol, canonical_ticker, load_aliases
     if account_ids is None:
         account_ids = list(db.scalars(select(Account.id)))
+    aliases = load_aliases(db)
     total = 0
     for acct_id in account_ids:
         acct = db.get(Account, acct_id)
@@ -333,12 +432,13 @@ def rebuild_trades(db: Session, account_ids: list[int] | None = None) -> int:
             continue
         execs = list(db.scalars(select(Execution).where(Execution.account_id == acct_id)))
         by_id = {e.id: e for e in execs}
+        canon = {e.id: canonical_symbol(e.symbol, aliases) for e in execs}
         bexecs = [BuilderExec(
-            id=e.id, account_id=e.account_id, symbol=e.symbol, side=e.side, quantity=e.quantity,
+            id=e.id, account_id=e.account_id, symbol=canon[e.id], side=e.side, quantity=e.quantity,
             price=e.price, executed_at=e.executed_at, fees=e.fees or 0.0, multiplier=e.multiplier or 1.0,
             position_effect=e.position_effect, kind=e.kind, time_known=e.time_known, seq=e.seq or 0,
         ) for e in execs]
-        expirations = {e.symbol: _expiry_close_utc(e.expiration) for e in execs
+        expirations = {canon[e.id]: _expiry_close_utc(e.expiration) for e in execs
                        if e.asset_type == "OPTION" and e.expiration}
         result = build_trades(bexecs, expirations=expirations, as_of=utcnow())
 
@@ -355,7 +455,8 @@ def rebuild_trades(db: Session, account_ids: list[int] | None = None) -> int:
                 db.add(tr)
             seen.add(bt.key)
             built.append(tr)
-            tr.symbol, tr.underlying, tr.asset_type = bt.symbol, first.underlying, first.asset_type
+            tr.symbol, tr.underlying, tr.asset_type = (bt.symbol, canonical_ticker(first.underlying, aliases),
+                                                       first.asset_type)
             tr.option_type, tr.strike, tr.expiration = first.option_type, first.strike, first.expiration
             tr.multiplier, tr.direction, tr.status = bt.multiplier, bt.direction, bt.status
             tr.opened_at, tr.closed_at, tr.time_known = bt.opened_at, bt.closed_at, bt.time_known
@@ -440,5 +541,6 @@ def set_state(db: Session, key: str, value: str | None) -> None:
     row = db.get(AppState, key)
     if row is None:
         db.add(AppState(key=key, value=value))
+        db.flush()  # so a later get_state/set_state in the same session sees it
     else:
         row.value = value
