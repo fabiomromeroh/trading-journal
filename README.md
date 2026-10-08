@@ -15,6 +15,13 @@ per-trade pages with a price chart, and journal notes, tags, setups and ratings.
     times but no fees.
   - Importing both is safe. A fill that appears in both files is merged into one: thinkorswim adds the
     time and Schwab.com adds the fees. Re-importing overlapping date ranges creates no duplicates.
+  - Fills are matched across sources (files, SnapTrade, Schwab API) on the ET trade date, symbol, side,
+    quantity and price (small tolerance); thinkorswim partial fills are summed and matched to the single
+    Schwab/SnapTrade row by quantity and VWAP. thinkorswim's Exec Time zone is detected from US market
+    hours (it uses your computer's zone, e.g. Dublin), `TOS_TIMEZONE` is only the fallback.
+  - Imports default to your existing account (matched by account number when the file has one). An
+    import that landed in the wrong account can be moved from Import history ("Move"), which re-matches
+    its fills there and carries journal notes over. Settings → backup.json downloads a full JSON backup.
 - **Trade builder**: FIFO matching per account and symbol, scaling in and out, partial closes, long and
   short, flips (one fill that closes a position and opens the opposite one is split, with fees split
   pro rata), options at a 100× multiplier. Expirations, assignments and exercises close positions. An

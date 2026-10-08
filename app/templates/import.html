@@ -3,6 +3,7 @@
 {% block content %}
 <h1 class="text-2xl font-semibold text-white mb-1">Import trades</h1>
 <p class="text-sm text-slate-500 mb-5">Re-importing overlapping files is safe: fills already imported are recognised and skipped, and a matching fill from another file type is merged (e.g. thinkorswim adds exact times, Schwab.com adds fees).</p>
+{% if flash %}<div class="card border-sky-500/40 bg-sky-500/10 text-sky-100 p-3 mb-4 text-sm">{{ flash }}</div>{% endif %}
 {% if error %}<div class="card border-rose-500/40 bg-rose-500/10 text-rose-200 p-3 mb-4 text-sm">{{ error }}</div>{% endif %}
 {% if request.query_params.get('done') %}<div class="card border-emerald-500/40 bg-emerald-500/10 text-emerald-200 p-3 mb-4 text-sm">Import complete. Trades rebuilt. <a href="/trades" class="underline">View trades →</a></div>{% endif %}
 
@@ -21,8 +22,8 @@
       <div>
         <label class="card-h block mb-1">Account</label>
         <select name="account" class="inp">
-          <option value="">Auto (from file / new account)</option>
-          {% for a in accounts if not a.is_demo %}<option value="{{ a.id }}">{{ a.name }}</option>{% endfor %}
+          <option value="">Auto (match account number{% if default_account %}, else {{ default_account.name }}{% else %} / new account{% endif %})</option>
+          {% for a in accounts if not a.is_demo %}<option value="{{ a.id }}" {{ 'selected' if default_account and a.id == default_account.id }}>{{ a.name }}</option>{% endfor %}
         </select>
       </div>
       <div>
@@ -65,7 +66,12 @@
       <td class="text-right">{{ b.rows_total }}</td><td class="text-right">{{ b.rows_trades }}</td><td class="text-right text-emerald-300">{{ b.inserted }}</td>
       <td class="text-right text-sky-300">{{ b.merged }}</td><td class="text-right text-slate-400">{{ b.duplicates }}</td><td class="text-right text-slate-500">{{ b.skipped }}</td>
       <td>{% if b.status == 'committed' %}<span class="pill bg-emerald-500/15 text-emerald-300">imported</span>{% else %}<span class="pill bg-slate-600/30 text-slate-400">{{ b.status }}</span>{% endif %}</td>
-      <td>{% if b.status == 'committed' %}<form method="post" action="/import/{{ b.id }}/undo" onsubmit="return confirm('Remove the fills added by this import?')"><button class="text-xs text-rose-300 hover:underline">Undo</button></form>{% endif %}</td>
+      <td class="whitespace-nowrap">{% if b.status == 'committed' %}
+        {% set others = accounts|rejectattr('is_demo')|rejectattr('id', 'equalto', b.account_id)|list %}
+        {% if others %}<form method="post" action="/import/{{ b.id }}/move" class="inline-flex gap-1 items-center mr-2" onsubmit="return confirm('Move these fills to the selected account and merge them with the fills already there?')">
+          <select name="account" class="inp !py-0.5 !text-xs w-auto">{% for a in others %}<option value="{{ a.id }}">{{ a.name }}</option>{% endfor %}</select>
+          <button class="text-xs text-sky-300 hover:underline">Move</button></form>{% endif %}
+        <form method="post" action="/import/{{ b.id }}/undo" class="inline" onsubmit="return confirm('Remove the fills added by this import?')"><button class="text-xs text-rose-300 hover:underline">Undo</button></form>{% endif %}</td>
     </tr>
     {% else %}<tr><td colspan="13" class="text-slate-500 text-center py-6">No imports yet.</td></tr>{% endfor %}
     </tbody>

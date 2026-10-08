@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.db import get_db
-from app.models import Account, Execution, ImportBatch, OAuthToken, SyncRun, Trade
+from app.models import Account, Execution, ImportBatch, OAuthToken, SyncRun, Trade, utcnow
 from app.services import get_state, rebuild_trades
 from app.sources import all_sources
 from app.sync import running_sync, start_background
@@ -58,6 +58,32 @@ def _settings_ctx(request, db, **kw):
 def settings_page(request: Request, db: Session = Depends(get_db)):
     msg = request.session.pop("flash", None)
     return templates.TemplateResponse(request, "settings.html", _settings_ctx(request, db, flash=msg))
+
+
+# ---------------------------------------------------------------- backup
+@router.get("/settings/backup.json")
+def backup(db: Session = Depends(get_db)):
+    """Full JSON export of every table (journal, fills, trades, imports, settings). Secrets such as
+    stored OAuth tokens are left out."""
+    import json
+    from fastapi.responses import Response
+    from app.db import Base
+    out: dict = {"exported_at": utcnow().isoformat(), "tables": {}}
+    for table in Base.metadata.sorted_tables:
+        if table.name == OAuthToken.__tablename__:
+            out["tables"][table.name] = {"omitted": "credentials", "rows": db.scalar(
+                select(func.count()).select_from(table))}
+            continue
+        rows = [dict(r._mapping) for r in db.execute(table.select())]
+        for r in rows:
+            for k in list(r):
+                if "token" in k.lower() or "secret" in k.lower():
+                    r[k] = None
+        out["tables"][table.name] = rows
+    body = json.dumps(out, default=str)
+    fname = f"trading-journal-backup-{utcnow():%Y%m%d-%H%M%S}.json"
+    return Response(body, media_type="application/json",
+                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
 
 # ---------------------------------------------------------------- sync

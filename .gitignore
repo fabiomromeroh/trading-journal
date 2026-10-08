@@ -6,3 +6,5 @@ __pycache__/
 .deploy-secrets
 *.db
 *.db-journal
+.db-external
+backups/

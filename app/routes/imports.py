@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from urllib.parse import quote
+
 from collections import Counter
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
@@ -11,7 +13,7 @@ from app.db import get_db
 from app.importers import LABELS, decode, detect_format, parse
 from app.importers.base import UnknownFormat
 from app.models import Account, Execution, ImportBatch, utcnow
-from app.services import ingest_records, plan_ingest, rebuild_trades
+from app.services import ingest_records, plan_ingest, reassign_batch, rebuild_trades
 from app.web import base_context, templates
 
 router = APIRouter()
@@ -26,7 +28,18 @@ def _history(db: Session):
 @router.get("/import")
 def import_page(request: Request, db: Session = Depends(get_db)):
     return templates.TemplateResponse(request, "import.html", base_context(
-        request, db, nav="import", history=_history(db), error=None, labels=LABELS))
+        request, db, nav="import", history=_history(db), error=None, labels=LABELS,
+        default_account=default_account(db), flash=request.query_params.get("msg")))
+
+
+def default_account(db: Session) -> Account | None:
+    """The account an import goes to when the user leaves 'Auto' and the file has no account number:
+    the only real account if there is just one; otherwise the one connected to a sync source."""
+    accts = list(db.scalars(select(Account).where(Account.is_demo.is_(False)).order_by(Account.id)))
+    if len(accts) == 1:
+        return accts[0]
+    synced = [a for a in accts if a.external_ref]
+    return synced[0] if len(synced) == 1 else None
 
 
 def _resolve_account(db: Session, account_choice: str, new_name: str, hint: str | None) -> Account:
@@ -38,9 +51,14 @@ def _resolve_account(db: Session, account_choice: str, new_name: str, hint: str 
     if hint:
         digits = "".join(ch for ch in hint if ch.isdigit())
         masked = f"...{digits[-3:]}" if digits else None
-    if masked and not new_name:
-        acct = db.scalar(select(Account).where(Account.account_number_masked == masked, Account.is_demo.is_(False)))
-        if acct:
+    if not new_name.strip():
+        if masked:
+            acct = db.scalar(select(Account).where(Account.account_number_masked == masked,
+                                                   Account.is_demo.is_(False)))
+            if acct:
+                return acct
+        acct = default_account(db)
+        if acct and (not masked or not acct.account_number_masked or acct.account_number_masked == masked):
             return acct
     acct = Account(name=(new_name.strip() or (f"Schwab {masked}" if masked else "Schwab")),
                    broker="schwab", account_number_masked=masked)
@@ -53,7 +71,8 @@ def _resolve_account(db: Session, account_choice: str, new_name: str, hint: str 
 async def upload(request: Request, file: UploadFile = File(...), account: str = Form(""),
                  new_account_name: str = Form(""), db: Session = Depends(get_db)):
     data = await file.read()
-    ctx = base_context(request, db, nav="import", history=_history(db), labels=LABELS)
+    ctx = base_context(request, db, nav="import", history=_history(db), labels=LABELS,
+                       default_account=default_account(db))
     if len(data) > MAX_BYTES:
         return templates.TemplateResponse(request, "import.html", {**ctx, "error": "File too large (15 MB max)."},
                                           status_code=400)
@@ -111,6 +130,27 @@ def discard(batch_id: int, db: Session = Depends(get_db)):
         db.delete(batch)
         db.commit()
     return RedirectResponse("/import", status_code=303)
+
+
+@router.post("/import/{batch_id}/move")
+def move(batch_id: int, account: str = Form(...), db: Session = Depends(get_db)):
+    """Move an import's fills to another account and re-match them there (fixes an import that
+    landed in the wrong account and duplicated synced fills)."""
+    batch = db.get(ImportBatch, batch_id)
+    if batch is None or batch.status != "committed" or not account.isdigit():
+        raise HTTPException(404)
+    target = db.get(Account, int(account))
+    if target is None or target.is_demo or target.id == batch.account_id:
+        raise HTTPException(400, "Pick a different, real account")
+    res = reassign_batch(db, batch, target.id)
+    db.commit()
+    msg = (f"Moved {res.moved} fills to {target.name}: {res.stats.merged} merged into existing fills, "
+           f"{res.stats.inserted} new, {res.stats.duplicates} already there.")
+    if res.timezone:
+        msg += f" Exec times re-read as {res.timezone} time."
+    if res.journal_moved:
+        msg += f" Journal notes carried over for {res.journal_moved} trade(s)."
+    return RedirectResponse(f"/import?msg={quote(msg)}", status_code=303)
 
 
 @router.post("/import/{batch_id}/undo")

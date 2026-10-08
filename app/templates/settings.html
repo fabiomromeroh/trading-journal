@@ -105,7 +105,10 @@
   <div class="card p-5">
     <div class="card-h mb-2">Maintenance</div>
     <p class="text-sm text-slate-400 mb-3">Rebuild all round-trip trades from stored fills (journal notes, tags and ratings are kept).</p>
-    <form method="post" action="/settings/rebuild"><button class="btn btn-s text-xs">Rebuild trades</button></form>
+    <div class="flex gap-2">
+      <form method="post" action="/settings/rebuild"><button class="btn btn-s text-xs">Rebuild trades</button></form>
+      <a href="/settings/backup.json" class="btn btn-s text-xs">Download backup (JSON)</a>
+    </div>
   </div>
   <div class="card p-5 text-sm text-slate-400">
     <div class="card-h mb-2">Environment</div>

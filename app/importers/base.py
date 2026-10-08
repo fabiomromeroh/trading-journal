@@ -20,6 +20,7 @@ class ParseResult:
     skipped: Counter = field(default_factory=Counter)  # action -> count of non-trade rows
     warnings: list[str] = field(default_factory=list)
     account_hint: str | None = None  # e.g. "...123" from a file header
+    timezone: str | None = None      # zone the file's local times were read in (thinkorswim)
 
     @property
     def date_range(self):

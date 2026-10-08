@@ -20,7 +20,10 @@ def db(tmp_path):
     from app import db as dbmod
     from app.db import Base
     from app import models  # noqa: F401
-    dbmod.configure(f"sqlite:///{tmp_path / 'test.db'}")
+    url = os.environ.get("TEST_DATABASE_URL")  # e.g. a throwaway local Postgres, to test FK cascades
+    dbmod.configure(url or f"sqlite:///{tmp_path / 'test.db'}")
+    if url:
+        Base.metadata.drop_all(dbmod.engine)
     Base.metadata.create_all(dbmod.engine)
     s = dbmod.SessionLocal()
     yield s
