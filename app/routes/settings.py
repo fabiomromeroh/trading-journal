@@ -58,8 +58,10 @@ def _settings_ctx(request, db, **kw):
         orphans = json.loads(get_state(db, f"orphans:{a.id}") or "[]")
         acct_rows.append({"a": a, "executions": n_exec, "trades": n_trades, "orphans": orphans})
     s = get_settings()
+    from app.routes.email_sync import settings_ctx as _tos_email_ctx
     return base_context(request, db, nav="settings", sources=sources, runs=runs, acct_rows=acct_rows,
-                        active_run=running_sync(db), s=s, snaptrade=_snaptrade_ctx(db), **_alias_ctx(db), **kw)
+                        active_run=running_sync(db), s=s, snaptrade=_snaptrade_ctx(db), **_alias_ctx(db),
+                        tos_email=_tos_email_ctx(request, db), **kw)
 
 
 @router.get("/settings")

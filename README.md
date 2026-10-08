@@ -147,6 +147,26 @@ What to expect:
   SnapTrade's portal (the portal link is valid for 5 minutes). Settings shows the estimated next
   re-login date.
 
+## Same-day fills with exact times: thinkorswim fill emails
+
+thinkorswim can email every fill (from `alerts@thinkorswim.com`). A free Google Apps Script in your own
+Gmail account forwards each one to `POST /api/ingest/tos-email` every minute, then labels it
+`Trading Journal/Fills`, marks it read and archives it. Settings › *thinkorswim email sync* has the
+ready-to-paste script (endpoint and token prefilled), the token regenerate button, setup steps and status.
+
+* Enable in thinkorswim (desktop): Setup › Application Settings › Notifications › "Send email to"
+  (confirm the code) › Notify about: "Working orders filling" › Send Email › Apply settings
+  ([manual](https://toslc.thinkorswim.com/center/howToTos/thinkManual/Getting-Started/thinkorswim-Setup)).
+* API: JSON `{message_id, received_at (ISO with offset or epoch ms), subject, body, from}` with
+  `Authorization: Bearer <token>`. The token is random per install, stored encrypted (plus a SHA-256 for
+  checks) and can be regenerated. Idempotent on `message_id`; the raw email is stored (`inbound_emails`).
+* Fill time = a zoned time in the body if present, else the email's received time (seconds after the fill).
+* Merging: email fills (`tos_email`), the SnapTrade same-day order (provisional) and the next-day SnapTrade
+  activity become one fill, keeping the email's time and taking fees from the activity (partial-fill
+  emails are aggregated). thinkorswim statement imports merge with them too.
+* **The email format is not yet verified against a real email**; unknown lines are stored but skipped.
+  Multi-leg spreads and futures are left to the broker data.
+
 ## Optional: Schwab Trader API source (US retail accounts only)
 Schwab One International accounts cannot get Trader API apps, so for those accounts CSV import is the
 way in. If you have a US account:

@@ -1,0 +1,75 @@
+{# thinkorswim fill emails -> journal (Gmail Apps Script). ctx: tos_email #}
+{% set t = tos_email %}
+<div class="card p-5 mb-4" id="tos-email">
+  <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
+    <div class="card-h">thinkorswim email sync</div>
+    <form method="post" action="/settings/tos-email/token"
+          {% if t.has_token %}onsubmit="return confirm('Create a new token? The current script stops working until you paste the updated one.')"{% endif %}>
+      <button class="btn {{ 'btn-s' if t.has_token else 'btn-p' }} text-xs">{{ 'Regenerate token' if t.has_token else 'Create ingest token' }}</button>
+    </form>
+  </div>
+  <p class="text-sm text-slate-400 mb-3">Same-day fills with exact times, no clicking: thinkorswim emails each fill, a small script in
+    your own Google account forwards it here every minute, then files the email away. The next-day SnapTrade activity merges
+    into the same fill (keeping the email's time, adding fees).</p>
+  <div class="text-sm mb-3" data-testid="tos-email-status">
+    {% if t.status.emails %}
+      <span class="h-2 w-2 inline-block rounded-full bg-emerald-400 mr-1"></span>
+      Last email received <span class="text-slate-200">{{ t.status.last|local_dt }}</span>
+      · {{ t.status.emails }} email{{ 's' if t.status.emails != 1 }} · {{ t.status.fills }} fill{{ 's' if t.status.fills != 1 }}
+      {% if t.status.last_fill %}· last fill email {{ t.status.last_fill|local_dt }}{% endif %}
+      {% if t.status.pending %}· {{ t.status.pending }} awaiting broker confirmation{% endif %}
+      {% if t.status.errors %}<span class="text-amber-300"> · {{ t.status.errors }} not imported</span>{% endif %}
+    {% else %}
+      <span class="h-2 w-2 inline-block rounded-full bg-slate-600 mr-1"></span>No fill emails received yet.
+    {% endif %}
+  </div>
+  <div class="text-xs text-slate-500 mb-3">Endpoint: <code>{{ t.url }}</code>
+    {% if t.has_token %}· token <code>{{ t.token_hint }}</code> (stored encrypted){% else %}· no token yet{% endif %}</div>
+
+  <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+    <div class="text-sm text-slate-300">
+      <div class="card-h mb-1">1 · Turn on fill emails in thinkorswim (desktop)</div>
+      <ol class="list-decimal ml-5 space-y-0.5 text-slate-400 mb-3">
+        <li><b>Setup</b> (gear, top right) › <b>Application Settings</b> › <b>Notifications</b>.</li>
+        <li>Under <b>Send email to</b>, enter your Gmail address › <b>Get confirmation code</b> › enter the code from the email.</li>
+        <li>Under <b>Notify about</b>, select <b>Working orders filling</b> and tick <b>Send Email</b>.</li>
+        <li><b>Apply settings</b>. Emails come from <code>{{ t.sender }}</code>.
+          (<a class="underline" target="_blank" rel="noopener" href="https://toslc.thinkorswim.com/center/howToTos/thinkManual/Getting-Started/thinkorswim-Setup">thinkorswim manual</a>)</li>
+      </ol>
+      <div class="card-h mb-1">2 · Install the Gmail script (free, runs in your Google account)</div>
+      <ol class="list-decimal ml-5 space-y-0.5 text-slate-400 mb-3">
+        <li>{% if t.has_token %}Copy the script (button on the right).{% else %}Click <b>Create ingest token</b> above, then copy the script.{% endif %}</li>
+        <li>Open <a class="underline" target="_blank" rel="noopener" href="https://script.google.com/home/projects/create">script.google.com</a> › <b>New project</b>, signed in with the Gmail account that receives the fill emails.</li>
+        <li>Replace everything in <code>Code.gs</code> with the script › <b>Save</b> (name it e.g. “Trading Journal fills”).</li>
+        <li>In the function menu pick <b>setup</b> › <b>Run</b> (once).</li>
+        <li><b>Authorize</b>: Review permissions › your account › <i>Advanced › Go to project (unsafe)</i> (it's your own script) › <b>Allow</b> (Gmail + external requests).</li>
+        <li>Done: it checks every minute. Each forwarded fill email is labelled <b>Trading Journal/Fills</b>, marked read and archived.
+          An email whose upload fails stays in the inbox, unlabelled, and is retried. Check runs under <b>Executions</b>.</li>
+      </ol>
+      <div class="card-h mb-1">3 · Optional: hide fill emails instantly (Gmail filter)</div>
+      <ol class="list-decimal ml-5 space-y-0.5 text-slate-400">
+        <li>In Gmail, click the search options icon (sliders) in the search bar.</li>
+        <li><b>From</b>: <code>{{ t.sender }}</code> › <b>Create filter</b>.</li>
+        <li>Tick <b>Skip the Inbox (Archive it)</b> and <b>Apply the label</b> › <b>Trading Journal/Fills</b>
+          (exists after <i>setup</i> runs; or <i>New label…</i> “Fills” nested under “Trading Journal”) › <b>Create filter</b>.</li>
+        <li>The script searches by sender, not the inbox, so filtered emails are still forwarded. (This also files thinkorswim's other alerts.)</li>
+      </ol>
+      <p class="text-xs text-slate-500 mt-3">If you regenerate the token, paste the updated script into the same project (no need to run setup again).
+        Anyone with the token can add fills to this journal: keep the script private.</p>
+    </div>
+    <div>
+      {% if t.script %}
+      <div class="flex items-center justify-between mb-1">
+        <span class="card-h">Apps Script (token included)</span>
+        <button type="button" class="btn btn-p text-xs" onclick="(function(b){navigator.clipboard.writeText(document.getElementById('tos-script').value).then(function(){b.textContent='Copied ✓';setTimeout(function(){b.textContent='Copy script'},2000)})})(this)">Copy script</button>
+      </div>
+      <details>
+        <summary class="text-xs text-slate-400 cursor-pointer mb-1">Show script</summary>
+        <textarea id="tos-script" readonly rows="22" class="inp w-full font-mono text-[11px]" spellcheck="false">{{ t.script }}</textarea>
+      </details>
+      {% else %}
+      <div class="text-sm text-slate-500 border border-dashed border-slate-700 rounded-lg p-4">Create an ingest token to get your ready-to-paste script.</div>
+      {% endif %}
+    </div>
+  </div>
+</div>

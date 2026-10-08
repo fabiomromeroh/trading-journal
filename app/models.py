@@ -212,3 +212,19 @@ class AppState(Base):
     __tablename__ = "app_state"
     key: Mapped[str] = mapped_column(String(80), primary_key=True)
     value: Mapped[str | None] = mapped_column(Text)
+
+
+class InboundEmail(Base):
+    """A fill notification email posted by the user's Gmail Apps Script (idempotent per message)."""
+    __tablename__ = "inbound_emails"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    message_id: Mapped[str] = mapped_column(String(300), unique=True)
+    account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id", ondelete="SET NULL"))
+    received_at: Mapped[datetime] = mapped_column(DateTime)  # naive UTC
+    sender: Mapped[str | None] = mapped_column(String(300))
+    subject: Mapped[str | None] = mapped_column(String(500))
+    body: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(20))  # fills | ignored | error
+    fills: Mapped[int] = mapped_column(Integer, default=0)
+    note: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

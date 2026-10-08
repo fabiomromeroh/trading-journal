@@ -104,6 +104,13 @@ def execute_run(run_id: int, sources=None, send_reminders: bool = False) -> Sync
                 db.rollback()
                 log.exception("source %s failed", src.key)
                 errors.append(f"{src.name}: {exc}")
+        if touched:  # fold thinkorswim fill-email rows into the broker records that just arrived
+            try:
+                from app.email_sync import reconcile_after_sync
+                with db.begin_nested():
+                    reconcile_after_sync(db, touched)
+            except Exception as exc:  # pragma: no cover
+                log.warning("email fill reconcile failed: %s", exc)
         run.trades_built = rebuild_trades(db)
         db.flush()
         summary = summarize(run.inserted, run.merged, before, _trade_snapshot(db)) if used else None

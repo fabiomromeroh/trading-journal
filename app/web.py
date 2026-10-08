@@ -117,11 +117,12 @@ def apply_trade_filters(stmt, f: Filters):
 
 
 def provisional_trade_ids(db: Session) -> set[int]:
-    """Trades containing provisional fills (same-day orders whose fees haven't posted yet)."""
+    """Trades containing provisional fills (same-day orders or thinkorswim fill emails whose
+    fees haven't posted yet)."""
     from app.models import Execution, TradeFill
     from app.services import PROVISIONAL_SOURCES
     return set(db.scalars(select(TradeFill.trade_id).join(Execution, Execution.id == TradeFill.execution_id)
-                          .where(Execution.source.in_(PROVISIONAL_SOURCES))))
+                          .where(Execution.source.in_(PROVISIONAL_SOURCES | {"tos_email"}))))
 
 
 def base_context(request: Request, db: Session, **kw) -> dict:
