@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="max-w-md">
+  <a href="/settings#security" class="text-slate-400 hover:text-white text-sm">← Settings</a>
+  <h1 class="text-xl font-semibold text-white mt-2 mb-4">Confirm password change</h1>
+  {% if flash %}<div class="card border-indigo-500/40 bg-indigo-500/10 text-indigo-100 p-3 mb-4 text-sm">{{ flash }}</div>{% endif %}
+  {% if error %}<div class="card border-rose-500/40 bg-rose-500/10 text-rose-100 p-3 mb-4 text-sm" role="alert">{{ error }}</div>{% endif %}
+  {% if has_pending %}
+  <div class="card p-5">
+    <p class="text-sm text-slate-400 mb-3">Enter the 6-digit code sent to <span class="text-slate-200">{{ email_masked }}</span>. It expires 10 minutes after it was sent.</p>
+    <form method="post" action="/settings/security/verify" class="space-y-3">
+      <input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="8" pattern="[0-9 ]*" required autofocus placeholder="123456" class="inp w-full tracking-[.4em] text-lg">
+      <button class="btn btn-p">Change password</button>
+    </form>
+    <div class="flex gap-3 mt-4 text-sm">
+      <form method="post" action="/settings/security/resend"><button class="text-slate-400 hover:text-white">Send a new code</button></form>
+      <form method="post" action="/settings/security/cancel"><button class="text-slate-400 hover:text-white">Cancel</button></form>
+    </div>
+  </div>
+  {% else %}
+  <div class="card p-5 text-sm text-slate-400">No pending password change. <a class="text-indigo-300" href="/settings#security">Start one in Settings</a>.</div>
+  {% endif %}
+</div>
+{% endblock %}

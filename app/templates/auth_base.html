@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Log in{% endblock %} · Trading Journal</title><script src="https://cdn.tailwindcss.com"></script></head>
+<body class="bg-[#0b0f17] text-slate-200 min-h-screen grid place-items-center font-sans p-4">
+  <div class="w-full max-w-sm bg-[#111827] border border-slate-700/60 rounded-2xl p-6 sm:p-8 shadow-2xl">
+    <div class="flex items-center gap-2 mb-6">
+      <div class="h-9 w-9 rounded-lg bg-gradient-to-br from-indigo-500 to-cyan-400 grid place-items-center font-bold text-slate-900">TJ</div>
+      <div><div class="font-semibold text-white">Trading Journal</div><div class="text-xs text-slate-500">{% block subtitle %}Private — sign in to continue{% endblock %}</div></div>
+    </div>
+    {% if error %}<div class="mb-4 text-sm rounded-lg bg-rose-500/15 text-rose-200 px-3 py-2" role="alert">{{ error }}</div>{% endif %}
+    {% if notice %}<div class="mb-4 text-sm rounded-lg bg-emerald-500/15 text-emerald-200 px-3 py-2" role="status">{{ notice }}</div>{% endif %}
+    {% block body %}{% endblock %}
+  </div>
+</body></html>

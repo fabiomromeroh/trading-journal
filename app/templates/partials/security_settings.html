@@ -1,0 +1,37 @@
+{# Settings > Security. Context: email, email_masked, mail, min_len, default_email #}
+<div id="security" class="card p-5 mb-4 scroll-mt-4">
+  <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+    <div class="card-h">Security</div>
+    {% if mail.configured %}<span class="pill bg-emerald-500/15 text-emerald-300" title="{{ mail.note }}">email: {{ mail.provider }}</span>
+    {% else %}<span class="pill bg-amber-500/20 text-amber-300">email not configured</span>{% endif %}
+  </div>
+  {% if not mail.configured %}
+  <div class="text-sm rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-100 px-3 py-2 mb-4">
+    {{ mail.note }} Password changes need an emailed code, so they're unavailable until the server can send email.
+    Free option: create a <a class="underline" href="https://resend.com/signup" target="_blank" rel="noopener">Resend</a> account with {{ default_email }},
+    create an API key, and set it as <code>RESEND_API_KEY</code> on the server.
+  </div>
+  {% elif mail.provider == 'resend' and 'resend.dev' in (mail.sender or '') %}
+  <p class="text-xs text-slate-500 mb-3">Sending from Resend's test address: codes only reach the email your Resend account was created with.</p>
+  {% endif %}
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <form method="post" action="/settings/security/password" class="space-y-2 max-w-md" autocomplete="off">
+      <div class="text-sm text-white font-medium">Change password</div>
+      <p class="text-xs text-slate-500">We email a 6-digit code to <span class="text-slate-300">{{ email_masked }}</span> to confirm. Other sessions are signed out.</p>
+      <input type="password" name="current_password" required autocomplete="current-password" placeholder="Current password" class="inp w-full" {{ 'disabled' if not mail.configured }}>
+      <input type="password" name="new_password" required minlength="{{ min_len }}" autocomplete="new-password" placeholder="New password (min {{ min_len }} characters)" class="inp w-full" {{ 'disabled' if not mail.configured }}>
+      <input type="password" name="confirm_password" required minlength="{{ min_len }}" autocomplete="new-password" placeholder="Confirm new password" class="inp w-full" {{ 'disabled' if not mail.configured }}>
+      <button class="btn btn-p text-xs" {{ 'disabled' if not mail.configured }}>Email me a code</button>
+    </form>
+    <div class="space-y-4 max-w-md">
+      <form method="post" action="/settings/security/email" class="space-y-2">
+        <div class="text-sm text-white font-medium">Security email</div>
+        <p class="text-xs text-slate-500">Codes for password changes and “Forgot password” go here.</p>
+        <input type="email" name="email" value="{{ email }}" required class="inp w-full">
+        <input type="password" name="current_password" required autocomplete="current-password" placeholder="Current password (to confirm)" class="inp w-full">
+        <button class="btn btn-s text-xs">Save email</button>
+      </form>
+      {% if mail.configured %}<form method="post" action="/settings/security/test-email"><button class="btn btn-s text-xs">Send test email</button></form>{% endif %}
+    </div>
+  </div>
+</div>

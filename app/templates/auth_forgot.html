@@ -1,0 +1,16 @@
+{% extends "auth_base.html" %}
+{% block title %}Forgot password{% endblock %}
+{% block subtitle %}Reset your password with an emailed code{% endblock %}
+{% block body %}
+  {% if mail.configured %}
+  <p class="text-sm text-slate-400 mb-4">We'll email a 6-digit code to <span class="text-slate-200">{{ email_masked }}</span>. It expires in 10 minutes.</p>
+  <form method="post" action="/login/forgot">
+    <button class="w-full rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white py-2 font-medium">Email me a code</button>
+  </form>
+  {% if has_pending %}<div class="mt-3 text-center"><a href="/login/reset" class="text-sm text-indigo-300 hover:text-white">I already have a code →</a></div>{% endif %}
+  {% else %}
+  <div class="text-sm rounded-lg bg-amber-500/15 text-amber-200 px-3 py-2">Email isn't configured on the server yet, so a reset code can't be sent.
+    To regain access, change the <code>APP_PASSWORD</code> environment variable on the server: the journal then resets the login password to it.</div>
+  {% endif %}
+  <div class="mt-4 text-center"><a href="/login" class="text-sm text-slate-400 hover:text-white">← Back to log in</a></div>
+{% endblock %}

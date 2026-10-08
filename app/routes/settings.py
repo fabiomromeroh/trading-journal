@@ -59,9 +59,10 @@ def _settings_ctx(request, db, **kw):
         acct_rows.append({"a": a, "executions": n_exec, "trades": n_trades, "orphans": orphans})
     s = get_settings()
     from app.routes.email_sync import settings_ctx as _tos_email_ctx
+    from app.routes.security import security_ctx as _security_ctx
     return base_context(request, db, nav="settings", sources=sources, runs=runs, acct_rows=acct_rows,
                         active_run=running_sync(db), s=s, snaptrade=_snaptrade_ctx(db), **_alias_ctx(db),
-                        tos_email=_tos_email_ctx(request, db), **kw)
+                        tos_email=_tos_email_ctx(request, db), **_security_ctx(db), **kw)
 
 
 @router.get("/settings")
@@ -85,6 +86,8 @@ def backup(db: Session = Depends(get_db)):
                 select(func.count()).select_from(table))}
             continue
         rows = [dict(r._mapping) for r in db.execute(table.select())]
+        if table.name == "app_state":  # password hashes / pending codes stay out of backups
+            rows = [r for r in rows if not str(r.get("key", "")).startswith("auth:")]
         for r in rows:
             for k in list(r):
                 if "token" in k.lower() or "secret" in k.lower():

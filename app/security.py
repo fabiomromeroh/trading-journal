@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import hmac
 import time
 from collections import defaultdict
 
@@ -29,13 +28,6 @@ def decrypt(value: str) -> str:
         return _fernet().decrypt(value.encode()).decode()
     except InvalidToken as exc:
         raise RuntimeError("Could not decrypt stored token (TOKEN_ENCRYPTION_KEY changed?)") from exc
-
-
-def check_password(candidate: str) -> bool:
-    expected = get_settings().app_password
-    if not expected:
-        return False
-    return hmac.compare_digest(candidate.encode(), expected.encode())
 
 
 class LoginThrottle:

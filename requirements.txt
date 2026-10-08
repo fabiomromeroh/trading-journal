@@ -7,6 +7,7 @@ python-multipart==0.0.20
 itsdangerous==2.2.0
 httpx==0.28.1
 cryptography==44.0.0
+argon2-cffi==23.1.0
 psycopg[binary]==3.2.3
 python-dotenv==1.0.1
 tzdata==2024.2

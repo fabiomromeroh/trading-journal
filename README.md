@@ -50,8 +50,28 @@ per-trade pages with a price chart, and journal notes, tags, setups and ratings.
   vars are set.
 - **Sample-data mode**: always labelled "Sample data", kept in its own account, and removable with one
   click in Settings.
-- **Single-user login**: password from `APP_PASSWORD`, signed session cookie, simple brute-force
+- **Single-user login**: argon2-hashed password (seeded from `APP_PASSWORD`, changeable with an emailed code), signed session cookie, simple brute-force
   throttle.
+
+## Password changes and email codes
+
+The login password is stored as an argon2id hash in the database. On first start it is seeded from
+`APP_PASSWORD`, so nothing changes until you change it in **Settings → Security**: enter the current
+and new password (10+ characters), then the 6-digit code emailed to the security email
+(default `fabioromero14@gmail.com`, editable there). Codes expire after 10 minutes, work once, allow
+5 wrong attempts, and can be re-sent at most every 60 s / 5 per hour. A password change signs out every
+other session. **Forgot password?** on the login page does the same with an emailed code.
+Break-glass: changing `APP_PASSWORD` on the server re-seeds the password (and signs everyone out).
+
+Email delivery (free, non-expiring), one of:
+- `RESEND_API_KEY`: [Resend](https://resend.com/signup) free plan (3,000/month, 100/day). Sign up
+  with the security email address; without your own domain the sender is `onboarding@resend.dev`,
+  which Resend only delivers to the account's own address. Optional `EMAIL_FROM` once a domain is verified.
+- `BREVO_API_KEY` + `EMAIL_FROM` (a verified Brevo sender): [Brevo](https://www.brevo.com) free plan (300/day).
+- `SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASSWORD`/`SMTP_FROM` (e.g. Gmail with an App Password).
+  Not usable on Render's free plan, which blocks outbound SMTP ports.
+
+Without any of these, Settings shows "email not configured" and password changes are disabled.
 
 ## Run locally
 ```bash

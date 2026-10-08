@@ -72,6 +72,12 @@ class Settings:
     smtp_from: str = field(default_factory=lambda: os.getenv("SMTP_FROM", ""))
     import_reminder_days: int = field(default_factory=lambda: _int("IMPORT_REMINDER_DAYS", 3))
 
+    # Transactional email for password codes (pick one; HTTPS APIs work on Render's free plan,
+    # where outbound SMTP ports are blocked). RESEND_API_KEY wins, then BREVO_API_KEY, then SMTP_*.
+    resend_api_key: str = field(default_factory=lambda: os.getenv("RESEND_API_KEY", ""))
+    brevo_api_key: str = field(default_factory=lambda: os.getenv("BREVO_API_KEY", ""))
+    email_from: str = field(default_factory=lambda: os.getenv("EMAIL_FROM", ""))
+
     def __post_init__(self) -> None:
         if not self.secret_key:
             # Dev fallback: sessions are invalidated on restart. Always set SECRET_KEY in production.
