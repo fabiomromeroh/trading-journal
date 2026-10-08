@@ -185,7 +185,13 @@ def aggregate_4h(candles: list[dict]) -> list[dict]:
         lt = datetime.fromtimestamp(c["time"], timezone.utc).astimezone(ET)
         mins = (lt.hour * 60 + lt.minute) - (9 * 60 + 30)
         groups.setdefault((lt.date(), mins // 240), []).append(c)
-    return [_merge(g) for _, g in sorted(groups.items(), key=lambda kv: kv[1][0]["time"])]
+    out = []
+    for (d, slot), g in sorted(groups.items(), key=lambda kv: kv[1][0]["time"]):
+        bar = _merge(g)
+        if slot >= 0:  # stamp with the bucket start (09:30 / 13:30 ET) even if the first hour is missing
+            bar["time"] = _sec(local_to_utc_naive(d, time(9, 30), ET) + timedelta(minutes=240 * slot))
+        out.append(bar)
+    return out
 
 
 def aggregate_weekly(candles: list[dict]) -> list[dict]:
