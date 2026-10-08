@@ -23,6 +23,20 @@
       <span class="h-2 w-2 inline-block rounded-full bg-slate-600 mr-1"></span>No fill emails received yet.
     {% endif %}
   </div>
+  {% if t.status.recent %}
+  <details class="mb-3 text-xs">
+    <summary class="text-slate-400 cursor-pointer">Recent emails</summary>
+    <table class="w-full tbl mt-2"><thead><tr><th>Received</th><th>Status</th><th class="text-right">Fills</th><th>Subject</th><th></th></tr></thead><tbody>
+    {% for e in t.status.recent %}<tr>
+      <td class="whitespace-nowrap">{{ e.received_at|local_dt('%Y-%m-%d %H:%M:%S') }}</td>
+      <td class="{{ 'text-amber-300' if e.status == 'error' else 'text-slate-400' }}">{{ e.status }}</td>
+      <td class="text-right">{{ e.fills }}</td>
+      <td class="text-slate-400 truncate max-w-[340px]" title="{{ (e.body or '')[:400] }}">{{ e.subject or '—' }}</td>
+      <td>{% if e.status == 'fills' %}<form method="post" action="/settings/tos-email/{{ e.id }}/discard" onsubmit="return confirm('Remove the fills this email added (if not yet confirmed by the broker)?')"><button class="text-rose-300">Discard</button></form>{% endif %}</td>
+    </tr>{% endfor %}
+    </tbody></table>
+  </details>
+  {% endif %}
   <div class="text-xs text-slate-500 mb-3">Endpoint: <code>{{ t.url }}</code>
     {% if t.has_token %}· token <code>{{ t.token_hint }}</code> (stored encrypted){% else %}· no token yet{% endif %}</div>
 

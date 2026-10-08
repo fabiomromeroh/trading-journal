@@ -114,6 +114,15 @@ def test_api_auth_idempotency(db, web):  # noqa: F811
     db.expire_all()
     assert anon.post("/api/ingest/tos-email", json=email("<n>", "x"), headers=h).status_code == 401
     assert len(list(db.scalars(select(Trade)))) == 1
+    # discarding the email removes its still-unconfirmed fill; re-posting it stays a no-op
+    html = web.get("/settings").text
+    assert "Recent emails" in html and f"/settings/tos-email/{stored.id}/discard" in html
+    assert web.post(f"/settings/tos-email/{stored.id}/discard", follow_redirects=False).status_code == 303
+    db.expire_all()
+    assert execs(db) == [] and list(db.scalars(select(Trade))) == []
+    assert db.get(InboundEmail, stored.id).status == "discarded"
+    assert email_sync.ingest_email(db, body)["duplicate"] and execs(db) == []
+    assert email_sync.status(db)["emails"] == 1                                       # the ignored one
 
 
 def test_settings_section_renders(db, web):  # noqa: F811

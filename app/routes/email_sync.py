@@ -88,6 +88,21 @@ def regenerate(request: Request, db: Session = Depends(get_db)):
     return RedirectResponse("/settings#tos-email", status_code=303)
 
 
+@router.post("/settings/tos-email/{email_id}/discard")
+def discard(email_id: int, request: Request, db: Session = Depends(get_db)):
+    from app import email_sync
+    from app.sync import _lock
+    if not _lock.acquire(timeout=LOCK_TIMEOUT):
+        request.session["flash"] = "A sync is running; try again in a moment."
+        return RedirectResponse("/settings#tos-email", status_code=303)
+    try:
+        n = email_sync.discard_email(db, email_id)
+    finally:
+        _lock.release()
+    request.session["flash"] = f"Email discarded; removed {n} fill{'s' if n != 1 else ''} it had added."
+    return RedirectResponse("/settings#tos-email", status_code=303)
+
+
 def settings_ctx(request: Request, db: Session) -> dict:
     from app import email_sync
     token = email_sync.get_token(db)

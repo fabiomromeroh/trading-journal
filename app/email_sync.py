@@ -275,14 +275,36 @@ def reconcile_after_sync(db: Session, account_ids) -> None:
 
 
 # ------------------------------------------------------------------------------------ settings
+def discard_email(db: Session, email_id: int) -> int:
+    """Remove the fills an email created that are still email-only (e.g. a mis-parsed or test
+    email) and mark it discarded, so re-posting it stays a no-op. Returns fills removed."""
+    row = db.get(InboundEmail, email_id)
+    if row is None:
+        return 0
+    prefix = f"{row.message_id}#"
+    rows = [e for e in db.scalars(select(Execution).where(Execution.source == SOURCE))
+            if (e.external_id or "").startswith(prefix)]
+    accts = {e.account_id for e in rows} | ({row.account_id} if row.account_id else set())
+    for e in rows:
+        db.delete(e)
+    row.status, row.fills = "discarded", 0
+    db.flush()
+    if accts:
+        rebuild_trades(db, sorted(accts))
+    db.commit()
+    return len(rows)
+
+
 def status(db: Session) -> dict:
-    q = select(func.count(InboundEmail.id), func.max(InboundEmail.received_at), func.sum(InboundEmail.fills))
-    n, last, fills = db.execute(q).first()
+    live_rows = InboundEmail.status != "discarded"
+    n, last, fills = db.execute(select(func.count(InboundEmail.id), func.max(InboundEmail.received_at),
+                                       func.sum(InboundEmail.fills)).where(live_rows)).first()
     last_fill = db.scalar(select(func.max(InboundEmail.received_at)).where(InboundEmail.status == "fills"))
     errors = db.scalar(select(func.count(InboundEmail.id)).where(InboundEmail.status == "error")) or 0
-    live = db.scalar(select(func.count(Execution.id)).where(Execution.source == SOURCE)) or 0
+    pending = db.scalar(select(func.count(Execution.id)).where(Execution.source == SOURCE)) or 0
+    recent = list(db.scalars(select(InboundEmail).order_by(InboundEmail.received_at.desc()).limit(8)))
     return {"emails": n or 0, "last": last, "last_fill": last_fill, "fills": int(fills or 0), "errors": errors,
-            "pending": live}
+            "pending": pending, "recent": recent}
 
 
 APPS_SCRIPT = r"""/**
