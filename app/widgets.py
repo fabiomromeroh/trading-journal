@@ -60,7 +60,7 @@ DASHBOARD = [
     ("avg_day", "Avg daily P&L", "kpi", "Days", False),
     ("avg_r", "Avg R-multiple", "kpi", "R & excursions", False),
     ("total_r", "Total R", "kpi", "R & excursions", False),
-    ("mfe_eff", "MFE efficiency", "kpi", "R & excursions", False),
+    ("mfe_eff", "MFE capture (efficiency)", "kpi", "R & excursions", False),
     ("avg_mfe_mae", "Avg MFE / MAE", "kpi", "R & excursions", False),
     ("left_on_table", "Left on the table (MFE − gross)", "kpi", "R & excursions", False),
     ("chart_cum_gross", "Cumulative net vs gross", "half", "Charts", False),

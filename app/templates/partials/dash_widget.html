@@ -48,7 +48,7 @@
 {% elif wid == 'avg_day' %}{{ kpi('Avg daily P&L', m.avg_day|money(true), m.avg_day|pnl_class, 'Per trading day') }}
 {% elif wid == 'avg_r' %}{{ kpi('Avg R-multiple', (m.avg_r|num(2) ~ 'R') if m.avg_r is not none else '—', m.avg_r|pnl_class, (m.r_count ~ ' trades with risk') if m.r_count else 'Set risk: Reports › Win/loss') }}
 {% elif wid == 'total_r' %}{{ kpi('Total R', (m.total_r|num(2) ~ 'R') if m.total_r is not none else '—', m.total_r|pnl_class, m.r_count ~ ' trades') }}
-{% elif wid == 'mfe_eff' %}{{ kpi('MFE efficiency', pct(m.mfe_eff, 0), '', (m.mfe_count ~ ' trades measured') if m.mfe_count else 'No MFE yet') }}
+{% elif wid == 'mfe_eff' %}{{ kpi('MFE capture', pct(m.mfe_capture, 0), m.mfe_capture|pnl_class, ('Σ net ÷ Σ MFE · median per trade ' ~ pct(m.mfe_eff_median, 0) ~ ' · ' ~ m.mfe_count ~ ' trades') if m.mfe_count else 'No MFE yet') }}
 {% elif wid == 'avg_mfe_mae' %}{{ kpi('Avg MFE / MAE', m.avg_mfe|money ~ ' / ' ~ m.avg_mae|money, '', m.mfe_count ~ ' trades measured') }}
 {% elif wid == 'left_on_table' %}{{ kpi('Left on the table', m.left_on_table|money, '', 'Σ MFE − gross P&L') }}
 {% elif wid == 'chart_equity' %}{{ chart('Equity curve (cumulative net P&L)', 'ch-equity') }}

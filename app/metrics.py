@@ -227,6 +227,11 @@ def summarize(trades, tz: str = "America/New_York", default_risk: float | None =
         "max_mfe": max((t.mfe for t in mfe_t), default=None),
         "max_mae": min((t.mae for t in mfe_t if t.mae is not None), default=None),
         "mfe_eff": _avg(mfe_eff), "mae_eff": _avg(mae_eff),
+        "mfe_eff_median": median(mfe_eff) if mfe_eff else None, "mae_eff_median": median(mae_eff) if mae_eff else None,
+        # robust aggregate: share of the total favourable excursion that was kept (tiny MFEs can't blow it up)
+        "mfe_capture": (sum(t.net_pnl for t in closed if t.mfe and t.mfe > 0)
+                        / sum(t.mfe for t in closed if t.mfe and t.mfe > 0) * 100)
+        if any(t.mfe and t.mfe > 0 for t in closed) else None,
         "left_on_table": sum(t.mfe - t.gross_pnl for t in mfe_t) if mfe_t else None,
         "max_dd": dd["max_dd"], "current_dd": dd["current_dd"], "max_dd_days": dd["max_dd_days"],
         "max_dd_trades": dd["max_dd_trades"], "recovery_factor": (sum(pnl) / abs(dd["max_dd"])) if dd["max_dd"] else None,

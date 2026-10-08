@@ -91,6 +91,8 @@ def test_mfe_mae_efficiency():
     assert M.mfe_efficiency(T1) == pytest.approx(100 / 150 * 100)
     assert s["mfe_eff"] == pytest.approx((100 / 150 * 100 + -50 / 10 * 100) / 2)   # per-trade average
     assert s["mae_eff"] == pytest.approx((500 + -62.5) / 2)
+    assert s["mfe_eff_median"] == pytest.approx((100 / 150 * 100 + -50 / 10 * 100) / 2)
+    assert s["mfe_capture"] == pytest.approx((100 - 50) / (150 + 10) * 100)   # Σ net ÷ Σ MFE
     assert s["left_on_table"] == (150 - 101) + (10 + 49)
 
 

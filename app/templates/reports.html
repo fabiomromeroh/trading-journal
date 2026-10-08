@@ -67,7 +67,7 @@
   {{ stat('Trading days', s.days, '', s.win_days ~ ' green / ' ~ s.loss_days ~ ' red (' ~ pct(s.day_win_pct, 0) ~ ')') }}
   {{ stat('Avg daily P&L', s.avg_day|money(true), s.avg_day|pnl_class, 'Best ' ~ s.best_day|money ~ ' · worst ' ~ s.worst_day|money) }}
   {{ stat('Avg R-multiple', (s.avg_r|num(2) ~ 'R') if s.avg_r is not none else '—', s.avg_r|pnl_class, (s.r_count ~ ' trades with risk') if s.r_count else 'Set a stop/risk (Win/loss tab)') }}
-  {{ stat('MFE efficiency', pct(s.mfe_eff, 0), '', (s.mfe_count ~ ' trades with MFE/MAE') if s.mfe_count else 'No MFE/MAE yet') }}
+  {{ stat('MFE capture', pct(s.mfe_capture, 0), s.mfe_capture|pnl_class, ('Σ net ÷ Σ MFE · ' ~ s.mfe_count ~ ' trades with MFE') if s.mfe_count else 'No MFE/MAE yet') }}
   {{ stat('Commissions & fees', s.fees|money, '', 'Avg ' ~ s.avg_fees|money ~ ' per trade') }}
 </div>
 <div class="grid grid-cols-1 xl:grid-cols-2 gap-4 mb-4">
@@ -181,8 +181,9 @@
   {{ stat('Coverage', s.mfe_count ~ ' / ' ~ s.closed, '', 'closed trades with MFE/MAE') }}
   {{ stat('Avg MFE', s.avg_mfe|money, 'text-emerald-400', 'Max ' ~ s.max_mfe|money) }}
   {{ stat('Avg MAE', s.avg_mae|money, 'text-rose-400', 'Max ' ~ s.max_mae|money) }}
-  {{ stat('MFE efficiency', pct(s.mfe_eff, 0), '', 'Avg of net P&L ÷ MFE per trade') }}
-  {{ stat('MAE efficiency', pct(s.mae_eff, 0), '', 'Avg of net P&L ÷ |MAE|') }}
+  {{ stat('MFE capture', pct(s.mfe_capture, 0), s.mfe_capture|pnl_class, 'Σ net P&L ÷ Σ MFE (what you kept of the best runs)') }}
+  {{ stat('MFE efficiency', pct(s.mfe_eff_median, 0), '', 'Median of net ÷ MFE per trade · mean ' ~ pct(s.mfe_eff, 0) ~ ' (TraderSync-style; tiny MFEs skew it)') }}
+  {{ stat('MAE efficiency', pct(s.mae_eff_median, 0), '', 'Median of net ÷ |MAE| per trade · mean ' ~ pct(s.mae_eff, 0)) }}
   {{ stat('Left on the table', s.left_on_table|money, '', 'Σ (MFE − gross P&L)') }}
 </div>
 <p class="text-xs text-slate-500 mb-3">MFE/MAE are measured from price bars between entry and exit when a stock trade's chart is opened (options aren't covered).
