@@ -298,3 +298,13 @@ def rebuild(request: Request, db: Session = Depends(get_db)):
     db.commit()
     request.session["flash"] = f"Rebuilt {n} trades from executions."
     return RedirectResponse("/settings", status_code=303)
+
+
+@router.post("/settings/recompute-excursions")
+def recompute_excursions(request: Request, db: Session = Depends(get_db)):
+    """Recompute MFE/MAE for every trade from the finest available price bars."""
+    from app.prices import recompute_all_excursions
+    r = recompute_all_excursions(db)
+    request.session["flash"] = (f"Recomputed MFE/MAE for {r['trades']} trades ({r['changed']} changed"
+                                + (f"; no price data for {r['no_data']}" if r["no_data"] else "") + ").")
+    return RedirectResponse("/settings", status_code=303)

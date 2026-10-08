@@ -22,7 +22,7 @@
   </div>
 </div>
 
-{% macro kv(label, value, cls='', id='') %}<div class="rounded-lg border border-slate-800 bg-[#111827] px-3 py-1.5 min-w-0"><div class="text-[10px] uppercase tracking-wide text-slate-500 font-semibold truncate">{{ label }}</div><div {% if id %}id="{{ id }}" {% endif %}class="text-sm font-semibold truncate {{ cls or 'text-white' }}">{{ value }}</div></div>{% endmacro %}
+{% macro kv(label, value, cls='', id='', wid='', title='') %}<div class="rounded-lg border border-slate-800 bg-[#111827] px-3 py-1.5 min-w-0" data-widget="{{ wid or label|lower|replace(' ', '-')|replace('/', '')|replace('&', '') }}"{% if title %} title="{{ title }}"{% endif %}><div class="text-[10px] uppercase tracking-wide text-slate-500 font-semibold truncate">{{ label }}{% if title %} <span class="text-slate-600 cursor-help">ⓘ</span>{% endif %}</div><div {% if id %}id="{{ id }}" {% endif %}class="text-sm font-semibold truncate {{ cls or 'text-white' }}">{{ value }}</div></div>{% endmacro %}
 <div class="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-8 gap-2 mb-2">
   {{ kv('Net P&L', t.net_pnl|money(true), t.net_pnl|pnl_class) }}
   {{ kv('Gross P&L', t.gross_pnl|money(true), t.gross_pnl|pnl_class) }}
@@ -31,7 +31,7 @@
   {{ kv('Entry / exit', t.entry_price|num(2) ~ ' → ' ~ t.exit_price|num(2)) }}
   {{ kv('Max size', t.quantity|qty ~ (' contracts' if t.asset_type == 'OPTION' else ' sh')) }}
   {{ kv('Hold time', ((t.closed_at - t.opened_at)|td if t.closed_at else 'open') ~ ('' if t.time_known else ' (date only)')) }}
-  {{ kv('MFE / MAE', (t.mfe|money ~ ' / ' ~ t.mae|money) if t.mfe is not none else '—', '', 'mfe') }}
+  {{ kv('MFE / MAE', (t.mfe|money ~ ' / ' ~ t.mae|money) if t.mfe is not none else '—', '', 'mfe', 'mfe-mae', mfe_note) }}
 </div>
 
 <div class="flex flex-col lg:flex-row gap-3 items-start">

@@ -132,10 +132,18 @@ def test_markers_snap_to_bars_and_date_only_fills(db):
     dated = _trade(db, [_rec("DTO", "BUY", 5, 20, _et(2026, 10, 5), False),
                         _rec("DTO", "SELL", 5, 21, _et(2026, 10, 7), False)])
     mk, hidden = prices.markers(dated, bars5, "5m")
-    assert hidden == 0 and all("time n/a" in m["text"] for m in mk)
-    last = datetime.fromtimestamp(mk[0]["time"], timezone.utc).astimezone(ET)
-    assert last.date().isoformat() == "2026-10-05" and (last.hour, last.minute) == (15, 55)
-    f = prices.focus(dated, bars5, "5m")
+    assert hidden == 0 and all("time n/a" in m["text"] for m in mk)  # prices never traded -> day fallback
+    first = datetime.fromtimestamp(mk[0]["time"], timezone.utc).astimezone(ET)  # opening fill: day's first bar
+    last = datetime.fromtimestamp(mk[1]["time"], timezone.utc).astimezone(ET)  # closing fill: day's last bar
+    assert first.date().isoformat() == "2026-10-05" and (first.hour, first.minute) == (9, 30)
+    assert last.date().isoformat() == "2026-10-07" and (last.hour, last.minute) == (15, 55)
+    # a date-only fill whose price traded that day is placed at the first bar that traded it
+    traded = _trade(db, [_rec("DTP", "BUY", 5, 100.5, _et(2026, 10, 5), False),
+                         _rec("DTP", "SELL", 5, 100.5, _et(2026, 10, 7), False)])
+    mk, _ = prices.markers(traded, bars5, "5m")
+    assert all("time est." in m["text"] for m in mk)
+    assert datetime.fromtimestamp(mk[1]["time"], timezone.utc).astimezone(ET).strftime("%m-%d %H:%M") == "10-07 09:30"
+    f = prices.focus(traded, bars5, "5m")
     assert f["from"] == mk[0]["time"] and f["to"] == mk[1]["time"]
 
 
@@ -171,16 +179,19 @@ def test_chart_endpoint_timeframes(yahoo_client, db):
     d = c.get(f"/trades/{t.id}/chart.json").json()
     assert d["tf"] == "5m" and d["default_tf"] == "5m" and d["intraday"] and not d["swing"]
     assert d["candles"] and all("volume" in k for k in d["candles"]) and len(d["markers"]) == 2
-    assert calls[-1][1] == "5m" and d["focus"]["from"] <= d["focus"]["to"]
+    assert "5m" in [x[1] for x in calls] and d["focus"]["from"] <= d["focus"]["to"]
+    assert d["excursion"]["tf"] == "1m" and "MFE / MAE" in d["excursion"]["note"]
+    calls.clear()
     d = c.get(f"/trades/{t.id}/chart.json?tf=4h").json()
-    assert d["tf"] == "4h" and calls[-1][1] == "60m"
+    assert d["tf"] == "4h" and calls[0][1] == "60m"
     assert all(datetime.fromtimestamp(k["time"], timezone.utc).astimezone(ET).strftime("%H:%M") in ("09:30", "13:30")
                for k in d["candles"])
     d = c.get(f"/trades/{t.id}/chart.json?tf=1D").json()
-    assert d["tf"] == "1D" and not d["intraday"] and calls[-1][1] == "1d"
+    assert d["tf"] == "1D" and not d["intraday"]
     assert all(k["time"] % 86400 == 0 for k in d["candles"])
+    calls.clear()
     d = c.get(f"/trades/{t.id}/chart.json?tf=1W").json()
-    assert d["tf"] == "1W" and calls[-1][1] == "1wk" and d["markers"]
+    assert d["tf"] == "1W" and calls[0][1] == "1wk" and d["markers"]
     d = c.get(f"/trades/{t.id}/chart.json?tf=bogus").json()
     assert d["tf"] == "5m"
     # an old swing trade: defaults to 1D, 1m is refused with a note and falls back
@@ -221,3 +232,76 @@ def test_provisional_order_fill_badge(yahoo_client, db):
     t = db.scalar(select(Trade).where(Trade.symbol == "PROV"))
     page = c.get(f"/trades/{t.id}").text
     assert "provisional (fees pending)" in page and ">snaptrade_order<" not in page
+
+
+
+class _F:
+    def __init__(self, side, qty, price, role):
+        self.side, self.quantity, self.price, self.role = side, qty, price, role
+
+
+class _T:
+    def __init__(self, closed=True, mult=1.0):
+        self.closed_at, self.multiplier = (NOW if closed else None), mult
+
+
+def _k(*hl):
+    return [{"time": i * 60, "open": (h + l) / 2, "high": h, "low": l, "close": (h + l) / 2} for i, (h, l) in enumerate(hl)]
+
+
+def test_running_excursions_scaling_and_short():
+    # long 10 @ 10, add 10 @ 12, exit 20 @ 13: running P&L uses the real open size and average cost
+    k = _k((10.5, 9.5), (12.5, 11.0), (14.0, 12.5), (13.5, 12.8))
+    placed = [(_F("BUY", 10, 10, "OPEN"), 0, "time"), (_F("BUY", 10, 12, "OPEN"), 1, "time"),
+              (_F("SELL", 20, 13, "CLOSE"), 3, "time")]
+    mfe, mae = prices.running_excursions(_T(), k, placed)
+    assert mfe == 60.0  # 20 sh, avg 11, high 14
+    assert mae == -5.0  # bar 0: 10 sh @ 10, low 9.5
+    # short 5 @ 50, cover 5 @ 48; bars after the exit are ignored
+    k = _k((51.0, 49.5), (50.5, 47.0), (60.0, 30.0))
+    placed = [(_F("SELL", 5, 50, "OPEN"), 0, "time"), (_F("BUY", 5, 48, "CLOSE"), 1, "time")]
+    assert prices.running_excursions(_T(), k, placed) == (15.0, -5.0)
+    # partial exit locks in realized P&L
+    k = _k((10.0, 10.0), (12.0, 11.0), (12.0, 8.0))
+    placed = [(_F("BUY", 10, 10, "OPEN"), 0, "time"), (_F("SELL", 5, 12, "CLOSE"), 1, "time"),
+              (_F("SELL", 5, 9, "CLOSE"), 2, "time")]
+    assert prices.running_excursions(_T(), k, placed) == (20.0, 0.0)  # worst: +10 realized + 5 x (8 - 10)
+
+
+def test_alab_like_date_only_exit_ignores_moves_after_the_sale(db, monkeypatch):
+    """Timed entry, date-only exit: the exit is placed at the first bar that traded the exit price,
+    so a deeper low later that day (after the shares were sold) doesn't count as MAE."""
+    t = _trade(db, [_rec("ALBX", "BUY", 4, 370.17, _et(2026, 10, 7, 9, 56, )),
+                    _rec("ALBX", "SELL", 4, 366.88, _et(2026, 10, 8), False)])
+
+    def bars(symbol, interval, start, end):
+        assert interval == "1m"
+        out = []
+        for b in _bars(start, end, 1):
+            lt = datetime.fromtimestamp(b["time"], timezone.utc).astimezone(ET)
+            hm = lt.strftime("%m-%d %H:%M")
+            px = 372.0
+            if hm == "10-07 09:40":
+                px = 360.0  # before the entry: not part of the trade
+            elif hm == "10-07 15:40":
+                px = 388.14
+            elif hm == "10-08 09:55":
+                px = 366.5  # first time the exit price trades
+            elif hm == "10-08 13:25":
+                px = 345.64  # after the sale
+            out.append({**b, "open": px, "close": px, "high": px + 0.5, "low": px - 0.5})
+        return out
+
+    monkeypatch.setenv("PRICE_PROVIDER", "yahoo")
+    from app.config import get_settings
+    get_settings.cache_clear()
+    monkeypatch.setattr(prices, "_yahoo", bars)
+    prices._MEM.clear()
+    prices._EXC_MEMO.clear()
+    try:
+        res = prices.compute_trade_excursions(db, t, now=datetime(2026, 10, 8, 19, 0))
+    finally:
+        get_settings.cache_clear()
+    assert res["tf"] == "1m" and res["estimated"] == 1
+    assert res["mfe"] == round((388.64 - 370.17) * 4, 2)
+    assert res["mae"] == round((366.0 - 370.17) * 4, 2)

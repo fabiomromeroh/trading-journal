@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models import Tag, Trade, TradeFill
-from app.prices import compute_excursions, get_chart
+from app.prices import excursion_basis, excursion_note, get_chart, update_trade_excursions
 from app.web import apply_trade_filters, base_context, parse_filters, templates
 
 router = APIRouter()
@@ -76,7 +76,7 @@ def trade_detail(trade_id: int, request: Request, db: Session = Depends(get_db))
     setups = sorted(s for s in db.scalars(select(Trade.setup).where(Trade.setup.is_not(None)).distinct()) if s)
     return templates.TemplateResponse(request, "trade_detail.html", base_context(
         request, db, nav="trades", t=t, prev_id=prev_id, next_id=next_id, all_tags=all_tags, setups=setups,
-        saved=False, fullscreen=True))
+        saved=False, fullscreen=True, mfe_note=excursion_note(excursion_basis(t))))
 
 
 @router.post("/trades/{trade_id}/journal")
@@ -111,12 +111,10 @@ def trade_chart(trade_id: int, tf: str | None = None, db: Session = Depends(get_
     """Candles (+volume) for one timeframe, fill markers snapped to bars, and timeframe availability."""
     t = _get_trade(db, trade_id)
     data = get_chart(db, t, tf)
-    if data["candles"] and t.status == "CLOSED" and data["tf"] == data["default_tf"]:
-        mfe, mae = compute_excursions(t, data["candles"], data["tf"])
-        if mfe is not None and (t.mfe != mfe or t.mae != mae):
-            t.mfe, t.mae = mfe, mae
-            db.commit()
+    exc = update_trade_excursions(db, t)
+    db.commit()
     data["mfe"], data["mae"] = t.mfe, t.mae
+    data["excursion"] = {**exc, "note": excursion_note(exc)}
     return JSONResponse(json.loads(json.dumps(data, default=str)))
 
 

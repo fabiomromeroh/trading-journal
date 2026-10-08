@@ -397,8 +397,8 @@ def get_chart(db: Session, trade: Trade, tf: str | None = None, now: datetime | 
                 if hidden:
                     notes.append(f"{hidden} fill(s) fall outside the {cur} chart window.")
                 if cur not in DAILYISH and any(not _fill_time_known(f) for f in trade.fills):
-                    notes.append("Some fills have a date but no time of day; they're drawn on the "
-                                 "day's last bar and marked \"time n/a\".")
+                    notes.append("Some fills have a date but no time of day; each is drawn at the first bar "
+                                 "that traded at its price that day, marked \"time est.\".")
                 return {**base, "tf": cur, "interval": cur, "intraday": cur not in DAILYISH,
                         "candles": candles, "markers": mk, "focus": focus(trade, candles, cur),
                         "focus_bars": [spec.focus_before, spec.focus_after], "provider": prov,
@@ -428,18 +428,53 @@ def _bar_index(times: list[int], ts_utc: datetime, tf: str, time_known: bool = T
     return i
 
 
+def place_fills(trade: Trade, candles: list[dict], tf: str) -> list[tuple]:
+    """[(fill, bar index | None, how)] in trade order. how: 'time' (bar containing the fill time),
+    'price' (date-only fill: first bar that day, not before the previous fill, whose range contains
+    the fill price), 'day' (date-only fill whose price never traded in the bars: first bar of the
+    day for opening fills, last bar for closing fills), 'date' (daily/weekly charts)."""
+    times = [c["time"] for c in candles]
+    out, prev = [], 0
+    for f in trade.fills:
+        known = _fill_time_known(f)
+        if not times:
+            out.append((f, None, "none"))
+            continue
+        if tf in DAILYISH:
+            i, how = _bar_index(times, f.executed_at, tf, known), "date"
+        elif known:
+            i, how = _bar_index(times, f.executed_at, tf, True), "time"
+        else:
+            d = utc_naive_to_tz(f.executed_at, ET).date()
+            lo = bisect_right(times, _sec(local_to_utc_naive(d, time(0, 0), ET)) - 1)
+            hi = bisect_right(times, _sec(local_to_utc_naive(d, time(23, 59), ET)))
+            day = [j for j in range(lo, hi) if j >= prev]
+            tol = max(0.01, abs(f.price) * 0.0005)
+            hit = next((j for j in day if candles[j]["low"] - tol <= f.price <= candles[j]["high"] + tol), None)
+            if hit is not None and trade.asset_type == "STOCK":
+                i, how = hit, "price"
+            elif day:
+                i, how = (day[0] if f.role == "OPEN" else day[-1]), "day"
+            else:
+                i, how = None, "none"
+        if i is not None:
+            prev = max(prev, i)
+        out.append((f, i, how))
+    return out
+
+
 def markers(trade: Trade, candles: list[dict], tf: str = "1D") -> tuple[list[dict], int]:
     times = [c["time"] for c in candles]
     out, hidden = [], 0
-    for f in trade.fills:
-        known = _fill_time_known(f)
-        i = _bar_index(times, f.executed_at, tf, known) if times else None
+    for f, i, how in place_fills(trade, candles, tf):
         if i is None:
             hidden += 1
             continue
         buy = f.side == "BUY"
         text = f"{'B' if buy else 'S'} {f.quantity:g} @ {f.price:g}"
-        if not known and tf not in DAILYISH:
+        if how == "price":
+            text += " (time est.)"
+        elif how == "day":
             text += " (time n/a)"
         out.append({"time": times[i], "position": "belowBar" if buy else "aboveBar",
                     "color": "#22c55e" if buy else "#ef4444", "shape": "arrowUp" if buy else "arrowDown",
@@ -452,39 +487,158 @@ def focus(trade: Trade, candles: list[dict], tf: str) -> dict | None:
     times = [c["time"] for c in candles]
     if not times:
         return None
-    first_known = all(_fill_time_known(f) for f in trade.fills[:1]) if trade.fills else trade.time_known
-    i = _bar_index(times, trade.opened_at, tf, first_known)
-    if i is None:
+    idx = [i for _, i, _ in place_fills(trade, candles, tf) if i is not None]
+    if not idx:
         i = 0 if _sec(trade.opened_at) < times[0] else len(times) - 1
-    if trade.closed_at:
-        j = _bar_index(times, trade.closed_at, tf, trade.time_known)
-        if j is None:
-            j = len(times) - 1 if _sec(trade.closed_at) > times[-1] else i
-    else:
-        j = len(times) - 1
-    return {"from": times[i], "to": times[max(i, j)]}
+        return {"from": times[i], "to": times[-1] if not trade.closed_at else times[i]}
+    j = max(idx) if trade.closed_at else len(times) - 1
+    return {"from": times[min(idx)], "to": times[max(min(idx), j)]}
 
 
-def compute_excursions(trade: Trade, candles: list[dict], tf: str = "1D") -> tuple[float | None, float | None]:
-    """MFE/MAE in $ for stock trades, from bars inside the holding period."""
-    if trade.asset_type != "STOCK" or not candles or not trade.closed_at or tf == "1W":
-        return None, None
-    if tf == "1D":
-        lo_k = _date_key(utc_naive_to_tz(trade.opened_at, ET).date())
-        hi_k = _date_key(utc_naive_to_tz(trade.closed_at, ET).date())
-        inside = [k for k in candles if lo_k <= k["time"] <= hi_k]
+# ---------------------------------------------------------------- MFE / MAE
+def excursion_tf(trade: Trade, now: datetime | None = None) -> str:
+    """Finest bars available for the whole holding period (Yahoo limits; sample data: 1m/5m)."""
+    now = _now(now)
+    d0 = utc_naive_to_tz(trade.opened_at, ET).date()
+    d1 = utc_naive_to_tz(trade.closed_at or now, ET).date()
+    start = local_to_utc_naive(d0, time(9, 30), ET)
+    if (d1 - d0).days <= 6 and (trade.is_demo or start >= now - timedelta(days=29)):
+        return "1m"
+    if trade.is_demo or start >= now - timedelta(days=59):
+        return "5m"
+    if start >= now - timedelta(days=729):
+        return "1h"
+    return "1D"
+
+
+def running_excursions(trade: Trade, candles: list[dict], placed: list[tuple]) -> tuple[float, float] | None:
+    """Best / worst running P&L ($, before fees) of the trade, bar by bar from the first to the last fill:
+    realized P&L so far + the open position marked at each bar's high and low. Opening fills are applied
+    before a bar is evaluated and closing fills after it (bar precision)."""
+    if not placed or any(i is None for _, i, _ in placed):
+        return None
+    by_bar: dict[int, list] = {}
+    for f, i, _ in placed:
+        by_bar.setdefault(i, []).append(f)
+    first = min(by_bar)
+    last = max(by_bar) if trade.closed_at else len(candles) - 1
+    mult = trade.multiplier or 1.0
+    pos = cost = realized = 0.0
+    best, worst = 0.0, 0.0
+
+    def apply(f):
+        nonlocal pos, cost, realized
+        signed = f.quantity if f.side == "BUY" else -f.quantity
+        if pos == 0 or (pos > 0) == (signed > 0):
+            cost = (cost * abs(pos) + f.price * abs(signed)) / (abs(pos) + abs(signed))
+            pos += signed
+        else:
+            closed = min(abs(signed), abs(pos))
+            realized += (f.price - cost) * closed * (1 if pos > 0 else -1) * mult
+            pos += signed
+            if abs(pos) > 1e-9 and (pos > 0) == (signed > 0):  # flipped through zero
+                cost = f.price
+            if abs(pos) < 1e-9:
+                pos = 0.0
+
+    for i in range(first, last + 1):
+        fills = by_bar.get(i, [])
+        for f in fills:
+            if f.role == "OPEN":
+                apply(f)
+        if pos:
+            for px in (candles[i]["high"], candles[i]["low"]):
+                pnl = realized + (px - cost) * pos * mult
+                best, worst = max(best, pnl), min(worst, pnl)
+        for f in fills:
+            if f.role != "OPEN":
+                apply(f)
+        best, worst = max(best, realized), min(worst, realized)
+    return round(best, 2), round(worst, 2)
+
+
+_EXC_MEMO: dict[tuple, tuple] = {}
+
+
+def compute_trade_excursions(db: Session, trade: Trade, now: datetime | None = None) -> dict:
+    """MFE/MAE for a stock trade from the finest available bars over the actual holding period.
+    Returns {"mfe", "mae", "tf", "estimated", "unplaced", "provider"} (mfe/mae None if unavailable)."""
+    now = _now(now)
+    out = {"mfe": None, "mae": None, "tf": None, "estimated": 0, "unplaced": 0, "provider": None}
+    if trade.asset_type != "STOCK" or not trade.fills:
+        return out
+    tf = excursion_tf(trade, now)
+    sig = (trade.id, tf, trade.closed_at, tuple((f.side, f.quantity, f.price, f.executed_at, _fill_time_known(f))
+                                               for f in trade.fills), now.date() if not trade.closed_at else None)
+    if sig in _EXC_MEMO and trade.closed_at:
+        return dict(_EXC_MEMO[sig])
+    d0 = utc_naive_to_tz(trade.opened_at, ET).date()
+    d1 = utc_naive_to_tz(trade.closed_at or now, ET).date()
+    if tf in DAILYISH:
+        start, end = trade.opened_at - timedelta(days=3), min((trade.closed_at or now) + timedelta(days=3), now)
     else:
-        if not trade.time_known:
-            return None, None
-        o, c = _sec(trade.opened_at), _sec(trade.closed_at)
-        bar = int(TIMEFRAMES[tf].bar.total_seconds())
-        inside = [k for k in candles if o - bar < k["time"] <= c]
-    if not inside:
-        return None, None
-    hi, lo = max(k["high"] for k in inside), min(k["low"] for k in inside)
-    q = trade.quantity * trade.multiplier
-    if trade.direction == "LONG":
-        mfe, mae = (hi - trade.entry_price) * q, (lo - trade.entry_price) * q
-    else:
-        mfe, mae = (trade.entry_price - lo) * q, (trade.entry_price - hi) * q
-    return round(max(mfe, 0.0), 2), round(min(mae, 0.0), 2)
+        start = local_to_utc_naive(d0, time(9, 25), ET)
+        end = min(local_to_utc_naive(d1, time(16, 5), ET), now)
+    fetch = {"1m": "1m", "5m": "5m", "1h": "60m", "1D": "1d"}[tf]
+    for prov in _provider_order(trade):
+        try:
+            candles = normalize(_fetch(db, prov, trade, fetch, start, end, now), tf)
+        except Exception as exc:
+            log.info("excursions: provider %s failed for %s: %s", prov, trade.underlying, exc)
+            continue
+        if not candles:
+            continue
+        placed = place_fills(trade, candles, tf)
+        res = running_excursions(trade, candles, placed)
+        if res is None:
+            out.update(tf=tf, unplaced=sum(1 for _, i, _ in placed if i is None), provider=prov)
+            return out
+        out.update(mfe=res[0], mae=res[1], tf=tf, provider=prov,
+                   estimated=sum(1 for _, _, how in placed if how in ("price", "day")))
+        if len(_EXC_MEMO) > 2000:
+            _EXC_MEMO.clear()
+        _EXC_MEMO[sig] = dict(out)
+        return out
+    return out
+
+
+def update_trade_excursions(db: Session, trade: Trade, now: datetime | None = None) -> dict:
+    res = compute_trade_excursions(db, trade, now)
+    if res["tf"] and (trade.mfe != res["mfe"] or trade.mae != res["mae"]):
+        trade.mfe, trade.mae = res["mfe"], res["mae"]
+    return res
+
+
+def recompute_all_excursions(db: Session, now: datetime | None = None) -> dict:
+    """Recompute MFE/MAE for every trade (bars are cached, so re-runs are cheap)."""
+    changed = total = failed = 0
+    for t in db.scalars(select(Trade).order_by(Trade.opened_at)):
+        before = (t.mfe, t.mae)
+        res = update_trade_excursions(db, t, now)
+        total += 1
+        if t.asset_type == "STOCK" and not res["tf"]:
+            failed += 1
+        if (t.mfe, t.mae) != before:
+            changed += 1
+        db.commit()
+    return {"trades": total, "changed": changed, "no_data": failed}
+
+
+def excursion_basis(trade: Trade, now: datetime | None = None) -> dict:
+    """What compute_trade_excursions will use, without fetching prices (for the page tooltip)."""
+    if trade.asset_type != "STOCK":
+        return {"tf": None}
+    return {"tf": excursion_tf(trade, now), "estimated": sum(1 for f in trade.fills if not _fill_time_known(f))}
+
+
+def excursion_note(res: dict | None) -> str:
+    base = ("MFE / MAE: the best and worst running P&L ($, before fees) while the trade was open: "
+            "realized P&L so far plus the open shares marked at each bar's high and low.")
+    if not res or not res.get("tf"):
+        return base + " Not available for this trade (options, or no price data)."
+    name = {"1m": "1-minute", "5m": "5-minute", "1h": "hourly", "1D": "daily"}[res["tf"]]
+    s = f" Computed from {name} bars (bar precision)."
+    if res.get("estimated"):
+        s += (f" {res['estimated']} fill(s) have no time of day, so each is placed at the first bar that traded "
+              "at its price that day: an approximation.")
+    return base + s

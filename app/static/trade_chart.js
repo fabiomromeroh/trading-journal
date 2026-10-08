@@ -342,6 +342,7 @@
       const f = (v) => (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
       $('mfe').textContent = f(data.mfe) + ' / ' + f(data.mae);
     }
+    if (data.excursion && data.excursion.note && $('mfe')) $('mfe').parentElement.title = data.excursion.note;
   }
 
   // menu open/close
