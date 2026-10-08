@@ -1,7 +1,7 @@
 """Schwab.com transaction history export (Accounts > History > Transactions > Export > CSV).
 
 Known layout (2022-2026), optionally preceded by a title row such as
-  "Transactions  for account ...285 as of 10/07/2026 08:53:37 AM ET"
+  "Transactions  for account ...123 as of 10/07/2026 08:53:37 AM ET"
 then
   "Date","Action","Symbol","Description","Quantity","Price","Fees & Comm","Amount"
 and optionally a trailing "Transactions Total" row.

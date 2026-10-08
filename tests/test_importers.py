@@ -25,7 +25,7 @@ def test_detect(fixture_text):
 
 def test_schwab_csv_parse(fixture_text):
     r = parse(fixture_text("schwab_transactions.csv"))
-    assert r.account_hint == "...285"
+    assert r.account_hint == "...123"
     assert r.rows_total == 10
     assert r.skipped["Qualified Dividend"] == 1 and r.skipped["MoneyLink Transfer"] == 1
     assert len(r.records) == 8
@@ -54,7 +54,7 @@ def test_tos_parse(fixture_text):
 
 
 def _acct(db):
-    a = Account(name="Schwab ...285", account_number_masked="...285")
+    a = Account(name="Schwab ...123", account_number_masked="...123")
     db.add(a)
     db.flush()
     return a

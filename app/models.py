@@ -21,7 +21,7 @@ class Account(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(120))
     broker: Mapped[str] = mapped_column(String(40), default="schwab")
-    account_number_masked: Mapped[str | None] = mapped_column(String(40))  # e.g. "...285"
+    account_number_masked: Mapped[str | None] = mapped_column(String(40))  # e.g. "...123"
     external_ref: Mapped[str | None] = mapped_column(String(200))  # e.g. Schwab hashValue
     is_demo: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

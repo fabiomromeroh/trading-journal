@@ -19,7 +19,7 @@ class ParseResult:
     rows_total: int = 0
     skipped: Counter = field(default_factory=Counter)  # action -> count of non-trade rows
     warnings: list[str] = field(default_factory=list)
-    account_hint: str | None = None  # e.g. "...285" from a file header
+    account_hint: str | None = None  # e.g. "...123" from a file header
 
     @property
     def date_range(self):
