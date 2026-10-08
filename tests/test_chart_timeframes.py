@@ -208,3 +208,16 @@ def test_demo_trade_every_timeframe(db):
         times = [k["time"] for k in d["candles"]]
         assert times == sorted(set(times)), tf
         assert d["markers"] and all(m["time"] in set(times) for m in d["markers"]), tf
+
+
+def test_provisional_order_fill_badge(yahoo_client, db):
+    c, _ = yahoo_client
+    acct = db.scalar(select(Account)) or Account(name="A", broker="schwab")
+    db.add(acct)
+    db.flush()
+    ingest_records(db, acct.id, "snaptrade_order", [_rec("PROV", "BUY", 2, 10, _et(2026, 10, 8), False)])
+    rebuild_trades(db, [acct.id])
+    db.commit()
+    t = db.scalar(select(Trade).where(Trade.symbol == "PROV"))
+    page = c.get(f"/trades/{t.id}").text
+    assert "provisional (fees pending)" in page and ">snaptrade_order<" not in page

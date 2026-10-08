@@ -71,7 +71,7 @@
           <td class="text-right">{{ f.quantity|qty }}</td><td class="text-right">{{ f.price|num(4 if f.price < 10 else 2) }}</td>
           <td class="text-right text-slate-400">{{ (f.quantity * f.price * t.multiplier)|money }}</td>
           <td class="text-right text-slate-400">{{ f.fees|money }}</td>
-          <td class="text-xs text-slate-500">{{ f.execution.source if f.execution else '—' }}</td>
+          <td class="text-xs text-slate-500">{% if f.execution and f.execution.source == 'snaptrade_order' %}<span class="pill bg-amber-500/15 text-amber-300" title="From today's executed order; fees and the final record arrive with tomorrow's SnapTrade transaction">provisional (fees pending)</span>{% else %}{{ f.execution.source if f.execution else '—' }}{% endif %}</td>
         </tr>
         {% endfor %}
         </tbody>

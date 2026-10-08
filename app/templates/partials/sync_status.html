@@ -7,7 +7,7 @@
     <div class="font-semibold">{% if run.status == 'success' %}✓ {% elif run.status in ('failed', 'partial') %}⚠ {% endif %}{{ lines[0] if run.message and run.status in ('success', 'partial') else ('Sync failed' if run.status == 'failed' else 'Nothing to sync' if run.status == 'skipped' else 'Sync ' ~ run.status) }}</div>
     {% if run.error %}<div class="mt-1 whitespace-pre-line">{{ run.error[:400] }}</div>{% endif %}
     {% if run.message %}<div class="mt-1 opacity-75 whitespace-pre-line">{{ (lines[1:] if run.status in ('success', 'partial') else lines)|join('\n') }}</div>{% endif %}
-    {% if run.sources and 'SnapTrade' in run.sources %}<div class="mt-1 opacity-60">SnapTrade updates once a day: today's trades appear tomorrow.</div>{% endif %}
+    {% if run.sources and 'SnapTrade' in run.sources %}<div class="mt-1 opacity-60">Today's trades appear as provisional (no time, fees pending) and are confirmed the next day.</div>{% endif %}
   {% endif %}
 </div>
 {% endif %}

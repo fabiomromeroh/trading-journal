@@ -563,7 +563,8 @@ class SnapTradeSource(DataSource):
     key = SOURCE_KEY
     name = "Schwab via SnapTrade"
     description = ("Pulls your Schwab transaction history through SnapTrade (read-only). "
-                   "SnapTrade updates once a day, so today's trades appear tomorrow.")
+                   "Today's trades appear as provisional (no time, fees pending) and are confirmed "
+                   "the next day.")
 
     def __init__(self, client: SnapTradeClient | None = None):
         self._client = client
