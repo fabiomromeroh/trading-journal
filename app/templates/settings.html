@@ -38,7 +38,7 @@
         {% endif %}
         <div class="text-slate-400">Last successful sync: <span class="text-slate-200">{{ snaptrade.last_success|local_dt if snaptrade and snaptrade.last_success else 'never' }}</span>{% if snaptrade and snaptrade.checked_at %} · status checked {{ snaptrade.checked_at|local_dt }}{% endif %}</div>
         {% if snaptrade and snaptrade.error %}<div class="text-amber-300">Last status check failed: {{ snaptrade.error }}</div>{% endif %}
-        <div class="text-xs text-slate-500">Sync is manual: click <b>Sync now</b>. SnapTrade refreshes Schwab transactions once a day (one day behind), so today's trades appear tomorrow. Times are date-only; importing a thinkorswim Account Statement adds exact fill times to the same fills.</div>
+        <div class="text-xs text-slate-500">Sync is manual: click <b>Sync now</b>. SnapTrade refreshes Schwab transactions once a day (one day behind); today's fills come from your executed orders and are marked <i>provisional (fees pending)</i> until the transaction arrives tomorrow. Times are date-only; importing a thinkorswim Account Statement adds exact fill times to the same fills.</div>
       </div>
       <div class="flex flex-wrap gap-2 mt-3">
         {% if snaptrade and snaptrade.connections %}

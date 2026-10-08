@@ -28,7 +28,7 @@
   {% macro kpi(label, value, cls='', sub='') %}
   <div class="card p-4"><div class="card-h">{{ label }}</div><div class="kpi-v {{ cls }}">{{ value }}</div>{% if sub %}<div class="text-xs text-slate-500 mt-1">{{ sub }}</div>{% endif %}</div>
   {% endmacro %}
-  {{ kpi('Realized P&L', st.realized|money(true), st.realized|pnl_class, 'Closed trades ' ~ st.net_pnl|money ~ (' · partial exits of open trades ' ~ st.open_realized|money if st.open_realized else '') ~ ' · fees ' ~ st.fees|money) }}
+  {{ kpi('Realized P&L', st.realized|money(true), st.realized|pnl_class, 'Closed trades ' ~ st.net_pnl|money ~ (' · partial exits of open trades ' ~ st.open_realized|money if st.open_realized else '') ~ ' · fees ' ~ st.fees|money ~ (' · ' ~ provisional_trades|length ~ ' trade(s) provisional (fees pending)' if provisional_trades else '')) }}
   {% if anchor %}
   {{ kpi('Unrealized (open)', anchor.unrealized|money(true), anchor.unrealized|pnl_class, st.open_trades ~ ' open · SnapTrade prices ' ~ (anchor.as_of[:16]|replace('T', ' ')) ~ ' UTC' ~ (' · no price: ' ~ anchor.missing_prices|join(', ') if anchor.missing_prices else '')) }}
   {{ kpi('Total P&L', anchor.journal_total|money(true), anchor.journal_total|pnl_class, 'Account check: value ' ~ anchor.value|money ~ ' − net deposits ' ~ anchor.net_deposits|money ~ ' = ' ~ anchor.total_pnl|money(true) ~ (' ✓' if anchor.diff|abs < 1 else ' (diff ' ~ anchor.diff|money(true) ~ ')')) }}

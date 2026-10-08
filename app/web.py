@@ -116,6 +116,14 @@ def apply_trade_filters(stmt, f: Filters):
     return stmt
 
 
+def provisional_trade_ids(db: Session) -> set[int]:
+    """Trades containing provisional fills (same-day orders whose fees haven't posted yet)."""
+    from app.models import Execution, TradeFill
+    from app.services import PROVISIONAL_SOURCES
+    return set(db.scalars(select(TradeFill.trade_id).join(Execution, Execution.id == TradeFill.execution_id)
+                          .where(Execution.source.in_(PROVISIONAL_SOURCES))))
+
+
 def base_context(request: Request, db: Session, **kw) -> dict:
     from app.sources import all_sources
     accounts = list(db.scalars(select(Account).order_by(Account.name)))
@@ -136,7 +144,7 @@ def base_context(request: Request, db: Session, **kw) -> dict:
                                 f" Login expires in {fmt_td(timedelta(seconds=st.expires_in_seconds))}."),
                             "link": "/settings", "link_text": "Reconnect"})
     ctx = {"request": request, "accounts": accounts, "has_demo": has_demo, "banners": banners,
-           "nav": kw.pop("nav", ""), "presets": PRESETS}
+           "nav": kw.pop("nav", ""), "presets": PRESETS, "provisional_trades": provisional_trade_ids(db)}
     ctx.update(kw)
     return ctx
 

@@ -11,6 +11,9 @@ Endpoints used (base https://api.snaptrade.com/api/v1):
   GET  /authorizations                       connections (disabled flag -> re-login needed)
   GET  /accounts                             accounts + sync_status
   GET  /accounts/{id}/activities             transaction history (paginated, 1000/page)
+  GET  /accounts/{id}/recentOrders           realtime orders of the last 24 h (free v1; NOT /v2,
+                                             which is billed per call)
+  GET  /accounts/{id}/orders?days=N          account orders of the last N days
   POST /snapTrade/login                      Connection Portal URL (valid 5 minutes);
                                              body.reconnect=<authorization id> repairs a
                                              disabled connection instead of creating a new one.
@@ -20,6 +23,10 @@ Data notes (verified against a live Schwab International account):
     one day behind, so today's trades show up tomorrow;
   * Schwab's own id is `external_reference_id` (our dedupe key); SnapTrade's `id` is kept in raw
     because it can change if SnapTrade deletes and re-adds a transaction;
+  * orders show today's fills right away (date-only: all time fields are 00:00Z). Their
+    `brokerage_order_id` equals the activity's `external_reference_id`, so a fill built from an
+    order is stored as a provisional fill (source "snaptrade_order", no fees yet) and is replaced
+    by the activity when it arrives the next day;
   * Schwab logins expire after 7 days -> the connection becomes `disabled` until reconnected.
 """
 from __future__ import annotations
@@ -51,6 +58,8 @@ log = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 API = "https://api.snaptrade.com/api/v1"
 SOURCE_KEY = "snaptrade"
+ORDER_SOURCE = "snaptrade_order"   # provisional fills from orders (see app.services.PROVISIONAL_SOURCES)
+ORDER_DAYS = 4
 STATUS_STATE = "snaptrade:status"
 CONNECTED_AT_STATE = "snaptrade:connected_at:"  # + authorization id
 RELOGIN_DAYS = 7
@@ -129,6 +138,14 @@ class SnapTradeClient:
             offset += len(page)
             if len(page) < PAGE or (total is not None and offset >= total):
                 return out
+
+    def recent_orders(self, account_id: str) -> list[dict]:
+        data = self.request("GET", f"/accounts/{account_id}/recentOrders", {"only_executed": "true"}) or {}
+        return data.get("orders", []) if isinstance(data, dict) else data
+
+    def orders(self, account_id: str, days: int = ORDER_DAYS) -> list[dict]:
+        data = self.request("GET", f"/accounts/{account_id}/orders", {"state": "executed", "days": days}) or []
+        return data.get("orders", []) if isinstance(data, dict) else data
 
     def balances(self, account_id: str) -> list[dict]:
         return self.request("GET", f"/accounts/{account_id}/balances") or []
@@ -293,6 +310,93 @@ def parse_activities(activities: list[dict]) -> tuple[list[ExecRecord], Counter]
         rec.seq = seq
         records.append(rec)
     return records, ignored
+
+
+ORDER_SIDES = {  # order action -> (side, stock position effect)
+    "BUY": ("BUY", None), "SELL": ("SELL", "CLOSE"), "SELL_SHORT": ("SELL", "OPEN"),
+    "BUY_TO_COVER": ("BUY", "CLOSE"), "BUY_COVER": ("BUY", "CLOSE"),
+    "BUY_OPEN": ("BUY", "OPEN"), "BUY_TO_OPEN": ("BUY", "OPEN"), "BUY_CLOSE": ("BUY", "CLOSE"),
+    "BUY_TO_CLOSE": ("BUY", "CLOSE"), "SELL_OPEN": ("SELL", "OPEN"), "SELL_TO_OPEN": ("SELL", "OPEN"),
+    "SELL_CLOSE": ("SELL", "CLOSE"), "SELL_TO_CLOSE": ("SELL", "CLOSE"),
+}
+
+
+def _order_day(o: dict) -> date | None:
+    """ET trade date of an order. Schwab via SnapTrade sends midnight UTC (= the date); should a
+    real time ever appear, convert it to the exchange date."""
+    from app.timeutil import et_date
+    s = o.get("time_executed") or o.get("time_updated") or o.get("time_placed")
+    dt = _parse_dt(s)
+    if dt is None:
+        return None
+    return dt.date() if dt.time() == time(0, 0) else et_date(dt)
+
+
+def parse_orders(orders: list[dict]) -> list[ExecRecord]:
+    """Executed (or partly executed) orders -> provisional date-only fills, one per order.
+
+    external_id = brokerage_order_id (equal to the activity's external_reference_id)."""
+    seen: set[str] = set()
+    out: list[ExecRecord] = []
+    for seq, o in enumerate(orders):
+        oid = o.get("brokerage_order_id")
+        qty, price = abs(_f(o.get("filled_quantity"))), _f(o.get("execution_price"))
+        d = _order_day(o)
+        side_eff = ORDER_SIDES.get((o.get("action") or "").upper().replace(" ", "_"))
+        if not oid or oid in seen or qty <= 0 or price <= 0 or d is None or side_eff is None:
+            continue
+        if (o.get("status") or "").upper() in ("REJECTED", "FAILED"):
+            continue
+        seen.add(oid)
+        side, effect = side_eff
+        ts = local_to_utc_naive(d, time(16, 0), ET)
+        raw = {"order_id": oid, "status": o.get("status"), "action": o.get("action"),
+               "filled_quantity": o.get("filled_quantity"), "execution_price": o.get("execution_price"),
+               "order_type": o.get("order_type"), "time_executed": o.get("time_executed")}
+        desc = "SnapTrade order (provisional, fees pending)"
+        opt = _option(o)
+        if opt:
+            und, exp, pc, strike, mult = opt
+            act = (o.get("action") or "").upper()
+            eff = "OPEN" if "OPEN" in act else "CLOSE" if "CLOSE" in act else None
+            rec = ExecRecord(external_id=oid, symbol=option_symbol(und, exp, pc, strike), underlying=und,
+                             asset_type="OPTION", option_type=pc, strike=strike, expiration=exp, multiplier=mult,
+                             side=side, quantity=qty, price=price, fees=0.0, executed_at=ts, time_known=False,
+                             position_effect=eff, kind="TRADE", description=desc, trade_date=d, raw=raw)
+        else:
+            us = o.get("universal_symbol")
+            sym = ((us.get("symbol") or us.get("raw_symbol")) if isinstance(us, dict) else None) or ""
+            sym = sym.strip().upper()
+            if not sym:
+                continue
+            rec = ExecRecord(external_id=oid, symbol=sym, underlying=sym, asset_type="STOCK", side=side,
+                             quantity=qty, price=price, fees=0.0, executed_at=ts, time_known=False,
+                             position_effect=effect, kind="TRADE", description=desc, trade_date=d, raw=raw)
+        rec.seq = 100000 + seq
+        out.append(rec)
+    return out
+
+
+def _sync_orders(db: Session, client: "SnapTradeClient", acct_id: int, sa_id: str, covered: date | None,
+                 ctx=None) -> tuple[int, int, int]:
+    """Same-day fills from orders (activities lag a day). Orders on days the activity feed already
+    covers are skipped; leftover provisional fills on covered days are pruned.
+    Returns (provisional fills inserted, merged/known, pruned)."""
+    from app.services import prune_stale_provisional
+    orders: dict = {}
+    failed = []
+    for fetch in (client.orders, client.recent_orders):  # recent (realtime) wins on repeated ids
+        try:
+            for o in fetch(sa_id) or []:
+                orders[o.get("brokerage_order_id")] = o
+        except Exception as exc:  # orders are a best-effort extra; never fail the sync for them
+            failed.append(str(exc)[:160])
+    if failed and ctx is not None:
+        ctx.info("Could not read same-day orders: " + "; ".join(failed))
+    recs = [r for r in parse_orders(list(orders.values())) if covered is None or r.trade_date > covered]
+    stats = ingest_records(db, acct_id, ORDER_SOURCE, recs) if recs else None
+    pruned = prune_stale_provisional(db, acct_id, covered) if covered else []
+    return (stats.inserted if stats else 0), (stats.merged + stats.duplicates if stats else 0), len(pruned)
 
 
 # ------------------------------------------------------------------------------------ status cache
@@ -555,6 +659,13 @@ class SnapTradeSource(DataSource):
             dates = [r.trade_date for r in records if r.trade_date]
             if through_dt is None and dates:
                 through_dt = datetime.combine(max(dates), time())
+            # Activities lag a day, so today's (ET) fills only exist as orders.
+            from app.timeutil import et_date
+            covered = through_dt.date() if through_dt else (st.synced_through.date() if st.synced_through else None)
+            yesterday = et_date(now) - timedelta(days=1)
+            covered = min(covered, yesterday) if covered else None
+            o_new, o_known, o_pruned = _sync_orders(db, client, acct.id, sa["id"], covered, ctx)
+            res.inserted += o_new
             if through_dt is not None:
                 st.synced_through = through_dt
             st.last_success_at = now
@@ -562,6 +673,11 @@ class SnapTradeSource(DataSource):
                 st.earliest_reached = datetime.combine(min(dates), time())
             scope = "full history" if start is None else f"since {start:%b %d}"
             extra = f"; ignored {sum(ignored.values())} non-trade rows" if ignored else ""
+            if o_new or o_known:
+                extra += (f"; {o_new + o_known} same-day fill(s) from orders"
+                          f"{f' ({o_new} new)' if o_new else ''}, provisional until fees post tomorrow")
+            if o_pruned:
+                extra += f"; removed {o_pruned} provisional fill(s) the activity feed did not confirm"
             ctx.info(f"{acct.name}: {len(records)} fills fetched ({scope}), {stats.inserted} new, "
                      f"{stats.merged} merged with imports{extra}. "
                      f"SnapTrade data through {through or '?'}.")

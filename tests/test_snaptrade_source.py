@@ -41,8 +41,10 @@ def st_env(monkeypatch):
 class FakeSnapTrade:
     """Mocked SnapTrade API that verifies every request signature."""
 
-    def __init__(self, activities, disabled=False, through="2026-09-25"):
+    def __init__(self, activities, disabled=False, through="2026-09-25", orders=None, recent=None):
         self.activities = activities
+        self.orders = orders          # None -> endpoint 404s (sync must cope)
+        self.recent = recent
         self.disabled = disabled
         self.through = through
         self.calls: list[httpx.Request] = []
@@ -77,6 +79,12 @@ class FakeSnapTrade:
             off, lim = int(q.get("offset", ["0"])[0]), int(q.get("limit", ["1000"])[0])
             return httpx.Response(200, json={"data": rows[off:off + lim],
                                              "pagination": {"offset": off, "limit": lim, "total": len(rows)}})
+        if p == f"/api/v1/accounts/{ACCOUNT_ID}/orders" and self.orders is not None:
+            assert q.get("state") == ["executed"]
+            return httpx.Response(200, json=self.orders)
+        if p == f"/api/v1/accounts/{ACCOUNT_ID}/recentOrders" and self.recent is not None:
+            return httpx.Response(200, json={"orders": self.recent})
+        assert not p.endswith("/recentOrders/v2"), "paid endpoint must not be used"
         if p == "/api/v1/snapTrade/login":
             self.login_bodies.append(body)
             return httpx.Response(200, json={"redirectURI": "https://app.snaptrade.com/portal?t=abc", "sessionId": "s"})

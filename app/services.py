@@ -10,7 +10,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.instruments import ExecRecord
-from app.matching import Item, day_from_match_key, match
+from app.matching import Item, Match, day_from_match_key, match
 from app.models import Account, Execution, Trade, TradeFill, utcnow
 from app.timeutil import ET, et_date, local_to_utc_naive
 from app.trade_builder import BuilderExec, build_trades
@@ -19,6 +19,10 @@ from app.trade_builder import BuilderExec, build_trades
 SOURCE_QUALITY = {"demo": 0, "schwab_csv": 1, "snaptrade": 1, "tos_statement": 2, "schwab_api": 3}
 # Sources whose records can be corrected after the fact; a re-delivered record refreshes the row.
 REFRESHABLE_SOURCES = {"schwab_api", "snaptrade"}
+# Provisional fills (e.g. built from same-day SnapTrade orders: no fees yet). The authoritative record
+# from the linked source supersedes them; they are matched by shared id first, then like any fill.
+PROVISIONAL_SOURCES = {"snaptrade_order"}
+ID_LINKED_SOURCES = {"snaptrade": {"snaptrade_order"}, "snaptrade_order": {"snaptrade"}}
 
 
 @dataclass
@@ -90,6 +94,7 @@ class _Target:
     lead: bool               # only the lead record of a group applies the merge
     group_size: int = 1
     outcome: dict | None = None   # shared by a group's records: {"changed": bool}
+    recs: list | None = None      # all incoming records of the group
 
 
 class Plan(list):
@@ -134,6 +139,36 @@ def _detect_renames(inc: list[Item], exi: list[Item], matched: list, source: str
     return out
 
 
+def _base_id(ext: str | None) -> str:
+    return (ext or "").split("#", 1)[0]
+
+
+def _id_match(inc: list[Item], exi: list[Item], source: str) -> list[Match]:
+    """Records and rows from linked sources that carry the same broker order id (e.g. a SnapTrade
+    order and the activity it later becomes) are the same fill(s), whatever the price rounding.
+    Multi-leg activity ids carry a '#n' suffix: all legs map to the one order row."""
+    linked = ID_LINKED_SOURCES.get(source)
+    if not linked:
+        return []
+    rows: dict[str, list[Item]] = defaultdict(list)
+    for e in exi:
+        if getattr(e.ref, "source", None) in linked:
+            rows[_base_id(e.ref.external_id)].append(e)
+    ins: dict[str, list[Item]] = defaultdict(list)
+    for i in inc:
+        if _base_id(i.ref.external_id) in rows:
+            ins[_base_id(i.ref.external_id)].append(i)
+    out = []
+    for ref, group in ins.items():
+        ex = rows[ref]
+        if len({(x.symbol, x.side, x.kind) for x in group + ex}) != 1:
+            continue  # ids agree but the fills don't: leave it to the regular matcher
+        if abs(sum(x.qty for x in group) - sum(x.qty for x in ex)) > 1e-6:
+            continue
+        out.append(Match(list(group), list(ex)))
+    return out
+
+
 def plan_ingest(db: Session, account_id: int, source: str, records: list[ExecRecord],
                 aliases: dict[str, str] | None = None) -> Plan:
     """Classify records as new / merge / duplicate without writing (used for import preview).
@@ -174,13 +209,18 @@ def plan_ingest(db: Session, account_id: int, source: str, records: list[ExecRec
                     qty=e.quantity, price=e.price, order=(e.executed_at, e.seq or 0, e.id)) for e in cand_rows]
         return inc, exi
 
+    def match_all(inc, exi):
+        by_id = _id_match(inc, exi, source)
+        used = {id(x) for m in by_id for x in m.incoming + m.existing}
+        return by_id + match([i for i in inc if id(i) not in used], [e for e in exi if id(e) not in used])
+
     inc, exi = items(aliases)
-    matches = match(inc, exi)
+    matches = match_all(inc, exi)
     detected = _detect_renames(inc, exi, matches, source)
     if detected:
         aliases.update({old: new for old, (new, _e) in detected.items()})
         inc, exi = items(aliases)
-        matches = match(inc, exi)
+        matches = match_all(inc, exi)
     for m in matches:
         recs = [i.ref for i in m.incoming]
         rows = [e.ref for e in m.existing]
@@ -188,7 +228,7 @@ def plan_ingest(db: Session, account_id: int, source: str, records: list[ExecRec
         outcome: dict = {}
         for k, r in enumerate(sorted(recs, key=lambda r: pos[id(r)])):
             actions[pos[id(r)]] = ("merge", r, _Target(rows=rows, agg=agg, lead=(k == 0), group_size=len(recs),
-                                                       outcome=outcome))
+                                                       outcome=outcome, recs=recs))
     plan = Plan(actions.get(idx) or ("new", r, None) for idx, r in enumerate(records))
     plan.detected_aliases = detected
     return plan
@@ -215,6 +255,42 @@ def _replace_rows(db: Session, rows: list[Execution], rec: ExecRecord, account_i
     return new
 
 
+def _supersede_provisional(db: Session, rows: list[Execution], recs: list[ExecRecord], account_id: int,
+                           source: str, batch_id: int | None) -> list[Execution]:
+    """Replace provisional rows by the authoritative records. Non-provisional rows in the match
+    (e.g. a thinkorswim fill) are replaced as well, as _replace_rows does for file rows."""
+    if len(recs) == 1:
+        return [_replace_rows(db, rows, recs[0], account_id, source, batch_id)]
+    timed = sorted((r for r in rows if r.time_known), key=lambda r: (r.executed_at, r.seq or 0))
+    effect = next((r.position_effect for r in rows if r.position_effect), None)
+    new_rows = []
+    for rec in recs:
+        new = _record_to_row(rec, account_id, source, batch_id)
+        if timed and not rec.time_known:
+            new.executed_at, new.time_known, new.seq = timed[0].executed_at, True, timed[0].seq or 0
+        if not new.position_effect:
+            new.position_effect = effect
+        db.add(new)
+        new_rows.append(new)
+    db.flush()
+    _remember_trade_links(db, rows, new_rows[0].id)
+    for r in rows:
+        db.delete(r)
+    return new_rows
+
+
+def prune_stale_provisional(db: Session, account_id: int, before_day) -> list[Execution]:
+    """Provisional fills dated before `before_day` that no authoritative record superseded (the
+    activity feed already covers that day): drop them so they can't double count."""
+    stale = [e for e in db.scalars(select(Execution).where(
+        Execution.account_id == account_id, Execution.source.in_(PROVISIONAL_SOURCES)))
+        if (_row_day(e) or before_day) < before_day]
+    for e in stale:
+        db.delete(e)
+    db.flush()
+    return stale
+
+
 def _remember_trade_links(db: Session, rows: list[Execution], new_exec_id: int) -> None:
     """Before dropping executions, note which trades used them so rebuild_trades can carry
     journal fields over to the trade that now contains the replacement execution."""
@@ -238,7 +314,7 @@ def ingest_records(db: Session, account_id: int, source: str, records: list[Exec
     for action, rec, target in plan:
         if action == "duplicate":
             stats.duplicates += 1
-            if source in REFRESHABLE_SOURCES:  # API data can be corrected after the fact; refresh it.
+            if source in REFRESHABLE_SOURCES | PROVISIONAL_SOURCES:  # API data can change later; refresh it.
                 row = db.scalar(select(Execution).where(
                     Execution.account_id == account_id, Execution.source == source,
                     Execution.external_id == rec.external_id))
@@ -258,6 +334,14 @@ def ingest_records(db: Session, account_id: int, source: str, records: list[Exec
                     stats.duplicates += 1
                 continue
             rows, agg = target.rows, target.agg
+            if source not in PROVISIONAL_SOURCES and any(r.source in PROVISIONAL_SOURCES for r in rows):
+                # The authoritative fill(s) supersede provisional ones (keeping any exact time).
+                new_rows = _supersede_provisional(db, rows, target.recs or [rec], account_id, source, batch_id)
+                for r_, nr in zip(target.recs or [rec], new_rows):
+                    tr_[id(r_)] = [nr]
+                target.outcome["changed"] = True
+                stats.merged += 1
+                continue
             replace_ok = (source in REFRESHABLE_SOURCES and target.group_size == 1
                           and all(r.source not in REFRESHABLE_SOURCES for r in rows))
             if replace_ok:
