@@ -1,5 +1,5 @@
 {# One stat card in the trade page's top bar. Context: wid, t, tm #}
-{% macro kv(label, value, cls='', id='', title='') %}<div class="rounded-lg border border-slate-800 bg-[#111827] px-3 py-1.5 min-w-0 h-full"{% if title %} title="{{ title }}"{% endif %}><div class="text-[10px] uppercase tracking-wide text-slate-500 font-semibold truncate">{{ label }}</div><div {% if id %}id="{{ id }}" {% endif %}class="text-sm font-semibold truncate {{ cls or 'text-white' }}">{{ value }}</div></div>{% endmacro %}
+{% macro kv(label, value, cls='', id='', title='') %}<div class="rounded-lg border border-slate-800 bg-[#111827] px-3 py-1.5 min-w-0 h-full"{% if title %} title="{{ title }}"{% endif %}><div class="text-[10px] uppercase tracking-wide text-slate-500 font-semibold truncate">{{ label }}{% if title %} <span class="text-slate-600 cursor-help">ⓘ</span>{% endif %}</div><div {% if id %}id="{{ id }}" {% endif %}class="text-sm font-semibold truncate {{ cls or 'text-white' }}">{{ value }}</div></div>{% endmacro %}
 {% macro pct(v, d=0) %}{{ (v|num(d) ~ '%') if v is not none else '—' }}{% endmacro %}
 {% set closed = t.status == 'CLOSED' %}
 {% if wid == 'net' %}{{ kv('Net P&L', t.net_pnl|money(true), t.net_pnl|pnl_class) }}
@@ -11,9 +11,9 @@
 {% elif wid == 'exit' %}{{ kv('Avg exit', t.exit_price|num(2)) }}
 {% elif wid == 'max_size' %}{{ kv('Max size', t.quantity|qty ~ (' contracts' if t.asset_type == 'OPTION' else ' sh')) }}
 {% elif wid == 'hold' %}{{ kv('Hold time', ((t.closed_at - t.opened_at)|td if t.closed_at else 'open') ~ ('' if t.time_known else ' (date only)')) }}
-{% elif wid == 'mfe_mae' %}{{ kv('MFE / MAE', (t.mfe|money ~ ' / ' ~ t.mae|money) if t.mfe is not none else '—', '', 'mfe') }}
-{% elif wid == 'mfe' %}{{ kv('MFE', t.mfe|money, 'text-emerald-400', title='Most the position was up while open') }}
-{% elif wid == 'mae' %}{{ kv('MAE', t.mae|money, 'text-rose-400', title='Most the position was down while open') }}
+{% elif wid == 'mfe_mae' %}{{ kv('MFE / MAE', (t.mfe|money ~ ' / ' ~ t.mae|money) if t.mfe is not none else '—', '', 'mfe', mfe_note) }}
+{% elif wid == 'mfe' %}{{ kv('MFE', t.mfe|money, 'text-emerald-400', title=mfe_note or 'Most the position was up while open') }}
+{% elif wid == 'mae' %}{{ kv('MAE', t.mae|money, 'text-rose-400', title=mfe_note or 'Most the position was down while open') }}
 {% elif wid == 'mfe_eff' %}{{ kv('MFE efficiency', pct(tm.mfe_eff), '', title='Net P&L ÷ MFE: share of the best run you kept') }}
 {% elif wid == 'mae_eff' %}{{ kv('MAE efficiency', pct(tm.mae_eff), '', title='Net P&L ÷ |MAE|') }}
 {% elif wid == 'best_exit' %}{{ kv('Best exit possible', tm.best_exit|money(true), 'text-emerald-300', title='= MFE: P&L at the best price between entry and exit') }}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -21,8 +22,12 @@ SORTS = {
 }
 
 
-@router.get("/trades")
-def trades_list(request: Request, db: Session = Depends(get_db)):
+LIST_KEYS = ("preset", "start", "end", "account", "symbol", "direction", "asset", "status", "outcome", "setup",
+             "tag", "sort", "dir")
+
+
+def filtered_trades(request: Request):
+    """Trades-list query (filters + sort) shared by the list and the trade page's sidebar."""
     f = parse_filters(request)
     q = request.query_params
     stmt = apply_trade_filters(select(Trade), f)
@@ -43,11 +48,22 @@ def trades_list(request: Request, db: Session = Depends(get_db)):
     if q.get("tag"):
         stmt = stmt.where(Trade.tags.any(Tag.name == q["tag"]))
     sort = q.get("sort", "opened")
+    sort = sort if sort in SORTS else "opened"
     desc = q.get("dir", "desc") != "asc"
-    col = SORTS.get(sort, Trade.opened_at)
+    col = SORTS[sort]
     stmt = stmt.order_by(col.desc() if desc else col.asc(), Trade.id.desc())
+    list_qs = urlencode([(k, v) for k, v in q.multi_items() if k in LIST_KEYS and v != ""])
+    return stmt, f, q, sort, desc, list_qs
+
+
+@router.get("/trades")
+def trades_list(request: Request, db: Session = Depends(get_db)):
+    stmt, f, q, sort, desc, list_qs = filtered_trades(request)
     total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
-    page = max(1, int(q.get("page", 1) or 1))
+    try:
+        page = max(1, int(q.get("page", 1) or 1))
+    except ValueError:
+        page = 1
     rows = list(db.scalars(stmt.offset((page - 1) * PAGE).limit(PAGE)))
     sub = stmt.where(Trade.status == "CLOSED").order_by(None).subquery()
     agg = db.execute(select(func.sum(sub.c.net_pnl), func.count(sub.c.id))).first()
@@ -56,7 +72,7 @@ def trades_list(request: Request, db: Session = Depends(get_db)):
     params = {k: v for k, v in q.items() if k not in ("sort", "dir", "page")}
     return templates.TemplateResponse(request, "trades.html", base_context(
         request, db, nav="trades", f=f, trades=rows, total=total, page=page, pages=max(1, -(-total // PAGE)),
-        sort=sort, desc=desc, params=params, q=q, setups=sorted(setups), tags=tags,
+        sort=sort, desc=desc, params=params, q=q, setups=sorted(setups), tags=tags, list_qs=list_qs,
         filtered_pnl=(agg[0] or 0.0) if agg else 0.0))
 
 
@@ -67,16 +83,32 @@ def _get_trade(db: Session, trade_id: int) -> Trade:
     return t
 
 
+SIDEBAR_LIMIT = 1000
+
+
 @router.get("/trades/{trade_id}")
 def trade_detail(trade_id: int, request: Request, db: Session = Depends(get_db)):
     t = _get_trade(db, trade_id)
-    prev_id = db.scalar(select(Trade.id).where(Trade.opened_at < t.opened_at).order_by(Trade.opened_at.desc()))
-    next_id = db.scalar(select(Trade.id).where(Trade.opened_at > t.opened_at).order_by(Trade.opened_at.asc()))
+    stmt, f, q, sort, desc, list_qs = filtered_trades(request)
+    cols = stmt.with_only_columns(Trade.id, Trade.symbol, Trade.opened_at, Trade.closed_at, Trade.direction,
+                                  Trade.status, Trade.net_pnl, Trade.time_known, Trade.is_demo)
+    nav_rows = db.execute(cols.limit(SIDEBAR_LIMIT)).all()
+    ids = [r.id for r in nav_rows]
+    in_list = t.id in ids
+    if in_list:
+        i = ids.index(t.id)
+        prev_id = ids[i - 1] if i > 0 else None
+        next_id = ids[i + 1] if i + 1 < len(ids) else None
+    else:  # filters exclude this trade: chronological neighbours
+        prev_id = db.scalar(select(Trade.id).where(Trade.opened_at > t.opened_at).order_by(Trade.opened_at.asc()))
+        next_id = db.scalar(select(Trade.id).where(Trade.opened_at < t.opened_at).order_by(Trade.opened_at.desc()))
     all_tags = list(db.scalars(select(Tag.name).order_by(Tag.name)))
     setups = sorted(s for s in db.scalars(select(Trade.setup).where(Trade.setup.is_not(None)).distinct()) if s)
+    filtered = any(k in q for k in LIST_KEYS if k not in ("sort", "dir"))
     return templates.TemplateResponse(request, "trade_detail.html", base_context(
         request, db, nav="trades", t=t, prev_id=prev_id, next_id=next_id, all_tags=all_tags, setups=setups,
-        saved=False, fullscreen=True, mfe_note=excursion_note(excursion_basis(t))))
+        saved=False, fullscreen=True, mfe_note=excursion_note(excursion_basis(t)), nav_rows=nav_rows,
+        list_qs=list_qs, in_list=in_list, list_filtered=filtered, list_truncated=len(nav_rows) >= SIDEBAR_LIMIT))
 
 
 @router.post("/trades/{trade_id}/journal")

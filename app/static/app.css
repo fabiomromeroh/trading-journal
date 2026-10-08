@@ -27,7 +27,6 @@
   #nav-backdrop { display: none; }
   body.mnav-open #nav-backdrop { display: block; position: fixed; inset: 0; z-index: 55; background: rgba(0,0,0,.55); }
   .inp, select.inp { font-size: 16px; min-height: 38px; max-width: 100%; }  /* no iOS zoom, touch-sized */
-  table.tbl { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; max-width: 100%; }
   .btn { min-height: 38px; }
   .cal-cell { min-height: 46px; padding: .2rem; font-size: .6rem; }
   .kpi-v { font-size: 1.15rem; }
@@ -35,3 +34,24 @@
 .scroll-x { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 html.js .nojs-only { display: none; }
 form.is-loading { opacity: .7; }
+
+/* ---------- trade page: trade list (sidebar on lg+, drawer below) and chart height ---------- */
+#trade-list { width: 250px; flex-shrink: 0; }
+.tj-chart-h { height: calc(100vh - 205px); min-height: 460px; }
+@media (min-width: 1024px) {
+  #trade-list { position: sticky; top: .5rem; height: calc(100vh - 1rem); }
+  #trade-list.tl-hidden { display: none; }
+}
+@media (max-width: 1023px) {
+  #trade-list { position: fixed; top: 0; bottom: 0; left: 0; z-index: 58; width: min(300px, 86vw); border-radius: 0;
+                transform: translateX(-105%); transition: transform .2s ease; box-shadow: 0 0 40px rgba(0,0,0,.6); }
+  #trade-list.tl-open { transform: none; }
+  #tl-backdrop { position: fixed; inset: 0; z-index: 57; background: rgba(0,0,0,.55); }
+  #tl-items a { padding-top: .55rem; padding-bottom: .55rem; }
+}
+@media (max-width: 767px) { .tj-chart-h { height: 62vh; min-height: 360px; } }
+
+/* tablets / narrow desktops: wide tables scroll inside themselves instead of widening the page */
+@media (max-width: 1023px) {
+  table.tbl { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; max-width: 100%; }
+}

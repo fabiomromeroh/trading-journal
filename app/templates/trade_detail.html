@@ -2,12 +2,19 @@
 {% block title %}{{ t.symbol }} · Trade #{{ t.id }}{% endblock %}
 {% block head %}<script src="https://unpkg.com/lightweight-charts@5.2.1/dist/lightweight-charts.standalone.production.js"></script>{% endblock %}
 {% block content %}
-<div x-data="{ journal: localStorage.getItem('tj.journalPanel') !== '0' }" x-init="$watch('journal', v => localStorage.setItem('tj.journalPanel', v ? '1' : '0'))">
+<div x-data="{ journal: localStorage.getItem('tj.journalPanel') !== '0', tlist: localStorage.getItem('tj.tradeList') !== '0', tdrawer: false,
+               toggleList() { if (window.matchMedia('(min-width: 1024px)').matches) this.tlist = !this.tlist; else this.tdrawer = !this.tdrawer; } }"
+     x-init="$watch('journal', v => localStorage.setItem('tj.journalPanel', v ? '1' : '0')); $watch('tlist', v => localStorage.setItem('tj.tradeList', v ? '1' : '0'))"
+     @keydown.escape.window="tdrawer = false">
+<div id="tl-backdrop" class="lg:hidden" x-show="tdrawer" x-cloak @click="tdrawer = false"></div>
 <div class="flex flex-wrap items-center gap-x-3 gap-y-2 mb-2">
   <button type="button" @click="toggleNav()" class="btn btn-s !px-2 !py-1.5 hidden md:inline-flex" :title="side ? 'Hide menu' : 'Show menu'" aria-label="Toggle menu">
     <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" d="M4 6h16M4 12h16M4 18h16"/></svg>
   </button>
-  <a href="/trades" class="text-slate-400 hover:text-white text-sm">← Trades</a>
+  <button type="button" @click="toggleList()" class="btn btn-s !px-2 !py-1.5 text-xs flex items-center gap-1" title="Trade list (j / k to move)" aria-label="Toggle trade list">
+    <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/></svg><span class="hidden sm:inline">List</span>
+  </button>
+  <a href="/trades{{ '?' ~ list_qs if list_qs }}" class="text-slate-400 hover:text-white text-sm">← Trades</a>
   <h1 class="text-xl font-semibold text-white">{{ t.symbol }}</h1>
   <span class="pill {{ 'bg-emerald-500/15 text-emerald-300' if t.direction == 'LONG' else 'bg-rose-500/15 text-rose-300' }}">{{ t.direction }}</span>
   <span class="pill bg-slate-700/60 text-slate-300">{{ 'Option' if t.asset_type == 'OPTION' else 'Stock' }}</span>
@@ -16,12 +23,36 @@
   {% if t.is_demo %}<span class="pill bg-amber-500/20 text-amber-300">SAMPLE DATA</span>{% endif %}
   <span class="text-xs text-slate-500">{{ t.opened_at|local_dt('%b %d, %Y') }}{% if t.closed_at %} → {{ t.closed_at|local_dt('%b %d, %Y') }}{% endif %}</span>
   <div class="ml-auto flex gap-2 text-sm">
-    {% if prev_id %}<a href="/trades/{{ prev_id }}" class="btn btn-s !py-1">← Prev</a>{% endif %}
-    {% if next_id %}<a href="/trades/{{ next_id }}" class="btn btn-s !py-1">Next →</a>{% endif %}
+    {% if prev_id %}<a id="prev-trade" href="/trades/{{ prev_id }}{{ '?' ~ list_qs if list_qs }}" class="btn btn-s !py-1" title="Previous in list (k)">← Prev</a>{% endif %}
+    {% if next_id %}<a id="next-trade" href="/trades/{{ next_id }}{{ '?' ~ list_qs if list_qs }}" class="btn btn-s !py-1" title="Next in list (j)">Next →</a>{% endif %}
     <button type="button" class="btn btn-s !py-1" @click="journal = !journal" x-text="journal ? 'Hide journal' : 'Journal'">Journal</button>
   </div>
 </div>
 
+<div class="flex gap-3 items-start">
+<aside id="trade-list" class="flex flex-col rounded-xl border border-slate-800 bg-[#0f1520] overflow-hidden" :class="{ 'tl-open': tdrawer, 'tl-hidden': !tlist }" aria-label="Trades">
+  <div class="p-2 border-b border-slate-800 space-y-1.5">
+    <div class="flex items-center justify-between text-xs">
+      <span class="card-h">Trades <span class="text-slate-500 normal-case">({{ nav_rows|length }}{{ '+' if list_truncated }})</span></span>
+      <span class="flex items-center gap-2">{% if list_filtered %}<a href="/trades?{{ list_qs }}" class="pill bg-indigo-500/20 text-indigo-200" title="Using the filters from the trades list">filtered</a><a href="/trades/{{ t.id }}" class="text-slate-500 hover:text-white" title="Show all trades">clear</a>{% endif %}
+      <button type="button" class="lg:hidden text-slate-400 text-lg leading-none px-1" @click="tdrawer = false" aria-label="Close list">×</button></span>
+    </div>
+    <input id="tl-search" type="search" placeholder="Search symbol…  (/)" class="inp w-full text-xs" autocomplete="off" aria-label="Search trades">
+  </div>
+  {% if not in_list %}<div class="px-2 py-1.5 text-[11px] text-amber-300/80 border-b border-slate-800">This trade isn't in the current filter.</div>{% endif %}
+  <nav id="tl-items" class="flex-1 overflow-y-auto p-1 space-y-0.5 text-sm">
+    {% for r in nav_rows %}{% set cur = r.id == t.id %}
+    <a href="/trades/{{ r.id }}{{ '?' ~ list_qs if list_qs }}" data-tl-item data-sym="{{ r.symbol|lower }}" class="flex items-stretch gap-2 px-2 py-1.5 rounded-md {{ 'bg-indigo-500/20 ring-1 ring-indigo-500/50' if cur else 'hover:bg-slate-800/70' }}"{% if cur %} aria-current="page"{% endif %}>
+      <span class="w-1 rounded {{ 'bg-sky-400' if r.status == 'OPEN' else 'bg-emerald-400' if r.net_pnl > 0 else 'bg-rose-400' if r.net_pnl < 0 else 'bg-slate-500' }}"></span>
+      <span class="min-w-0 flex-1">
+        <span class="flex justify-between gap-2"><span class="text-white font-medium truncate">{{ r.symbol }}</span><span class="{{ r.net_pnl|pnl_class }} tabular-nums">{{ r.net_pnl|money }}</span></span>
+        <span class="flex justify-between gap-2 text-[11px] text-slate-500"><span>{{ r.opened_at|local_dt('%b %d') }} · {{ 'L' if r.direction == 'LONG' else 'S' }}</span><span>{{ 'OPEN' if r.status == 'OPEN' else 'WIN' if r.net_pnl > 0 else 'LOSS' if r.net_pnl < 0 else 'BE' }}</span></span>
+      </span>
+    </a>
+    {% else %}<div class="text-xs text-slate-500 p-3">No trades match the filter.</div>{% endfor %}
+  </nav>
+</aside>
+<div class="flex-1 min-w-0">
 {% macro kv(label, value, cls='', id='', wid='', title='') %}<div class="rounded-lg border border-slate-800 bg-[#111827] px-3 py-1.5 min-w-0" data-widget="{{ wid or label|lower|replace(' ', '-')|replace('/', '')|replace('&', '') }}"{% if title %} title="{{ title }}"{% endif %}><div class="text-[10px] uppercase tracking-wide text-slate-500 font-semibold truncate">{{ label }}{% if title %} <span class="text-slate-600 cursor-help">ⓘ</span>{% endif %}</div><div {% if id %}id="{{ id }}" {% endif %}class="text-sm font-semibold truncate {{ cls or 'text-white' }}">{{ value }}</div></div>{% endmacro %}
 <div class="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-8 gap-2 mb-2">
   {{ kv('Net P&L', t.net_pnl|money(true), t.net_pnl|pnl_class) }}
@@ -34,14 +65,14 @@
   {{ kv('MFE / MAE', (t.mfe|money ~ ' / ' ~ t.mae|money) if t.mfe is not none else '—', '', 'mfe', 'mfe-mae', mfe_note) }}
 </div>
 
-<div class="flex flex-col lg:flex-row gap-3 items-start">
+<div class="flex flex-col xl:flex-row gap-3 items-start">
   <section class="flex-1 min-w-0 w-full space-y-3">
     <div class="card overflow-hidden">
       <div class="flex flex-wrap items-center gap-2 px-3 py-2 border-b border-slate-800">
         <div id="tf-bar" class="flex flex-wrap rounded-lg bg-[#0b1220] border border-slate-700/60 p-0.5" role="group" aria-label="Timeframe"></div>
         <div class="relative">
           <button id="ind-btn" type="button" class="btn btn-s !py-1 text-xs flex items-center gap-1"><span class="italic font-serif">ƒx</span> Indicators</button>
-          <div id="ind-menu" class="hidden absolute left-0 top-full mt-1 z-30 w-[340px] max-h-[70vh] overflow-auto rounded-xl border border-slate-700 bg-[#0f1520] p-3 shadow-2xl"></div>
+          <div id="ind-menu" class="hidden absolute left-0 top-full mt-1 z-30 w-[min(340px,calc(100vw-1.5rem))] max-h-[70vh] overflow-auto rounded-xl border border-slate-700 bg-[#0f1520] p-3 shadow-2xl"></div>
         </div>
         <div id="ind-chips" class="flex flex-wrap gap-1"></div>
         <div class="ml-auto flex items-center gap-3 text-xs text-slate-500">
@@ -51,7 +82,7 @@
         </div>
       </div>
       <div id="chart-note" class="hidden text-[11px] text-amber-300/80 px-3 py-1 border-b border-slate-800"></div>
-      <div id="chart-wrap" class="relative w-full" style="height: calc(100vh - 205px); min-height: 460px;">
+      <div id="chart-wrap" class="relative w-full tj-chart-h">
         <div id="chart" class="absolute inset-0"></div>
         <div id="chart-legend" class="absolute left-2 top-1 z-10 text-[11px] text-slate-400 pointer-events-none space-y-0.5"></div>
         <div id="chart-placeholder" class="absolute inset-0 grid place-items-center text-slate-500 text-sm bg-[#0f1520] z-20">Loading chart…</div>
@@ -79,12 +110,14 @@
       <div class="text-xs text-slate-500 mt-2">Account: {{ t.account.name }} · P&L uses FIFO matching{% if t.asset_type == 'OPTION' %} · multiplier ×{{ t.multiplier|qty }}{% endif %}{% if t.close_reason and t.close_reason != 'TRADE' %} · closed by {{ t.close_reason|lower }}{% endif %}</div>
     </div>
   </section>
-  <aside class="w-full lg:w-[340px] shrink-0 lg:sticky lg:top-3" x-show="journal">
-    <div class="card p-4 lg:max-h-[calc(100vh-24px)] lg:overflow-auto">
+  <aside class="w-full xl:w-[340px] shrink-0 xl:sticky xl:top-3" x-show="journal">
+    <div class="card p-4 xl:max-h-[calc(100vh-24px)] xl:overflow-auto">
       <div class="card-h mb-3">Journal</div>
       {% include "partials/journal_form.html" %}
     </div>
   </aside>
+</div>
+</div>
 </div>
 </div>
 {% endblock %}
@@ -93,5 +126,36 @@
 window.TJ_CHART = { tradeId: {{ t.id }}, symbol: {{ t.underlying|tojson }}, tz: {{ settings().display_tz|tojson }},
   isStock: {{ 'true' if t.asset_type == 'STOCK' else 'false' }}, entry: {{ t.entry_price|tojson }}, exit: {{ t.exit_price|tojson }} };
 </script>
-<script src="/static/trade_chart.js?v=2"></script>
+<script src="/static/trade_chart.js?v=3"></script>
+<script>
+(function () {  // trade list: current row into view, quick search, j/k (and ↑/↓ inside the list) to move
+  const items = () => [...document.querySelectorAll('[data-tl-item]')].filter((a) => a.style.display !== 'none');
+  const cur = document.querySelector('[data-tl-item][aria-current]');
+  if (cur) cur.scrollIntoView({ block: 'center' });
+  const search = document.getElementById('tl-search'), list = document.getElementById('tl-items');
+  search.addEventListener('input', () => {
+    const v = search.value.trim().toLowerCase();
+    document.querySelectorAll('[data-tl-item]').forEach((a) => { a.style.display = !v || a.dataset.sym.includes(v) ? '' : 'none'; });
+  });
+  search.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { const f = items()[0]; if (f) location.href = f.href; }
+    if (e.key === 'ArrowDown') { e.preventDefault(); const f = items()[0]; if (f) f.focus(); }
+  });
+  function go(step) {
+    const its = items(); if (!its.length) return;
+    let i = its.indexOf(document.activeElement); if (i < 0) i = its.indexOf(cur);
+    const n = its[i < 0 ? 0 : Math.min(its.length - 1, Math.max(0, i + step))];
+    if (n && n !== cur) location.href = n.href;
+  }
+  document.addEventListener('keydown', (e) => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const tag = (e.target.tagName || '').toLowerCase();
+    if (['input', 'textarea', 'select'].includes(tag) || e.target.isContentEditable) return;
+    const inList = list.contains(e.target);
+    if (e.key === 'j' || (inList && e.key === 'ArrowDown')) { e.preventDefault(); go(1); }
+    else if (e.key === 'k' || (inList && e.key === 'ArrowUp')) { e.preventDefault(); go(-1); }
+    else if (e.key === '/') { e.preventDefault(); search.focus(); }
+  });
+})();
+</script>
 {% endblock %}

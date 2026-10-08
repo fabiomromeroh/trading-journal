@@ -5,19 +5,20 @@
   <a href="?{{ p|urlencode }}" class="hover:text-white {{ 'text-indigo-300' if sort == key }}">{{ label }}{% if sort == key %} {{ '↓' if desc else '↑' }}{% endif %}</a>
 {% endmacro %}
 {% block content %}
-<div class="flex flex-wrap items-end justify-between gap-4 mb-4">
+<div id="trades-results">
+<div class="flex flex-wrap items-end justify-between gap-2 mb-3">
   <div>
     <h1 class="text-2xl font-semibold text-white">Trades</h1>
     <p class="text-sm text-slate-500">{{ total }} trades · closed net P&L in view <span class="{{ filtered_pnl|pnl_class }}">{{ filtered_pnl|money(true) }}</span></p>
   </div>
 </div>
-<form method="get" class="card p-3 mb-4 flex flex-wrap items-center gap-2 text-xs">
-  <div class="flex rounded-lg border border-slate-700 overflow-hidden">
+<form method="get" action="/trades" class="card p-3 mb-4 flex flex-wrap items-center gap-2 text-xs" data-autofilter="swap" data-target="#trades-results">
+  <div class="flex rounded-lg border border-slate-700 overflow-hidden max-w-full overflow-x-auto">
     {% for key, label in presets %}<button name="preset" value="{{ key }}" class="px-3 py-1.5 {{ 'bg-indigo-600 text-white' if f.preset == key else 'text-slate-400 hover:bg-slate-800' }}">{{ label }}</button>{% endfor %}
   </div>
-  <input type="date" name="start" value="{{ f.start or '' }}" class="inp text-xs">
-  <input type="date" name="end" value="{{ f.end or '' }}" class="inp text-xs">
-  <input name="symbol" value="{{ q.get('symbol','') }}" placeholder="Symbol" class="inp text-xs w-24">
+  <input type="date" name="start" value="{{ (f.start or '') if f.preset == 'custom' else '' }}" class="inp text-xs" aria-label="From">
+  <input type="date" name="end" value="{{ (f.end or '') if f.preset == 'custom' else '' }}" class="inp text-xs" aria-label="To">
+  <input type="search" name="symbol" value="{{ q.get('symbol','') }}" placeholder="Symbol" class="inp text-xs w-28" autocomplete="off">
   <select name="account" class="inp text-xs"><option value="">All accounts</option>{% for a in accounts %}<option value="{{ a.id }}" {{ 'selected' if f.account_id == a.id }}>{{ a.name }}</option>{% endfor %}</select>
   <select name="direction" class="inp text-xs"><option value="">Long & short</option>{% for v in ['LONG','SHORT'] %}<option {{ 'selected' if q.get('direction') == v }}>{{ v }}</option>{% endfor %}</select>
   <select name="asset" class="inp text-xs"><option value="">Stocks & options</option><option value="STOCK" {{ 'selected' if q.get('asset') == 'STOCK' }}>Stocks</option><option value="OPTION" {{ 'selected' if q.get('asset') == 'OPTION' }}>Options</option></select>
@@ -25,9 +26,38 @@
   <select name="outcome" class="inp text-xs"><option value="">Wins & losses</option><option value="win" {{ 'selected' if q.get('outcome') == 'win' }}>Winners</option><option value="loss" {{ 'selected' if q.get('outcome') == 'loss' }}>Losers</option></select>
   <select name="setup" class="inp text-xs"><option value="">Any setup</option>{% for s in setups %}<option {{ 'selected' if q.get('setup') == s }}>{{ s }}</option>{% endfor %}</select>
   <select name="tag" class="inp text-xs"><option value="">Any tag</option>{% for s in tags %}<option {{ 'selected' if q.get('tag') == s }}>{{ s }}</option>{% endfor %}</select>
-  <button class="btn btn-p text-xs">Filter</button><a href="/trades" class="text-slate-400 hover:text-white">Reset</a>
+  <span class="flex items-center gap-1">
+    <select name="sort" class="inp text-xs" aria-label="Sort by">{% for k, l in [('opened','Opened'),('closed','Closed'),('symbol','Symbol'),('pnl','Net P&L'),('return','Return'),('qty','Qty'),('fees','Fees'),('hold','Hold')] %}<option value="{{ k }}" {{ 'selected' if sort == k }}>Sort: {{ l }}</option>{% endfor %}</select>
+    <select name="dir" class="inp text-xs" aria-label="Sort direction"><option value="desc" {{ 'selected' if desc }}>↓</option><option value="asc" {{ 'selected' if not desc }}>↑</option></select>
+  </span>
+  <button class="btn btn-p text-xs nojs-only">Filter</button><a href="/trades" class="text-slate-400 hover:text-white px-1">Reset</a>
 </form>
-<div class="card overflow-x-auto">
+
+{# phones: cards #}
+<div class="md:hidden space-y-2">
+  {% for t in trades %}
+  <a href="/trades/{{ t.id }}{{ '?' ~ list_qs if list_qs }}" class="card p-3 flex items-center gap-3 active:bg-slate-800/60">
+    <div class="min-w-0 flex-1">
+      <div class="flex items-center gap-2 flex-wrap">
+        <span class="text-white font-semibold">{{ t.symbol }}</span>
+        <span class="pill {{ 'bg-emerald-500/15 text-emerald-300' if t.direction == 'LONG' else 'bg-rose-500/15 text-rose-300' }}">{{ t.direction }}</span>
+        {% if t.status == 'OPEN' %}<span class="pill bg-sky-500/15 text-sky-300">OPEN</span>{% else %}<span class="pill {{ 'bg-emerald-500/15 text-emerald-300' if t.net_pnl > 0 else 'bg-rose-500/15 text-rose-300' if t.net_pnl < 0 else 'bg-slate-500/20 text-slate-300' }}">{{ 'WIN' if t.net_pnl > 0 else 'LOSS' if t.net_pnl < 0 else 'BE' }}</span>{% endif %}
+        {% if t.id in provisional_trades %}<span class="pill bg-amber-500/15 text-amber-300">provisional</span>{% endif %}
+      </div>
+      <div class="text-xs text-slate-500 mt-0.5">{{ t.opened_at|local_dt('%b %d %H:%M' if t.time_known else '%b %d') }}{% if t.closed_at %} → {{ t.closed_at|local_dt('%b %d %H:%M' if t.time_known else '%b %d') }}{% endif %} · {{ t.quantity|qty }} @ {{ t.entry_price|num(2) }}{% if t.exit_price %} → {{ t.exit_price|num(2) }}{% endif %}</div>
+      {% if t.setup or t.tags %}<div class="text-xs text-slate-400 mt-0.5 truncate">{{ t.setup or '' }}{% for tg in t.tags %} #{{ tg.name }}{% endfor %}</div>{% endif %}
+    </div>
+    <div class="text-right shrink-0">
+      <div class="font-semibold {{ t.net_pnl|pnl_class }}">{{ t.net_pnl|money }}</div>
+      <div class="text-xs {{ t.return_pct|pnl_class }}">{{ (t.return_pct|num(1) ~ '%') if t.return_pct is not none else '' }}</div>
+    </div>
+  </a>
+  {% else %}
+  <div class="card p-8 text-center text-slate-500">No trades match. <a class="text-indigo-300 underline" href="/import">Import a CSV</a></div>
+  {% endfor %}
+</div>
+
+<div class="card overflow-x-auto hidden md:block">
 <table class="w-full text-sm tbl">
   <thead><tr>
     <th>{{ sort_link('opened', 'Opened') }}</th><th>{{ sort_link('closed', 'Closed') }}</th><th>{{ sort_link('symbol', 'Symbol') }}</th><th>Side</th><th>Status</th>
@@ -37,10 +67,10 @@
   </tr></thead>
   <tbody>
   {% for t in trades %}
-  <tr class="cursor-pointer" onclick="location='/trades/{{ t.id }}'">
+  <tr class="cursor-pointer" onclick="location='/trades/{{ t.id }}{{ '?' ~ list_qs if list_qs }}'">
     <td class="text-slate-400">{{ t.opened_at|local_dt('%Y-%m-%d %H:%M' if t.time_known else '%Y-%m-%d') }}</td>
     <td class="text-slate-400">{{ t.closed_at|local_dt('%Y-%m-%d %H:%M' if t.time_known else '%Y-%m-%d') if t.closed_at else '—' }}</td>
-    <td><a href="/trades/{{ t.id }}" class="text-white font-medium hover:underline">{{ t.symbol }}</a>{% if t.is_demo %} <span class="pill bg-amber-500/20 text-amber-300">demo</span>{% endif %}{% if t.id in provisional_trades %} <span class="pill bg-amber-500/15 text-amber-300" title="Includes a same-day fill from a SnapTrade order. Fees post with tomorrow's activity data.">provisional (fees pending)</span>{% endif %}</td>
+    <td><a href="/trades/{{ t.id }}{{ '?' ~ list_qs if list_qs }}" class="text-white font-medium hover:underline">{{ t.symbol }}</a>{% if t.is_demo %} <span class="pill bg-amber-500/20 text-amber-300">demo</span>{% endif %}{% if t.id in provisional_trades %} <span class="pill bg-amber-500/15 text-amber-300" title="Includes a same-day fill from a SnapTrade order. Fees post with tomorrow's activity data.">provisional (fees pending)</span>{% endif %}</td>
     <td><span class="pill {{ 'bg-emerald-500/15 text-emerald-300' if t.direction == 'LONG' else 'bg-rose-500/15 text-rose-300' }}">{{ t.direction }}</span></td>
     <td>{% if t.status == 'OPEN' %}<span class="pill bg-sky-500/15 text-sky-300">OPEN</span>{% else %}<span class="pill {{ 'bg-emerald-500/15 text-emerald-300' if t.net_pnl > 0 else 'bg-rose-500/15 text-rose-300' if t.net_pnl < 0 else 'bg-slate-500/20 text-slate-300' }}">{{ 'WIN' if t.net_pnl > 0 else 'LOSS' if t.net_pnl < 0 else 'BE' }}</span>{% if t.close_reason and t.close_reason != 'TRADE' %} <span class="text-[10px] text-slate-500">{{ t.close_reason|lower }}</span>{% endif %}{% endif %}</td>
     <td class="text-right">{{ t.quantity|qty }}</td><td class="text-right">{{ t.entry_price|num(2) }}</td><td class="text-right">{{ t.exit_price|num(2) }}</td>
@@ -63,4 +93,5 @@
   <a href="?{{ pp|urlencode }}" class="px-3 py-1 rounded {{ 'bg-indigo-600 text-white' if p == page else 'bg-slate-800 text-slate-400' }}">{{ p }}</a>{% endfor %}
 </div>
 {% endif %}
+</div>
 {% endblock %}
