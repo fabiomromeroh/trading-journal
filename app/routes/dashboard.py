@@ -29,6 +29,9 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
     has_any = db.scalar(select(func.count(Execution.id))) or 0
     last_import = db.scalar(select(ImportBatch).where(ImportBatch.status == "committed")
                             .order_by(ImportBatch.committed_at.desc()))
+    from app.models import SyncRun
+    last_sync = db.scalar(select(SyncRun).where(SyncRun.status.in_(("success", "partial")), SyncRun.sources.is_not(None))
+                          .order_by(SyncRun.id.desc()))
     recent = sorted([t for t in trades if t.status == "CLOSED"], key=lambda t: t.closed_at, reverse=True)[:8]
     daily = list(st.daily.values())
     charts = {
@@ -44,4 +47,5 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
     }
     return templates.TemplateResponse(request, "dashboard.html", base_context(
         request, db, nav="dashboard", f=f, st=st, charts=charts, months=calendar_months(st.daily, max_months=3),
-        recent=recent, has_any=has_any, last_import=last_import))
+        recent=recent, has_any=has_any, last_import=last_import,
+        last_sync=last_sync))

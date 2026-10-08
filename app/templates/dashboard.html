@@ -5,7 +5,8 @@
   <div>
     <h1 class="text-2xl font-semibold text-white">Dashboard</h1>
     <p class="text-sm text-slate-500">
-      {% if last_import %}Last import {{ last_import.committed_at|local_dt }} ({{ last_import.filename }}){% else %}No imports yet{% endif %}
+      {% if last_sync %}Last sync {{ last_sync.finished_at|local_dt }} ({{ last_sync.sources }}){% if last_import %} · {% endif %}{% endif %}
+      {% if last_import %}Last import {{ last_import.committed_at|local_dt }} ({{ last_import.filename }}){% elif not last_sync %}No imports yet{% endif %}
       · times in {{ settings().display_tz }}
     </p>
   </div>

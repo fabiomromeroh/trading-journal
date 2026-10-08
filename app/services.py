@@ -164,7 +164,15 @@ def rebuild_trades(db: Session, account_ids: list[int] | None = None) -> int:
                 db.delete(tr)
         set_state(db, f"orphans:{acct_id}", json.dumps([o.__dict__ for o in result.orphans]))
     db.flush()
+    prune_unused_tags(db)
     return total
+
+
+def prune_unused_tags(db: Session) -> None:
+    """Delete tags no longer attached to any trade (e.g. left over from cleared sample data)."""
+    from app.models import Tag, trade_tags
+    db.execute(delete(Tag).where(Tag.id.not_in(select(trade_tags.c.tag_id))))
+    db.flush()
 
 
 def get_state(db: Session, key: str, default: str | None = None) -> str | None:

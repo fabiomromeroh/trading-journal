@@ -67,6 +67,8 @@ def test_demo_data_all_pages(client, db):
     client.post("/settings/demo/clear")
     db.expire_all()
     assert db.scalar(select(Trade)) is None
+    from app.models import Tag
+    assert db.scalar(select(Tag)) is None  # sample-only tags removed too
 
 
 def test_csv_upload_preview_commit_undo(client, db, fixture_text):

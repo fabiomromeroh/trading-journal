@@ -217,8 +217,11 @@ def delete_account(account_id: int, request: Request, confirm: str = Form(""), d
 
 @router.post("/settings/demo/clear")
 def clear_demo(request: Request, db: Session = Depends(get_db)):
+    from app.services import prune_unused_tags
     for a in db.scalars(select(Account).where(Account.is_demo.is_(True))):
         db.delete(a)
+    db.flush()
+    prune_unused_tags(db)  # tags that only existed on sample trades
     db.commit()
     request.session["flash"] = "Sample data removed."
     return RedirectResponse("/settings", status_code=303)
