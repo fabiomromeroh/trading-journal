@@ -19,7 +19,27 @@ from app.web import base_context, templates
 router = APIRouter()
 
 
+def _snaptrade_ctx(db) -> dict | None:
+    from app.models import SourceState
+    from app.sources.snaptrade import SOURCE_KEY, load_status, relogin_due, _parse_dt
+    snap = load_status(db)
+    if not snap:
+        return None
+    conns = []
+    for c in snap.get("connections", []):
+        conns.append({**c, "relogin_due": relogin_due(c), "connected_at_dt": _parse_dt(c.get("connected_at"))})
+    last = db.scalar(select(func.max(SourceState.last_success_at)).where(SourceState.source == SOURCE_KEY))
+    return {"connections": conns, "accounts": snap.get("accounts", []), "error": snap.get("error"),
+            "checked_at": _parse_dt(snap.get("checked_at")), "last_success": last}
+
+
 def _settings_ctx(request, db, **kw):
+    for src in all_sources():
+        if src.key == "snaptrade" and src.is_configured():
+            try:
+                src.refresh(db)
+            except Exception:  # pragma: no cover - shown as status error instead
+                db.rollback()
     sources = [(s, s.status(db)) for s in all_sources()]
     runs = list(db.scalars(select(SyncRun).order_by(SyncRun.id.desc()).limit(15)))
     accounts = list(db.scalars(select(Account).order_by(Account.name)))
@@ -31,7 +51,7 @@ def _settings_ctx(request, db, **kw):
         acct_rows.append({"a": a, "executions": n_exec, "trades": n_trades, "orphans": orphans})
     s = get_settings()
     return base_context(request, db, nav="settings", sources=sources, runs=runs, acct_rows=acct_rows,
-                        active_run=running_sync(db), s=s, **kw)
+                        active_run=running_sync(db), s=s, snaptrade=_snaptrade_ctx(db), **kw)
 
 
 @router.get("/settings")
@@ -110,6 +130,65 @@ def schwab_disconnect(request: Request, db: Session = Depends(get_db)):
     db.execute(delete(OAuthToken).where(OAuthToken.provider == "schwab"))
     db.commit()
     request.session["flash"] = "Schwab disconnected (tokens deleted)."
+    return RedirectResponse("/settings", status_code=303)
+
+
+# ---------------------------------------------------------------- SnapTrade (Schwab) connection
+def _portal_redirect(request: Request, *, reconnect: str | None):
+    from app.sources.snaptrade import SnapTradeClient, SnapTradeError
+    if not get_settings().snaptrade_configured:
+        request.session["flash"] = "SnapTrade is not configured on this server."
+        return RedirectResponse("/settings", status_code=303)
+    back = str(request.base_url).rstrip("/") + "/settings/snaptrade/return"
+    if reconnect:
+        back += f"?id={reconnect}"
+    try:
+        url = SnapTradeClient(timeout=15).login_url(reconnect=reconnect, redirect=back)
+    except (SnapTradeError, Exception) as exc:  # network errors too
+        request.session["flash"] = f"Couldn't open the SnapTrade connection portal: {exc}"
+        return RedirectResponse("/settings", status_code=303)
+    # The portal link is single-use and expires after 5 minutes, so redirect straight away.
+    return RedirectResponse(url, status_code=303)
+
+
+@router.api_route("/settings/snaptrade/reconnect", methods=["GET", "POST"])
+def snaptrade_reconnect(request: Request, id: str = "", db: Session = Depends(get_db)):
+    from app.sources.snaptrade import load_status
+    conns = (load_status(db) or {}).get("connections", [])
+    ids = {c["id"] for c in conns}
+    if id and id not in ids:
+        request.session["flash"] = "Unknown SnapTrade connection."
+        return RedirectResponse("/settings", status_code=303)
+    target = id or next((c["id"] for c in conns if c.get("disabled")), None) or (conns[0]["id"] if conns else None)
+    return _portal_redirect(request, reconnect=target)
+
+
+@router.api_route("/settings/snaptrade/connect", methods=["GET", "POST"])
+def snaptrade_connect(request: Request):
+    return _portal_redirect(request, reconnect=None)
+
+
+@router.get("/settings/snaptrade/return")
+def snaptrade_return(request: Request, id: str = "", db: Session = Depends(get_db)):
+    from app.sources.snaptrade import mark_reconnected, refresh_status
+    snap = refresh_status(db)
+    conns = {c["id"]: c for c in snap.get("connections", [])}
+    if id and id in conns and not conns[id].get("disabled"):
+        mark_reconnected(db, id)
+        request.session["flash"] = "Schwab reconnected. Click Sync now to pull new trades."
+    elif id and id in conns:
+        request.session["flash"] = "SnapTrade still reports the Schwab connection as disabled. Try Reconnect again."
+    else:
+        request.session["flash"] = "Back from SnapTrade. Click Sync now to pull your trades."
+    return RedirectResponse("/settings", status_code=303)
+
+
+@router.post("/settings/snaptrade/resync")
+def snaptrade_resync(request: Request, db: Session = Depends(get_db)):
+    from app.sources.snaptrade import full_resync
+    full_resync(db)
+    start_background("manual")
+    request.session["flash"] = "Full re-sync started: pulling the complete SnapTrade history (duplicates are skipped)."
     return RedirectResponse("/settings", status_code=303)
 
 

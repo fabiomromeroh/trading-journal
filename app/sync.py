@@ -1,8 +1,8 @@
 """Sync engine: runs every enabled data source, then rebuilds trades.
 
-Entry points:
+Entry points (manual only; there is deliberately no scheduled sync):
   * "Sync now" button (background thread, progress via HTMX polling)
-  * `python -m app.sync` for the Render cron job (twice daily on weekdays)
+  * `python -m app.sync` CLI (e.g. run by hand from a shell)
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from datetime import timedelta
 from sqlalchemy import select
 
 from app import db as dbmod
-from app.models import SyncRun, utcnow
+from app.models import SyncRun, Trade, utcnow
 from app.services import rebuild_trades
 from app.sources import SyncContext, all_sources
 
@@ -45,6 +45,27 @@ def start_run(db, trigger: str) -> tuple[SyncRun, bool]:
     return run, True
 
 
+def _trade_snapshot(db) -> dict[str, tuple]:
+    rows = db.execute(select(Trade.key, Trade.status, Trade.open_quantity, Trade.quantity, Trade.net_pnl,
+                             Trade.closed_at, Trade.opened_at).where(Trade.is_demo.is_(False)))
+    return {r[0]: (r[1], round(r[2] or 0, 6), round(r[3] or 0, 6), round(r[4] or 0, 2), r[5], r[6]) for r in rows}
+
+
+def summarize(inserted: int, merged: int, before: dict, after: dict) -> str:
+    new_trades = len(after.keys() - before.keys())
+    updated = sum(1 for k in after.keys() & before.keys() if after[k] != before[k])
+    removed = len(before.keys() - after.keys())
+    if not inserted and not merged and not new_trades and not updated and not removed:
+        return "No new fills. You're up to date."
+    parts = [f"Added {inserted} new fill{'s' if inserted != 1 else ''}"]
+    if merged:
+        parts.append(f"{merged} merged into imported fills")
+    trades = f"{new_trades} new trade{'s' if new_trades != 1 else ''}, {updated} updated"
+    if removed:
+        trades += f", {removed} replaced"
+    return ", ".join(parts) + f"; {trades}."
+
+
 def execute_run(run_id: int, sources=None, send_reminders: bool = False) -> SyncRun:
     if not _lock.acquire(blocking=False):
         db = dbmod.SessionLocal()
@@ -57,7 +78,14 @@ def execute_run(run_id: int, sources=None, send_reminders: bool = False) -> Sync
         ctx = SyncContext(trigger=run.trigger)
         sources = sources if sources is not None else all_sources()
         statuses, errors, used, touched = [], [], [], set()
+        before = _trade_snapshot(db)
         for src in sources:
+            if src.is_configured():
+                try:
+                    src.refresh(db)
+                except Exception as exc:  # status check failures are reported via status()
+                    db.rollback()
+                    log.warning("status refresh for %s failed: %s", src.key, exc)
             st = src.status(db)
             statuses.append((src.name, st))
             if not st.configured:
@@ -77,6 +105,8 @@ def execute_run(run_id: int, sources=None, send_reminders: bool = False) -> Sync
                 log.exception("source %s failed", src.key)
                 errors.append(f"{src.name}: {exc}")
         run.trades_built = rebuild_trades(db)
+        db.flush()
+        summary = summarize(run.inserted, run.merged, before, _trade_snapshot(db)) if used else None
         run.sources = ", ".join(used) or None
         if not used and not errors:
             run.status = "skipped"
@@ -88,7 +118,7 @@ def execute_run(run_id: int, sources=None, send_reminders: bool = False) -> Sync
         else:
             run.status = "success"
         run.error = "\n".join(errors) or None
-        run.message = "\n".join(ctx.log) or None
+        run.message = "\n".join(([summary] if summary else []) + ctx.log) or None
         if send_reminders:
             try:
                 from app.notify import maybe_send_reminders
@@ -127,7 +157,7 @@ def start_background(trigger: str = "manual") -> int:
 def main(argv=None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     p = argparse.ArgumentParser(description="Run all enabled data-source syncs and rebuild trades.")
-    p.add_argument("--trigger", default="cron")
+    p.add_argument("--trigger", default="cli")
     p.add_argument("--no-reminders", action="store_true")
     args = p.parse_args(argv)
     db = dbmod.SessionLocal()

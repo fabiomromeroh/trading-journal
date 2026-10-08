@@ -20,7 +20,38 @@
       </div>
       <div class="text-sm text-slate-400 mt-1">{{ src.description }}</div>
       <div class="text-sm mt-2 {{ 'text-rose-300' if st.level == 'error' else 'text-amber-300' if st.level == 'warning' else 'text-slate-300' }}">{{ st.message }}
-        {% if st.expires_in_seconds is not none and st.expires_in_seconds > 0 %} · login valid for <b>{{ (st.expires_in_seconds|int // 3600) }}h</b> (Schwab refresh tokens last 7 days){% endif %}</div>
+        {% if src.key != 'snaptrade' and st.expires_in_seconds is not none and st.expires_in_seconds > 0 %} · login valid for <b>{{ (st.expires_in_seconds|int // 3600) }}h</b> (Schwab refresh tokens last 7 days){% endif %}</div>
+      {% if src.key == 'snaptrade' and st.configured %}
+      <div class="mt-3 text-sm space-y-1">
+        {% if snaptrade and snaptrade.connections %}
+          {% for c in snaptrade.connections %}
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="pill {{ 'bg-rose-500/15 text-rose-300' if c.disabled else 'bg-emerald-500/15 text-emerald-300' }}">{{ 'login expired' if c.disabled else 'connected' }}</span>
+            <span class="text-slate-200">{{ c.broker or 'Broker' }}</span>
+            {% if c.connected_at_dt %}<span class="text-slate-400">· logged in {{ c.connected_at_dt|local_dt }}</span>{% endif %}
+            {% if not c.disabled and c.relogin_due %}<span class="text-slate-400">· next Schwab re-login due ≈ <b class="text-slate-200">{{ c.relogin_due|local_dt }}</b> (estimate: 7 days after login)</span>{% endif %}
+          </div>
+          {% endfor %}
+          {% for a in snaptrade.accounts %}
+          <div class="text-slate-400">Account <span class="text-slate-200">{{ a.name }}</span> · SnapTrade transactions through <span class="text-slate-200">{{ a.tx_synced_through or '—' }}</span>{% if a.first_tx %} (history from {{ a.first_tx }}){% endif %}</div>
+          {% endfor %}
+        {% endif %}
+        <div class="text-slate-400">Last successful sync: <span class="text-slate-200">{{ snaptrade.last_success|local_dt if snaptrade and snaptrade.last_success else 'never' }}</span>{% if snaptrade and snaptrade.checked_at %} · status checked {{ snaptrade.checked_at|local_dt }}{% endif %}</div>
+        {% if snaptrade and snaptrade.error %}<div class="text-amber-300">Last status check failed: {{ snaptrade.error }}</div>{% endif %}
+        <div class="text-xs text-slate-500">Sync is manual: click <b>Sync now</b>. SnapTrade refreshes Schwab transactions once a day (one day behind), so today's trades appear tomorrow. Times are date-only; importing a thinkorswim Account Statement adds exact fill times to the same fills.</div>
+      </div>
+      <div class="flex flex-wrap gap-2 mt-3">
+        {% if snaptrade and snaptrade.connections %}
+          {% for c in snaptrade.connections %}
+          <form method="post" action="/settings/snaptrade/reconnect?id={{ c.id }}"><button class="btn {{ 'btn-p' if c.disabled else 'btn-s' }} text-xs">Reconnect {{ c.broker or 'Schwab' }}</button></form>
+          {% endfor %}
+        {% else %}
+          <form method="post" action="/settings/snaptrade/connect"><button class="btn btn-p text-xs">Connect Schwab</button></form>
+        {% endif %}
+        <form method="post" action="/settings/snaptrade/resync" onsubmit="return confirm('Pull the full SnapTrade history again? Existing fills are skipped, nothing is deleted.')"><button class="btn btn-s text-xs">Full re-sync</button></form>
+      </div>
+      <div class="text-xs text-slate-500 mt-1">Reconnect opens SnapTrade's portal (link valid 5 minutes) to log in to Schwab again for the existing connection.</div>
+      {% endif %}
       {% if src.key == 'schwab_api' and st.configured %}
       <div class="flex flex-wrap gap-2 mt-3">
         <a href="/auth/schwab/connect" class="btn btn-p text-xs">{{ 'Reconnect' if st.expires_in_seconds is not none else 'Connect' }} Schwab</a>
@@ -34,7 +65,7 @@
       {% endif %}
     </div>
     {% endfor %}
-    <div class="text-xs text-slate-500">CSV import is always available on the <a href="/import" class="underline">Import</a> page. New automated sources (e.g. an aggregator) plug into <code>app/sources/</code>; “Sync now” and the scheduled job run every enabled source, then rebuild trades.</div>
+    <div class="text-xs text-slate-500">CSV import is always available on the <a href="/import" class="underline">Import</a> page. Automated sources plug into <code>app/sources/</code>; “Sync now” runs every enabled source, then rebuilds trades. There is no scheduled sync.</div>
   </div>
 
   <div class="card p-5">

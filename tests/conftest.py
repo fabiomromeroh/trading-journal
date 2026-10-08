@@ -9,7 +9,7 @@ sys.path.insert(0, str(ROOT))
 os.environ["APP_PASSWORD"] = "test-pass"
 os.environ["SECRET_KEY"] = "test-secret"
 os.environ["PRICE_PROVIDER"] = "none"
-for k in ("SCHWAB_APP_KEY", "SCHWAB_APP_SECRET", "SCHWAB_CALLBACK_URL"):
+for k in ("SCHWAB_APP_KEY", "SCHWAB_APP_SECRET", "SCHWAB_CALLBACK_URL", "SNAPTRADE_CLIENT_ID", "SNAPTRADE_CONSUMER_KEY"):
     os.environ.pop(k, None)
 
 FIX = Path(__file__).parent / "fixtures"

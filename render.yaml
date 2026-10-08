@@ -40,6 +40,11 @@ services:
         value: auto
       - key: POLYGON_API_KEY
         sync: false
+      # Schwab via SnapTrade (Personal API key). Leave unset to keep the source disabled.
+      - key: SNAPTRADE_CLIENT_ID
+        sync: false
+      - key: SNAPTRADE_CONSUMER_KEY
+        sync: false
       # Optional Schwab Trader API source (US retail accounts only). Leave unset to keep it disabled.
       - key: SCHWAB_APP_KEY
         sync: false
@@ -48,25 +53,5 @@ services:
       - key: SCHWAB_CALLBACK_URL   # e.g. https://<service>.onrender.com/auth/schwab/callback
         sync: false
 
-# Scheduled sync (twice daily on weekdays). Disabled until an automated broker source is enabled,
-# because Render cron jobs are not free. To enable, uncomment and share the same env values
-# (DATABASE_URL, TOKEN_ENCRYPTION_KEY, SCHWAB_*) with the web service, e.g. via an envVarGroup.
-# Schedule is UTC: 16:30 & 21:30 UTC = 12:30 & 17:30 New York during EDT (11:30 & 16:30 during EST),
-# i.e. around US midday and after the close.
-#
-#  - type: cron
-#    name: trading-journal-sync
-#    runtime: python
-#    plan: starter
-#    region: oregon
-#    schedule: "30 16,21 * * 1-5"
-#    buildCommand: pip install -r requirements.txt
-#    startCommand: python -m app.sync --trigger cron
-#    envVars:
-#      - key: PYTHON_VERSION
-#        value: 3.12.7
-#      - key: DATABASE_URL
-#        fromDatabase:
-#          name: trading-journal-db
-#          property: connectionString
-#      - fromGroup: trading-journal-secrets
+# No scheduled sync, by design: syncing is manual only ("Sync now" in the app, or
+# `python -m app.sync` from a shell). No cron job, no GitHub Actions schedule, nothing paid.

@@ -15,7 +15,9 @@ from app.timeutil import ET, local_to_utc_naive
 from app.trade_builder import BuilderExec, build_trades
 
 # Higher number = more authoritative when the same fill arrives from several sources.
-SOURCE_QUALITY = {"demo": 0, "schwab_csv": 1, "tos_statement": 2, "schwab_api": 3}
+SOURCE_QUALITY = {"demo": 0, "schwab_csv": 1, "snaptrade": 1, "tos_statement": 2, "schwab_api": 3}
+# Sources whose records can be corrected after the fact; a re-delivered record refreshes the row.
+REFRESHABLE_SOURCES = {"schwab_api", "snaptrade"}
 
 
 @dataclass
@@ -92,12 +94,13 @@ def ingest_records(db: Session, account_id: int, source: str, records: list[Exec
     for action, rec, existing in plan_ingest(db, account_id, source, records):
         if action == "duplicate":
             stats.duplicates += 1
-            if source == "schwab_api":  # API data can be corrected after the fact; refresh it.
+            if source in REFRESHABLE_SOURCES:  # API data can be corrected after the fact; refresh it.
                 row = db.scalar(select(Execution).where(
                     Execution.account_id == account_id, Execution.source == source,
                     Execution.external_id == rec.external_id))
                 if row is not None:
                     row.fees, row.price, row.quantity = rec.fees, rec.price, rec.quantity
+                    row.match_key = rec.match_key()
         elif action == "merge":
             if _merge_into(existing, rec, source):
                 stats.merged += 1

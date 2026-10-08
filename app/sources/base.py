@@ -13,6 +13,7 @@ class SourceStatus:
     message: str
     level: str = "info"  # info | warning | error
     expires_in_seconds: float | None = None
+    banner: dict | None = None  # optional {"level","text","link","link_text"} shown on every page
 
 
 @dataclass
@@ -42,9 +43,15 @@ class DataSource(ABC):
     def is_configured(self) -> bool:
         """Env vars / credentials present."""
 
+    def refresh(self, db: Session) -> None:
+        """Re-check remote connection health before a sync (optional; default no-op)."""
+
+    def maybe_refresh(self, db: Session) -> None:
+        """Cheap periodic refresh used when rendering pages (optional; default no-op)."""
+
     @abstractmethod
     def status(self, db: Session) -> SourceStatus:
-        """Connection health shown in Settings and the banner."""
+        """Connection health shown in Settings and the banner. Must not do slow network calls."""
 
     @abstractmethod
     def sync(self, db: Session, ctx: SyncContext) -> SourceResult:

@@ -54,6 +54,10 @@ class Settings:
     sync_overlap_days: int = field(default_factory=lambda: _int("SYNC_OVERLAP_DAYS", 3))
     token_encryption_key: str = field(default_factory=lambda: os.getenv("TOKEN_ENCRYPTION_KEY", ""))
 
+    # SnapTrade data source (Personal API key; disabled unless both are set)
+    snaptrade_client_id: str = field(default_factory=lambda: os.getenv("SNAPTRADE_CLIENT_ID", ""))
+    snaptrade_consumer_key: str = field(default_factory=lambda: os.getenv("SNAPTRADE_CONSUMER_KEY", ""))
+
     # Price data for trade charts (optional)
     price_provider: str = field(default_factory=lambda: os.getenv("PRICE_PROVIDER", "auto").lower())
     polygon_api_key: str = field(default_factory=lambda: os.getenv("POLYGON_API_KEY", ""))
@@ -75,6 +79,10 @@ class Settings:
             self.secret_key_is_ephemeral = True
         else:
             self.secret_key_is_ephemeral = False
+
+    @property
+    def snaptrade_configured(self) -> bool:
+        return bool(self.snaptrade_client_id and self.snaptrade_consumer_key)
 
     @property
     def schwab_configured(self) -> bool:

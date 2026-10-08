@@ -161,7 +161,7 @@ class TradeFill(Base):
 class SyncRun(Base):
     __tablename__ = "sync_runs"
     id: Mapped[int] = mapped_column(primary_key=True)
-    trigger: Mapped[str] = mapped_column(String(20))  # manual | cron
+    trigger: Mapped[str] = mapped_column(String(20))  # manual | cli
     started_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime)
     status: Mapped[str] = mapped_column(String(20), default="running")  # running|success|partial|failed|skipped

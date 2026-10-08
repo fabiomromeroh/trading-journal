@@ -35,9 +35,11 @@ per-trade pages with a price chart, and journal notes, tags, setups and ratings.
   - MFE/MAE (max favourable / adverse excursion) from price bars.
   - Candlestick chart with entry and exit markers (TradingView lightweight-charts).
   - Journal: notes, tags, setup, 1–5 star rating. These are kept when trades are rebuilt.
-- **Sync engine with pluggable data sources** (`app/sources/`). The "Sync now" button and
-  `python -m app.sync` (for a cron job) run every enabled source and then rebuild trades. It ships with
-  an optional **Schwab Trader API** source, which is off unless its env vars are set.
+- **Sync engine with pluggable data sources** (`app/sources/`). Syncing is manual: the "Sync now"
+  button (or `python -m app.sync` from a shell) runs every enabled source and then rebuilds trades.
+  There is no scheduled sync. Sources: **Schwab via SnapTrade** (works with Schwab International
+  accounts) and an optional **Schwab Trader API** source (US accounts). Both are off unless their env
+  vars are set.
 - **Sample-data mode**: always labelled "Sample data", kept in its own account, and removable with one
   click in Settings.
 - **Single-user login**: password from `APP_PASSWORD`, signed session cookie, simple brute-force
@@ -63,13 +65,12 @@ pytest -q                       # tests
   - `SECRET_KEY`: random value.
   - `DATABASE_URL`: the Postgres internal URL. `postgres://` URLs are converted automatically.
   - `COOKIE_SECURE=true`.
-- Optional env vars: `TOKEN_ENCRYPTION_KEY`, `DISPLAY_TZ`, `PRICE_PROVIDER`, `POLYGON_API_KEY`,
-  `SCHWAB_*`, `SMTP_*`.
+- Optional env vars: `SNAPTRADE_CLIENT_ID`, `SNAPTRADE_CONSUMER_KEY`, `TOKEN_ENCRYPTION_KEY`,
+  `DISPLAY_TZ`, `PRICE_PROVIDER`, `POLYGON_API_KEY`, `SCHWAB_*`, `SMTP_*`.
 - **Render free Postgres expires 30 days after creation.** Upgrade the database (or export your data)
   before then.
 - Free web instances sleep after about 15 minutes idle, so the first request after that is slow.
-- The cron job is in `render.yaml` but commented out. Enable it once an automated source exists (Render
-  cron jobs are paid). Its schedule is `30 16,21 * * 1-5` UTC, which is US midday and after the close.
+- There is intentionally no cron job: sync runs only when you click "Sync now".
 
 ## Price charts
 `PRICE_PROVIDER=auto` tries, in order:
@@ -79,6 +80,27 @@ pytest -q                       # tests
 
 Set `PRICE_PROVIDER=none` to turn charts off. Option trades are charted on the underlying stock.
 Intraday trades use 5-minute bars. Multi-day trades use daily bars, so their MFE/MAE is approximate.
+
+## Schwab via SnapTrade (recommended; works for Schwab International)
+[SnapTrade Personal](https://snaptrade.com/personal) is free for your own accounts.
+1. Create a SnapTrade Personal account, connect Schwab in its dashboard (read-only), and create a
+   Personal API key.
+2. Set `SNAPTRADE_CLIENT_ID` and `SNAPTRADE_CONSUMER_KEY` (Render: service → Environment).
+3. Click **Sync now**. The first sync pulls the full history SnapTrade has; later syncs fetch from the
+   last synced day minus `SYNC_OVERLAP_DAYS` (3).
+
+What to expect:
+- SnapTrade refreshes Schwab transactions **once a day, one day behind**, so today's trades appear
+  tomorrow. Rows are date-only, so fills are stamped 16:00 New York time, like the Schwab CSV.
+  Importing a thinkorswim Account Statement adds exact fill times to the same fills.
+- Fills are deduplicated by Schwab's own transaction reference id (SnapTrade's id is kept in the raw
+  record), and fills already imported from a CSV are matched instead of duplicated.
+- Option buys/sells use SnapTrade's `BUY_TO_OPEN`/`SELL_TO_CLOSE` hints; expirations, assignments and
+  exercises close positions. Transfers, dividends and cash movements are ignored for trades.
+- **Schwab logins expire after 7 days.** SnapTrade then marks the connection as disabled; the app shows
+  a banner and a **Reconnect Schwab** button, which re-logs in the existing connection through
+  SnapTrade's portal (the portal link is valid for 5 minutes). Settings shows the estimated next
+  re-login date.
 
 ## Optional: Schwab Trader API source (US retail accounts only)
 Schwab One International accounts cannot get Trader API apps, so for those accounts CSV import is the
@@ -105,7 +127,7 @@ days of overlap) to now. Fills are deduplicated by Schwab `activityId`.
 ## Adding another automated source
 Subclass `app.sources.base.DataSource` (`is_configured`, `status`, `sync`), store fills with
 `app.services.ingest_records(db, account_id, "<source>", records)`, and register the class in
-`app.sources.all_sources()`. The "Sync now" button, the cron command, the status banners and the sync
+`app.sources.all_sources()`. The "Sync now" button, the CLI, the status banners and the sync
 history pick it up automatically.
 
 ## Layout

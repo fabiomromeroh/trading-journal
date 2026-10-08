@@ -122,8 +122,14 @@ def base_context(request: Request, db: Session, **kw) -> dict:
     has_demo = db.scalar(select(func.count(Trade.id)).where(Trade.is_demo.is_(True))) or 0
     banners = []
     for src in all_sources():
+        try:
+            src.maybe_refresh(db)
+        except Exception:  # pragma: no cover - never break page rendering on a status check
+            db.rollback()
         st = src.status(db)
-        if st.configured and st.expires_in_seconds is not None and st.expires_in_seconds < 86400:
+        if st.banner:
+            banners.append(st.banner)
+        elif st.configured and st.expires_in_seconds is not None and st.expires_in_seconds < 86400:
             banners.append({"level": "error" if st.expires_in_seconds <= 0 else "warning",
                             "text": f"{src.name}: {st.message}" + (
                                 "" if st.expires_in_seconds <= 0 else
