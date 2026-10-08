@@ -1,0 +1,18 @@
+{% macro we_tools() %}<div class="we-tools absolute -top-2.5 right-1.5 z-20 gap-1 rounded-lg bg-[#1e293b] border border-slate-600 px-1 py-0.5 shadow-lg text-slate-200 text-sm leading-none">
+  <span class="we-handle cursor-move px-1.5 py-1 select-none touch-none" title="Drag to reorder" aria-label="Drag to reorder">⠿</span>
+  <button type="button" data-we-act="up" class="px-1.5 py-1 hover:text-white" title="Move earlier" aria-label="Move earlier">↑</button>
+  <button type="button" data-we-act="down" class="px-1.5 py-1 hover:text-white" title="Move later" aria-label="Move later">↓</button>
+  <button type="button" data-we-act="remove" class="px-1.5 py-1 text-rose-300 hover:text-rose-200" title="Remove" aria-label="Remove">✕</button>
+</div>{% endmacro %}
+{% macro we_toolbar(id, label='Edit widgets') %}<div id="{{ id }}" class="flex flex-wrap items-center gap-2">
+  <button type="button" data-we="edit" class="btn btn-s text-xs">✎ {{ label }}</button>
+  <button type="button" data-we="save" class="btn btn-p text-xs" hidden>Save layout</button>
+  <button type="button" data-we="cancel" class="btn btn-s text-xs" hidden>Cancel</button>
+  <button type="button" data-we="reset" class="btn btn-d text-xs" hidden>Reset to default</button>
+  <span data-we="msg" class="text-xs"></span>
+  <div data-we="panel" class="w-full card p-3" hidden>
+    <div class="card-h mb-1">Add widgets</div>
+    <div data-we="catalog"></div>
+    <p class="text-[11px] text-slate-500 mt-1">Drag ⠿ or use ↑ ↓ to reorder, ✕ to remove, then Save. The layout is stored on the server, so it's the same on phone and desktop.</p>
+  </div>
+</div>{% endmacro %}

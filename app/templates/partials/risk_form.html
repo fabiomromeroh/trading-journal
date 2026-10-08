@@ -1,0 +1,15 @@
+{# Planned risk for R-multiples. Context: t, tm, default_risk, saved #}
+<form hx-post="/trades/{{ t.id }}/risk" hx-swap="outerHTML" class="space-y-2" id="risk-form">
+  <div class="card-h">Risk & target <span class="normal-case text-slate-500">(for R-multiple)</span></div>
+  <div class="grid grid-cols-3 gap-2">
+    <label class="text-[11px] text-slate-400">Initial stop<input name="initial_stop" inputmode="decimal" value="{{ t.initial_stop if t.initial_stop is not none else '' }}" placeholder="price" class="inp w-full mt-0.5"></label>
+    <label class="text-[11px] text-slate-400">Risk $<input name="risk_amount" inputmode="decimal" value="{{ t.risk_amount if t.risk_amount is not none else '' }}" placeholder="{{ '%.0f'|format(default_risk) if default_risk else 'optional' }}" class="inp w-full mt-0.5"></label>
+    <label class="text-[11px] text-slate-400">Target<input name="profit_target" inputmode="decimal" value="{{ t.profit_target if t.profit_target is not none else '' }}" placeholder="price" class="inp w-full mt-0.5"></label>
+  </div>
+  <div class="flex flex-wrap items-center gap-2 text-xs text-slate-400">
+    <button class="btn btn-s text-xs">Save risk</button>
+    <span>R: <b class="{{ tm.r_multiple|pnl_class }}">{{ (tm.r_multiple|num(2) ~ 'R') if tm.r_multiple is not none else '—' }}</b>
+      {% if tm.risk %}· risk {{ tm.risk|money }} ({{ tm.risk_source }}){% endif %}{% if tm.planned_rr %} · planned 1:{{ tm.planned_rr|num(2) }}{% endif %}</span>
+    {% if saved %}<span class="text-emerald-400">Saved ✓ (reload to update the stat bar)</span>{% endif %}
+  </div>
+</form>

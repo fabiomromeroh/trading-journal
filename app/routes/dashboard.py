@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.db import get_db
 from app.models import Execution, ImportBatch, Trade
+from app.routes.reports import dashboard_extras
 from app.stats import calendar_months, compute
 from app.web import apply_trade_filters, base_context, parse_filters, templates
 
@@ -49,7 +50,7 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
     return templates.TemplateResponse(request, "dashboard.html", base_context(
         request, db, nav="dashboard", f=f, st=st, charts=charts, months=calendar_months(st.daily, max_months=3),
         recent=recent, has_any=has_any, last_import=last_import,
-        last_sync=last_sync, anchor=anchor))
+        last_sync=last_sync, anchor=anchor, **dashboard_extras(db, trades, tz)))
 
 
 def _anchor(db: Session, f, trades, st):

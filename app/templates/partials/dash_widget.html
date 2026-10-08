@@ -1,0 +1,112 @@
+{# One dashboard widget's content. Context: wid, st, m, anchor, charts, months, recent, provisional_trades #}
+{% macro kpi(label, value, cls='', sub='') %}<div class="card p-4 h-full"><div class="card-h">{{ label }}</div><div class="kpi-v {{ cls }}">{{ value }}</div>{% if sub %}<div class="text-xs text-slate-500 mt-1">{{ sub }}</div>{% endif %}</div>{% endmacro %}
+{% macro pct(v, d=1) %}{{ (v|num(d) ~ '%') if v is not none else '—' }}{% endmacro %}
+{% macro btable(title, rows) %}
+  <div class="card p-4 h-full overflow-x-auto">
+    <div class="card-h mb-2">{{ title }}</div>
+    <table class="w-full text-sm tbl"><thead><tr><th></th><th class="text-right">Trades</th><th class="text-right">Win %</th><th class="text-right">Net P&L</th></tr></thead><tbody>
+    {% for b in rows %}<tr><td class="text-slate-300 truncate max-w-[140px]">{{ b.label }}</td><td class="text-right">{{ b.count }}</td><td class="text-right">{{ b.win_rate|num(0) }}%</td><td class="text-right {{ b.pnl|pnl_class }}">{{ b.pnl|money }}</td></tr>
+    {% else %}<tr><td colspan="4" class="text-slate-500">No data</td></tr>{% endfor %}
+    </tbody></table>
+  </div>
+{% endmacro %}
+{% macro chart(title, id, h='h-64', note='') %}<div class="card p-4 h-full"><div class="card-h mb-2">{{ title }}{% if note %} <span class="normal-case text-amber-300">{{ note }}</span>{% endif %}</div><div class="{{ h }}"><canvas id="{{ id }}"></canvas></div></div>{% endmacro %}
+{% set na = 'Unfiltered view only' %}
+{% if wid == 'realized' %}{{ kpi('Realized P&L', st.realized|money(true), st.realized|pnl_class, 'Closed trades ' ~ st.net_pnl|money ~ (' · partial exits of open trades ' ~ st.open_realized|money if st.open_realized else '') ~ ' · fees ' ~ st.fees|money ~ (' · ' ~ provisional_trades|length ~ ' trade(s) provisional (fees pending)' if provisional_trades else '')) }}
+{% elif wid == 'unrealized' %}{% if anchor %}{{ kpi('Unrealized (open)', anchor.unrealized|money(true), anchor.unrealized|pnl_class, st.open_trades ~ ' open · SnapTrade prices ' ~ (anchor.as_of[:16]|replace('T', ' ')) ~ ' UTC' ~ (' · no price: ' ~ anchor.missing_prices|join(', ') if anchor.missing_prices else '')) }}{% else %}{{ kpi('Unrealized (open)', '—', '', na) }}{% endif %}
+{% elif wid == 'total_pnl' %}{% if anchor %}{{ kpi('Total P&L', anchor.journal_total|money(true), anchor.journal_total|pnl_class, 'Account check: value ' ~ anchor.value|money ~ ' − net deposits ' ~ anchor.net_deposits|money ~ ' = ' ~ anchor.total_pnl|money(true) ~ (' ✓' if anchor.diff|abs < 1 else ' (diff ' ~ anchor.diff|money(true) ~ ')')) }}{% else %}{{ kpi('Total P&L', '—', '', na) }}{% endif %}
+{% elif wid == 'win_rate' %}{{ kpi('Win rate', st.win_rate|num(1) ~ '%', '', st.wins ~ 'W / ' ~ st.losses ~ 'L / ' ~ st.scratches ~ ' BE') }}
+{% elif wid == 'profit_factor' %}{{ kpi('Profit factor', st.profit_factor|num(2), '', 'Gross wins ÷ gross losses') }}
+{% elif wid == 'expectancy' %}{{ kpi('Expectancy', st.expectancy|money(true), st.expectancy|pnl_class, 'Avg net P&L per trade') }}
+{% elif wid == 'avg_win_loss' %}{{ kpi('Avg win / loss', st.avg_win|money ~ ' / ' ~ st.avg_loss|money, '', 'Ratio ' ~ st.win_loss_ratio|num(2)) }}
+{% elif wid == 'total_trades' %}{{ kpi('Total trades', st.total_trades, '', st.open_trades ~ ' open') }}
+{% elif wid == 'largest_win' %}{{ kpi('Largest win', st.largest_win|money, 'text-emerald-400') }}
+{% elif wid == 'largest_loss' %}{{ kpi('Largest loss', st.largest_loss|money, 'text-rose-400') }}
+{% elif wid == 'avg_hold' %}{{ kpi('Avg hold', st.avg_hold|td, '', 'Win ' ~ st.avg_hold_win|td ~ ' · Loss ' ~ st.avg_hold_loss|td) }}
+{% elif wid == 'max_drawdown' %}{{ kpi('Max drawdown', st.max_drawdown|money, 'text-rose-300', 'Peak-to-trough, closed trades') }}
+{% elif wid == 'streaks' %}{{ kpi('Streaks', st.max_consec_wins ~ 'W / ' ~ st.max_consec_losses ~ 'L', '', 'Max consecutive') }}
+{% elif wid == 'best_worst_day' %}{{ kpi('Best / worst day', (st.best_day[1]|money if st.best_day else '—'), 'text-emerald-400', 'Worst ' ~ (st.worst_day[1]|money if st.worst_day else '—')) }}
+{% elif wid == 'gross_net' %}{{ kpi('Gross vs net P&L', m.gross|money(true), m.gross|pnl_class, 'Net ' ~ m.net|money(true) ~ ' after ' ~ m.fees|money ~ ' fees') }}
+{% elif wid == 'fees' %}{{ kpi('Commissions & fees', m.fees|money, '', 'Avg ' ~ m.avg_fees|money ~ ' / trade · open trades ' ~ m.fees_open|money) }}
+{% elif wid == 'long_short' %}{{ kpi('Long / short', m.ret_long|money(true) ~ ' / ' ~ m.ret_short|money(true), '', m.n_long ~ ' long (' ~ pct(m.win_pct_long, 0) ~ ' win) · ' ~ m.n_short ~ ' short (' ~ pct(m.win_pct_short, 0) ~ ')') }}
+{% elif wid == 'pl_ratio' %}{{ kpi('Profit/loss ratio', m.pl_ratio|num(2), '', 'Avg win ÷ |avg loss|') }}
+{% elif wid == 'win_loss_be_pct' %}{{ kpi('Win / loss / BE %', pct(m.win_pct, 0) ~ ' / ' ~ pct(m.loss_pct, 0) ~ ' / ' ~ pct(m.be_pct, 0), '', 'Open ' ~ pct(m.open_pct, 0) ~ ' of all trades') }}
+{% elif wid == 'median_trade' %}{{ kpi('Median trade', m.median_trade|money(true), m.median_trade|pnl_class) }}
+{% elif wid == 'avg_return_pct' %}{{ kpi('Avg return %', pct(m.avg_ret_pct, 2), m.avg_ret_pct|pnl_class, 'W ' ~ pct(m.avg_ret_pct_win, 1) ~ ' · L ' ~ pct(m.avg_ret_pct_loss, 1)) }}
+{% elif wid == 'best_worst_pct' %}{{ kpi('Biggest % profit / loser', pct(m.best_pct, 1) ~ ' / ' ~ pct(m.worst_pct, 1)) }}
+{% elif wid == 'return_per_share' %}{{ kpi('Return per share', m.return_per_share|money(true, 3), m.return_per_share|pnl_class, 'Net ÷ shares / contract units') }}
+{% elif wid == 'avg_size' %}{{ kpi('Avg position size', m.avg_size|qty, '', 'Total volume ' ~ m.volume|qty) }}
+{% elif wid == 'open_trades' %}{{ kpi('Open trades', m.open, '', 'Realized in open trades ' ~ m.open_realized|money(true)) }}
+{% elif wid == 'hold_win_loss' %}{{ kpi('Hold: winners / losers', m.avg_hold_win|td ~ ' / ' ~ m.avg_hold_loss|td, '', 'Break-even ' ~ m.avg_hold_be|td) }}
+{% elif wid == 'std_dev' %}{{ kpi('P&L std deviation', m.std|money, '', 'W ' ~ m.std_win|money ~ ' · L ' ~ m.std_loss|money) }}
+{% elif wid == 'sqn' %}{{ kpi('SQN', m.sqn|num(2), '', 'Avg P&L × √n ÷ std dev') }}
+{% elif wid == 'kelly' %}{{ kpi('Kelly %', pct(m.kelly, 1), m.kelly|pnl_class, 'W − (1 − W) ÷ P/L ratio') }}
+{% elif wid == 'current_dd' %}{{ kpi('Current drawdown', m.current_dd|money, m.current_dd|pnl_class, 'From the equity peak') }}
+{% elif wid == 'dd_duration' %}{{ kpi('Longest drawdown', m.max_dd_days ~ ' days', '', m.max_dd_trades ~ ' trades') }}
+{% elif wid == 'recovery_factor' %}{{ kpi('Recovery factor', m.recovery_factor|num(2), '', 'Net P&L ÷ |max drawdown|') }}
+{% elif wid == 'day_stats' %}{{ kpi('Winning days', pct(m.day_win_pct, 0), '', m.win_days ~ ' green / ' ~ m.loss_days ~ ' red of ' ~ m.days) }}
+{% elif wid == 'avg_day' %}{{ kpi('Avg daily P&L', m.avg_day|money(true), m.avg_day|pnl_class, 'Per trading day') }}
+{% elif wid == 'avg_r' %}{{ kpi('Avg R-multiple', (m.avg_r|num(2) ~ 'R') if m.avg_r is not none else '—', m.avg_r|pnl_class, (m.r_count ~ ' trades with risk') if m.r_count else 'Set risk: Reports › Win/loss') }}
+{% elif wid == 'total_r' %}{{ kpi('Total R', (m.total_r|num(2) ~ 'R') if m.total_r is not none else '—', m.total_r|pnl_class, m.r_count ~ ' trades') }}
+{% elif wid == 'mfe_eff' %}{{ kpi('MFE efficiency', pct(m.mfe_eff, 0), '', (m.mfe_count ~ ' trades measured') if m.mfe_count else 'No MFE yet') }}
+{% elif wid == 'avg_mfe_mae' %}{{ kpi('Avg MFE / MAE', m.avg_mfe|money ~ ' / ' ~ m.avg_mae|money, '', m.mfe_count ~ ' trades measured') }}
+{% elif wid == 'left_on_table' %}{{ kpi('Left on the table', m.left_on_table|money, '', 'Σ MFE − gross P&L') }}
+{% elif wid == 'chart_equity' %}{{ chart('Equity curve (cumulative net P&L)', 'ch-equity') }}
+{% elif wid == 'chart_winloss' %}{{ chart('Win / loss', 'ch-winloss') }}
+{% elif wid == 'chart_daily' %}{{ chart('Daily net P&L', 'ch-daily', 'h-52') }}
+{% elif wid == 'chart_symbol' %}{{ chart('P&L by symbol (top 12)', 'ch-symbol') }}
+{% elif wid == 'chart_weekday' %}{{ chart('P&L by day of week (entry)', 'ch-weekday') }}
+{% elif wid == 'chart_hour' %}{{ chart('P&L by hour of entry', 'ch-hour', note='' if st.hours_known else '(needs execution times — import thinkorswim statement)') }}
+{% elif wid == 'chart_hold' %}{{ chart('P&L by holding time', 'ch-hold') }}
+{% elif wid == 'chart_cum_gross' %}{{ chart('Cumulative P&L: net vs gross', 'ch-cumgross') }}
+{% elif wid == 'chart_drawdown' %}{{ chart('Drawdown from peak', 'ch-dd') }}
+{% elif wid == 'chart_month' %}{{ chart('P&L by month', 'ch-month') }}
+{% elif wid == 'chart_price' %}{{ chart('P&L by entry price', 'ch-price') }}
+{% elif wid == 'chart_size' %}{{ chart('P&L by position size', 'ch-size') }}
+{% elif wid == 'chart_pnl_dist' %}{{ chart('Trade P&L distribution', 'ch-pnldist') }}
+{% elif wid == 'tbl_direction' %}{{ btable('Long vs short', st.by_direction) }}
+{% elif wid == 'tbl_asset' %}{{ btable('Stocks vs options', st.by_asset) }}
+{% elif wid == 'tbl_setup' %}{{ btable('By setup', st.by_setup) }}
+{% elif wid == 'tbl_tag' %}{{ btable('By tag', st.by_tag) }}
+{% elif wid == 'calendar' %}
+<div class="card p-4">
+  <div class="card-h mb-3">P&L calendar</div>
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
+  {% for mo in months %}
+    <div>
+      <div class="flex justify-between text-sm mb-2"><span class="text-white font-medium">{{ mo.title }}</span><span class="{{ mo.pnl|pnl_class }}">{{ mo.pnl|money(true) }}</span></div>
+      <div class="grid grid-cols-8 gap-1 text-[10px] text-slate-500 mb-1">{% for d in ['Mon','Tue','Wed','Thu','Fri','Sat','Sun','Week'] %}<div class="text-center">{{ d }}</div>{% endfor %}</div>
+      {% for w in mo.weeks %}
+      <div class="grid grid-cols-8 gap-1 mb-1">
+        {% for c in w.days %}
+          {% if not c.in_month %}<div class="cal-cell"></div>
+          {% elif c.pnl is none %}<div class="cal-cell bg-slate-800/30 text-slate-600">{{ c.date.day }}</div>
+          {% else %}
+            {% set intensity = [ (c.pnl|abs) / 1500, 1 ]|min %}
+            <a href="/trades?start={{ c.date }}&end={{ c.date }}" class="cal-cell block {{ 'bg-emerald-500' if c.pnl > 0 else 'bg-rose-500' }}" style="--tw-bg-opacity: {{ 0.15 + intensity * 0.55 }}">
+              <div class="text-slate-200/80">{{ c.date.day }}</div>
+              <div class="font-semibold text-white">{{ c.pnl|money(false, 0) }}</div>
+              <div class="text-white/60">{{ c.count }} tr</div>
+            </a>
+          {% endif %}
+        {% endfor %}
+        <div class="cal-cell bg-slate-800/50 text-center"><div class="text-slate-500">wk</div><div class="{{ w.pnl|pnl_class }} font-semibold">{{ w.pnl|money(false, 0) if w.count else '' }}</div></div>
+      </div>
+      {% endfor %}
+    </div>
+  {% endfor %}
+  </div>
+</div>
+{% elif wid == 'recent' %}
+<div class="card p-4 overflow-x-auto">
+  <div class="flex justify-between mb-2"><div class="card-h">Recent closed trades</div><a href="/trades" class="text-xs text-indigo-300 hover:underline">All trades →</a></div>
+  <table class="w-full text-sm tbl"><thead><tr><th>Closed</th><th>Symbol</th><th>Side</th><th class="text-right">Qty</th><th class="text-right">Entry</th><th class="text-right">Exit</th><th class="text-right">Net P&L</th><th>Setup</th></tr></thead><tbody>
+  {% for t in recent %}
+  <tr class="cursor-pointer" onclick="location='/trades/{{ t.id }}'"><td class="text-slate-400">{{ t.closed_at|local_dt }}</td><td class="text-white font-medium">{{ t.symbol }}</td>
+  <td><span class="pill {{ 'bg-emerald-500/15 text-emerald-300' if t.direction == 'LONG' else 'bg-rose-500/15 text-rose-300' }}">{{ t.direction }}</span></td>
+  <td class="text-right">{{ t.quantity|qty }}</td><td class="text-right">{{ t.entry_price|num(2) }}</td><td class="text-right">{{ t.exit_price|num(2) }}</td>
+  <td class="text-right font-medium {{ t.net_pnl|pnl_class }}">{{ t.net_pnl|money }}</td><td class="text-slate-400">{{ t.setup or '' }}</td></tr>
+  {% endfor %}
+  </tbody></table>
+</div>
+{% endif %}

@@ -24,102 +24,25 @@
 </div>
 {% else %}
 
-<div class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-3 mb-4">
-  {% macro kpi(label, value, cls='', sub='') %}
-  <div class="card p-4"><div class="card-h">{{ label }}</div><div class="kpi-v {{ cls }}">{{ value }}</div>{% if sub %}<div class="text-xs text-slate-500 mt-1">{{ sub }}</div>{% endif %}</div>
-  {% endmacro %}
-  {{ kpi('Realized P&L', st.realized|money(true), st.realized|pnl_class, 'Closed trades ' ~ st.net_pnl|money ~ (' · partial exits of open trades ' ~ st.open_realized|money if st.open_realized else '') ~ ' · fees ' ~ st.fees|money ~ (' · ' ~ provisional_trades|length ~ ' trade(s) provisional (fees pending)' if provisional_trades else '')) }}
-  {% if anchor %}
-  {{ kpi('Unrealized (open)', anchor.unrealized|money(true), anchor.unrealized|pnl_class, st.open_trades ~ ' open · SnapTrade prices ' ~ (anchor.as_of[:16]|replace('T', ' ')) ~ ' UTC' ~ (' · no price: ' ~ anchor.missing_prices|join(', ') if anchor.missing_prices else '')) }}
-  {{ kpi('Total P&L', anchor.journal_total|money(true), anchor.journal_total|pnl_class, 'Account check: value ' ~ anchor.value|money ~ ' − net deposits ' ~ anchor.net_deposits|money ~ ' = ' ~ anchor.total_pnl|money(true) ~ (' ✓' if anchor.diff|abs < 1 else ' (diff ' ~ anchor.diff|money(true) ~ ')')) }}
-  {% endif %}
-  {{ kpi('Win rate', st.win_rate|num(1) ~ '%', '', st.wins ~ 'W / ' ~ st.losses ~ 'L / ' ~ st.scratches ~ ' BE') }}
-  {{ kpi('Profit factor', st.profit_factor|num(2), '', 'Gross wins ÷ gross losses') }}
-  {{ kpi('Expectancy', st.expectancy|money(true), st.expectancy|pnl_class, 'Avg net P&L per trade') }}
-  {{ kpi('Avg win / loss', st.avg_win|money ~ ' / ' ~ st.avg_loss|money, '', 'Ratio ' ~ st.win_loss_ratio|num(2)) }}
-  {{ kpi('Total trades', st.total_trades, '', st.open_trades ~ ' open') }}
-  {{ kpi('Largest win', st.largest_win|money, 'text-emerald-400') }}
-  {{ kpi('Largest loss', st.largest_loss|money, 'text-rose-400') }}
-  {{ kpi('Avg hold', st.avg_hold|td, '', 'Win ' ~ st.avg_hold_win|td ~ ' · Loss ' ~ st.avg_hold_loss|td) }}
-  {{ kpi('Max drawdown', st.max_drawdown|money, 'text-rose-300', 'Peak-to-trough, closed trades') }}
-  {{ kpi('Streaks', st.max_consec_wins ~ 'W / ' ~ st.max_consec_losses ~ 'L', '', 'Max consecutive') }}
-  {{ kpi('Best / worst day', (st.best_day[1]|money if st.best_day else '—'), 'text-emerald-400', 'Worst ' ~ (st.worst_day[1]|money if st.worst_day else '—')) }}
-</div>
-
-<div class="grid grid-cols-1 xl:grid-cols-3 gap-4 mb-4">
-  <div class="card p-4 xl:col-span-2"><div class="card-h mb-2">Equity curve (cumulative net P&L)</div><div class="h-64"><canvas id="ch-equity"></canvas></div></div>
-  <div class="card p-4"><div class="card-h mb-2">Win / loss</div><div class="h-64"><canvas id="ch-winloss"></canvas></div></div>
-</div>
-<div class="card p-4 mb-4"><div class="card-h mb-2">Daily net P&L</div><div class="h-52"><canvas id="ch-daily"></canvas></div></div>
-
-<div class="card p-4 mb-4">
-  <div class="card-h mb-3">P&L calendar</div>
-  <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
-  {% for m in months %}
-    <div>
-      <div class="flex justify-between text-sm mb-2"><span class="text-white font-medium">{{ m.title }}</span><span class="{{ m.pnl|pnl_class }}">{{ m.pnl|money(true) }}</span></div>
-      <div class="grid grid-cols-8 gap-1 text-[10px] text-slate-500 mb-1">{% for d in ['Mon','Tue','Wed','Thu','Fri','Sat','Sun','Week'] %}<div class="text-center">{{ d }}</div>{% endfor %}</div>
-      {% for w in m.weeks %}
-      <div class="grid grid-cols-8 gap-1 mb-1">
-        {% for c in w.days %}
-          {% if not c.in_month %}<div class="cal-cell"></div>
-          {% elif c.pnl is none %}<div class="cal-cell bg-slate-800/30 text-slate-600">{{ c.date.day }}</div>
-          {% else %}
-            {% set intensity = [ (c.pnl|abs) / 1500, 1 ]|min %}
-            <a href="/trades?start={{ c.date }}&end={{ c.date }}" class="cal-cell block {{ 'bg-emerald-500' if c.pnl > 0 else 'bg-rose-500' }}" style="--tw-bg-opacity: {{ 0.15 + intensity * 0.55 }}">
-              <div class="text-slate-200/80">{{ c.date.day }}</div>
-              <div class="font-semibold text-white">{{ c.pnl|money(false, 0) }}</div>
-              <div class="text-white/60">{{ c.count }} tr</div>
-            </a>
-          {% endif %}
-        {% endfor %}
-        <div class="cal-cell bg-slate-800/50 text-center"><div class="text-slate-500">wk</div><div class="{{ w.pnl|pnl_class }} font-semibold">{{ w.pnl|money(false, 0) if w.count else '' }}</div></div>
-      </div>
-      {% endfor %}
-    </div>
-  {% endfor %}
+{% from "partials/widget_macros.html" import we_tools, we_toolbar %}
+{% set SIZE = {'kpi': 'col-span-6 md:col-span-3 xl:col-span-2', 'wide': 'col-span-12 xl:col-span-8', 'third': 'col-span-12 xl:col-span-4',
+               'full': 'col-span-12', 'half': 'col-span-12 lg:col-span-6', 'quarter': 'col-span-12 md:col-span-6 xl:col-span-3'} %}
+<div class="mb-3">{{ we_toolbar('we-bar') }}</div>
+<div id="dash-grid" data-page="dashboard" class="grid grid-cols-12 gap-3 grid-flow-row-dense items-start mb-4">
+{% for wid in L.order %}{% set w = L.catalog[wid] %}
+  <div data-wid="{{ wid }}" data-title="{{ w.title }}" data-group="{{ w.group }}" class="relative min-w-0 {{ SIZE[w.size] }}"{{ ' hidden' if wid not in L.shown }}>
+    {{ we_tools() }}
+    {% include "partials/dash_widget.html" %}
   </div>
-</div>
-
-<div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
-  <div class="card p-4"><div class="card-h mb-2">P&L by symbol (top 12)</div><div class="h-64"><canvas id="ch-symbol"></canvas></div></div>
-  <div class="card p-4"><div class="card-h mb-2">P&L by day of week (entry)</div><div class="h-64"><canvas id="ch-weekday"></canvas></div></div>
-  <div class="card p-4"><div class="card-h mb-2">P&L by hour of entry {% if not st.hours_known %}<span class="normal-case text-amber-300">(needs execution times — import thinkorswim statement)</span>{% endif %}</div><div class="h-64"><canvas id="ch-hour"></canvas></div></div>
-  <div class="card p-4"><div class="card-h mb-2">P&L by holding time</div><div class="h-64"><canvas id="ch-hold"></canvas></div></div>
-</div>
-
-<div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 mb-4">
-  {% macro btable(title, rows) %}
-  <div class="card p-4">
-    <div class="card-h mb-2">{{ title }}</div>
-    <table class="w-full text-sm tbl"><thead><tr><th></th><th class="text-right">Trades</th><th class="text-right">Win %</th><th class="text-right">Net P&L</th></tr></thead><tbody>
-    {% for b in rows %}<tr><td class="text-slate-300 truncate max-w-[140px]">{{ b.label }}</td><td class="text-right">{{ b.count }}</td><td class="text-right">{{ b.win_rate|num(0) }}%</td><td class="text-right {{ b.pnl|pnl_class }}">{{ b.pnl|money }}</td></tr>
-    {% else %}<tr><td colspan="4" class="text-slate-500">No data</td></tr>{% endfor %}
-    </tbody></table>
-  </div>
-  {% endmacro %}
-  {{ btable('Long vs short', st.by_direction) }}
-  {{ btable('Stocks vs options', st.by_asset) }}
-  {{ btable('By setup', st.by_setup) }}
-  {{ btable('By tag', st.by_tag) }}
-</div>
-
-<div class="card p-4">
-  <div class="flex justify-between mb-2"><div class="card-h">Recent closed trades</div><a href="/trades" class="text-xs text-indigo-300 hover:underline">All trades →</a></div>
-  <table class="w-full text-sm tbl"><thead><tr><th>Closed</th><th>Symbol</th><th>Side</th><th class="text-right">Qty</th><th class="text-right">Entry</th><th class="text-right">Exit</th><th class="text-right">Net P&L</th><th>Setup</th></tr></thead><tbody>
-  {% for t in recent %}
-  <tr class="cursor-pointer" onclick="location='/trades/{{ t.id }}'"><td class="text-slate-400">{{ t.closed_at|local_dt }}</td><td class="text-white font-medium">{{ t.symbol }}</td>
-  <td><span class="pill {{ 'bg-emerald-500/15 text-emerald-300' if t.direction == 'LONG' else 'bg-rose-500/15 text-rose-300' }}">{{ t.direction }}</span></td>
-  <td class="text-right">{{ t.quantity|qty }}</td><td class="text-right">{{ t.entry_price|num(2) }}</td><td class="text-right">{{ t.exit_price|num(2) }}</td>
-  <td class="text-right font-medium {{ t.net_pnl|pnl_class }}">{{ t.net_pnl|money }}</td><td class="text-slate-400">{{ t.setup or '' }}</td></tr>
-  {% endfor %}
-  </tbody></table>
+{% endfor %}
 </div>
 {% endif %}
 {% endblock %}
 
 {% block scripts %}
 {% if has_any %}
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js"></script>
+<script src="/static/widgets.js"></script>
 <script>
 const C = {{ charts|tojson }};
 Chart.defaults.color = '#94a3b8'; Chart.defaults.borderColor = 'rgba(51,65,85,.35)'; Chart.defaults.font.family = 'ui-sans-serif, system-ui, sans-serif';
@@ -127,17 +50,34 @@ const money = v => (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString(undefined, 
 const pnlColors = arr => arr.map(v => v >= 0 ? 'rgba(16,185,129,.75)' : 'rgba(244,63,94,.75)');
 const baseOpts = { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false },
   tooltip: { callbacks: { label: c => money(c.parsed.y ?? c.parsed.x) } } }, scales: { y: { ticks: { callback: money } } } };
+function initEquity() {
 const ctxE = document.getElementById('ch-equity').getContext('2d');
 const grad = ctxE.createLinearGradient(0, 0, 0, 260); grad.addColorStop(0, 'rgba(99,102,241,.35)'); grad.addColorStop(1, 'rgba(99,102,241,0)');
 new Chart(ctxE, { type: 'line', data: { labels: C.equity.labels, datasets: [{ data: C.equity.values, borderColor: '#818cf8', backgroundColor: grad, fill: true, pointRadius: 0, tension: .25, borderWidth: 2 }] },
   options: { ...baseOpts, scales: { x: { ticks: { maxTicksLimit: 8, callback: function(v) { return this.getLabelForValue(v).slice(0, 10); } } }, y: { ticks: { callback: money } } } } });
+}
+function initWinloss() {
 new Chart(document.getElementById('ch-winloss'), { type: 'doughnut', data: { labels: ['Wins', 'Losses', 'Break-even'], datasets: [{ data: C.winloss, backgroundColor: ['#10b981', '#f43f5e', '#64748b'], borderWidth: 0 }] },
   options: { responsive: true, maintainAspectRatio: false, cutout: '68%', plugins: { legend: { position: 'bottom' } } } });
+}
 const bar = (id, s, horizontal=false) => new Chart(document.getElementById(id), { type: 'bar',
   data: { labels: s.labels, datasets: [{ data: s.pnl, backgroundColor: pnlColors(s.pnl), borderRadius: 4 }] },
   options: { ...baseOpts, indexAxis: horizontal ? 'y' : 'x', scales: horizontal ? { x: { ticks: { callback: money } } } : { y: { ticks: { callback: money } } },
     plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => money(c.raw) + (s.count ? `  (${s.count[c.dataIndex]} trades, ${s.win_rate[c.dataIndex]}% win)` : '') } } } } });
-bar('ch-daily', C.daily); bar('ch-symbol', C.symbol, true); bar('ch-weekday', C.weekday); bar('ch-hour', C.hour); bar('ch-hold', C.hold);
+const X = {{ xcharts|tojson }};
+const line = (id, labels, sets) => new Chart(document.getElementById(id), { type: 'line', data: { labels, datasets: sets.map(d => ({ pointRadius: 0, tension: .2, borderWidth: 2, ...d })) },
+  options: { ...baseOpts, plugins: { legend: { display: sets.length > 1, position: 'bottom' } }, scales: { x: { ticks: { maxTicksLimit: 8, callback: function(v) { return String(this.getLabelForValue(v)).slice(0, 10); } } }, y: { ticks: { callback: money } } } } });
+const INIT = {
+  chart_equity: initEquity, chart_winloss: initWinloss,
+  chart_daily: () => bar('ch-daily', C.daily), chart_symbol: () => bar('ch-symbol', C.symbol, true),
+  chart_weekday: () => bar('ch-weekday', C.weekday), chart_hour: () => bar('ch-hour', C.hour), chart_hold: () => bar('ch-hold', C.hold),
+  chart_cum_gross: () => line('ch-cumgross', X.cumgross.labels, [{ label: 'Net', data: X.cumgross.net, borderColor: '#818cf8' }, { label: 'Gross', data: X.cumgross.gross, borderColor: '#22d3ee', borderDash: [4, 3] }]),
+  chart_drawdown: () => line('ch-dd', X.drawdown.labels, [{ data: X.drawdown.values, borderColor: '#f43f5e', backgroundColor: 'rgba(244,63,94,.18)', fill: true }]),
+  chart_month: () => bar('ch-month', X.month), chart_price: () => bar('ch-price', X.price), chart_size: () => bar('ch-size', X.size),
+  chart_pnl_dist: () => bar('ch-pnldist', X.pnldist),
+};
+const done = {};
+WidgetEditor({ grid: '#dash-grid', toolbar: '#we-bar', onShow: id => { if (INIT[id] && !done[id]) { done[id] = true; INIT[id](); } } });
 </script>
 {% endif %}
 {% endblock %}

@@ -1,0 +1,43 @@
+{# Instant filters (no Apply button): same query parameters as the Trades page. #}
+<form method="get" id="rf" class="flex flex-wrap items-center gap-2 text-xs" data-autofilter>
+  {% if tab %}<input type="hidden" name="tab" value="{{ tab }}">{% endif %}
+  <div class="flex rounded-lg border border-slate-700 overflow-hidden">
+    {% for key, label in presets %}
+    <a href="?{{ f.query_string(preset=key, start='', end='') }}{% for k, v in params.items() if k not in ('preset','start','end','account') %}&{{ k }}={{ v|urlencode }}{% endfor %}{% if tab %}&tab={{ tab }}{% endif %}"
+       class="px-2.5 py-1.5 {{ 'bg-indigo-600 text-white' if f.preset == key else 'text-slate-400 hover:bg-slate-800' }}">{{ label }}</a>
+    {% endfor %}
+  </div>
+  {% if f.preset != 'custom' %}<input type="hidden" name="preset" value="{{ f.preset }}">{% endif %}
+  <input type="date" name="start" value="{{ f.start if f.preset == 'custom' and f.start else '' }}" class="inp text-xs" aria-label="From">
+  <input type="date" name="end" value="{{ f.end if f.preset == 'custom' and f.end else '' }}" class="inp text-xs" aria-label="To">
+  <select name="account" class="inp text-xs" aria-label="Account">
+    <option value="">All accounts</option>
+    {% for a in accounts %}<option value="{{ a.id }}" {{ 'selected' if f.account_id == a.id }}>{{ a.name }}</option>{% endfor %}
+  </select>
+  <input name="symbol" value="{{ q.get('symbol', '') }}" placeholder="Symbol" class="inp text-xs w-24" autocomplete="off">
+  <select name="direction" class="inp text-xs" aria-label="Side">
+    <option value="">Long & short</option>
+    <option value="LONG" {{ 'selected' if q.get('direction') == 'LONG' }}>Long</option>
+    <option value="SHORT" {{ 'selected' if q.get('direction') == 'SHORT' }}>Short</option>
+  </select>
+  <select name="status" class="inp text-xs" aria-label="Status">
+    <option value="">Any status</option>
+    <option value="CLOSED" {{ 'selected' if q.get('status') == 'CLOSED' }}>Closed</option>
+    <option value="OPEN" {{ 'selected' if q.get('status') == 'OPEN' }}>Open</option>
+  </select>
+  <select name="asset" class="inp text-xs" aria-label="Instrument">
+    <option value="">Stocks & options</option>
+    <option value="STOCK" {{ 'selected' if q.get('asset') == 'STOCK' }}>Stocks</option>
+    <option value="OPTION" {{ 'selected' if q.get('asset') == 'OPTION' }}>Options</option>
+  </select>
+  {% if setups %}<select name="setup" class="inp text-xs" aria-label="Setup">
+    <option value="">Any setup</option>
+    {% for s in setups %}<option {{ 'selected' if q.get('setup') == s }}>{{ s }}</option>{% endfor %}
+  </select>{% endif %}
+  {% if tags %}<select name="tag" class="inp text-xs" aria-label="Tag">
+    <option value="">Any tag</option>
+    {% for s in tags %}<option {{ 'selected' if q.get('tag') == s }}>{{ s }}</option>{% endfor %}
+  </select>{% endif %}
+  <button class="btn btn-s text-xs nojs-only">Apply</button>
+  {% if params %}<a href="?{% if tab %}tab={{ tab }}{% endif %}" class="text-slate-400 hover:text-white underline px-1">Clear</a>{% endif %}
+</form>

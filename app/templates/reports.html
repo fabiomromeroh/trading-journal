@@ -1,0 +1,242 @@
+{% extends "base.html" %}
+{% block title %}Reports · Trading Journal{% endblock %}
+{% macro stat(label, value, cls='', sub='', title='') %}
+<div class="card p-3 min-w-0" {% if title %}title="{{ title }}"{% endif %}><div class="card-h truncate">{{ label }}</div><div class="text-lg font-bold truncate {{ cls or 'text-white' }}">{{ value }}</div>{% if sub %}<div class="text-[11px] text-slate-500 mt-0.5 truncate">{{ sub }}</div>{% endif %}</div>
+{% endmacro %}
+{% macro pct(v, d=1) %}{{ (v|num(d) ~ '%') if v is not none else '—' }}{% endmacro %}
+{% macro btable(rows, first='Bucket', drill=None) %}
+<div class="overflow-x-auto"><table class="w-full text-sm tbl">
+  <thead><tr><th>{{ first }}</th><th class="text-right">Trades</th><th class="text-right">Win %</th><th class="text-right">Net P&L</th><th class="text-right">Avg</th><th class="text-right">Avg win</th><th class="text-right">Avg loss</th><th class="text-right">Profit factor</th><th class="text-right">Volume</th><th class="text-right">Fees</th></tr></thead>
+  <tbody>
+  {% for r in rows %}<tr>
+    <td class="text-slate-200">{% if drill and not r.label.startswith('(') %}<a class="hover:underline" href="?{{ drill_qs(drill, r.label) }}">{{ r.label }}</a>{% else %}{{ r.label }}{% endif %}</td>
+    <td class="text-right">{{ r.trades }}</td><td class="text-right">{{ pct(r.win_pct, 0) }}</td>
+    <td class="text-right font-medium {{ r.net|pnl_class }}">{{ r.net|money }}</td><td class="text-right {{ r.avg|pnl_class }}">{{ r.avg|money }}</td>
+    <td class="text-right text-emerald-400/80">{{ r.avg_win|money }}</td><td class="text-right text-rose-400/80">{{ r.avg_loss|money }}</td>
+    <td class="text-right">{{ r.pf|num(2) }}</td><td class="text-right">{{ r.volume|qty }}</td><td class="text-right text-slate-400">{{ r.fees|money }}</td></tr>
+  {% else %}<tr><td colspan="10" class="text-slate-500">No closed trades match the filters.</td></tr>{% endfor %}
+  </tbody></table></div>
+{% endmacro %}
+{% macro drill_qs(key, label) %}{% set v = label.upper() if key == 'direction' else label %}{% for k, x in params.items() if k != key %}{{ k }}={{ x|urlencode }}&{% endfor %}{{ key }}={{ v|urlencode }}&tab={{ tab }}{% endmacro %}
+{% macro section(title, key, rows, first='Bucket', drill=None, note='', h='h-56') %}
+<div class="card p-4 mb-4">
+  <div class="flex flex-wrap items-baseline justify-between gap-2 mb-2"><div class="card-h">{{ title }}</div>{% if note %}<div class="text-[11px] text-amber-300/80">{{ note }}</div>{% endif %}</div>
+  {% if rows %}<div class="{{ h }} mb-3"><canvas data-bar="{{ key }}"></canvas></div>{% endif %}
+  {{ btable(rows, first, drill) }}
+</div>
+{% endmacro %}
+
+{% block content %}
+<div class="flex flex-wrap items-end justify-between gap-3 mb-3">
+  <div>
+    <h1 class="text-2xl font-semibold text-white">Reports</h1>
+    <p class="text-sm text-slate-500">{{ s.closed }} closed{% if s.open %} · {{ s.open }} open{% endif %} trades · net P&L after fees · times in {{ settings().display_tz }}</p>
+  </div>
+  {% include "partials/report_filters.html" %}
+</div>
+{% if flash %}<div class="card border-indigo-500/40 bg-indigo-500/10 text-indigo-100 p-3 mb-3 text-sm">{{ flash }}</div>{% endif %}
+
+<nav class="flex gap-1 overflow-x-auto mb-4 border-b border-slate-800 -mx-1 px-1" aria-label="Report sections">
+  {% for key, label in tabs %}
+  <a href="?{% for k, x in params.items() %}{{ k }}={{ x|urlencode }}&{% endfor %}tab={{ key }}"
+     class="whitespace-nowrap px-3 py-2 text-sm border-b-2 {{ 'border-indigo-400 text-white' if tab == key else 'border-transparent text-slate-400 hover:text-white' }}">{{ label }}</a>
+  {% endfor %}
+</nav>
+
+{% if tab == 'overview' %}
+<div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-2 mb-4">
+  {{ stat('Net P&L', s.net|money(true), s.net|pnl_class, 'Gross ' ~ s.gross|money(true) ~ ' · fees ' ~ s.fees|money) }}
+  {{ stat('Trades', s.closed, '', s.open ~ ' open (' ~ pct(s.open_pct, 0) ~ ')') }}
+  {{ stat('Win %', pct(s.win_pct), '', s.wins ~ 'W / ' ~ s.losses ~ 'L / ' ~ s.be ~ ' BE') }}
+  {{ stat('Loss % / BE %', pct(s.loss_pct) ~ ' / ' ~ pct(s.be_pct), '', 'BE % of all closed trades') }}
+  {{ stat('Profit factor', s.profit_factor|num(2), '', 'Gross profit ' ~ s.gross_profit|money ~ ' / loss ' ~ s.gross_loss|money) }}
+  {{ stat('Expectancy', s.expectancy|money(true), s.expectancy|pnl_class, 'Avg net P&L per trade') }}
+  {{ stat('Avg win / avg loss', s.avg_win|money ~ ' / ' ~ s.avg_loss|money, '', 'P/L ratio ' ~ s.pl_ratio|num(2)) }}
+  {{ stat('Median trade', s.median_trade|money(true), s.median_trade|pnl_class) }}
+  {{ stat('Largest win / loss', s.largest_win|money ~ ' / ' ~ s.largest_loss|money) }}
+  {{ stat('Biggest % profit / loser', pct(s.best_pct) ~ ' / ' ~ pct(s.worst_pct)) }}
+  {{ stat('Avg return %', pct(s.avg_ret_pct, 2), s.avg_ret_pct|pnl_class, 'Winners ' ~ pct(s.avg_ret_pct_win, 2) ~ ' · losers ' ~ pct(s.avg_ret_pct_loss, 2)) }}
+  {{ stat('Return per share', s.return_per_share|money(true, 3), s.return_per_share|pnl_class, 'Net ÷ shares/contract units') }}
+  {{ stat('Long / short', s.ret_long|money(true) ~ ' / ' ~ s.ret_short|money(true), '', s.n_long ~ ' long · ' ~ s.n_short ~ ' short') }}
+  {{ stat('Avg hold', s.avg_hold|td, '', 'W ' ~ s.avg_hold_win|td ~ ' · L ' ~ s.avg_hold_loss|td ~ ' · BE ' ~ s.avg_hold_be|td) }}
+  {{ stat('Max consecutive', s.max_consec_wins ~ 'W / ' ~ s.max_consec_losses ~ 'L') }}
+  {{ stat('Max drawdown', s.max_dd|money, 'text-rose-300', 'Longest ' ~ s.max_dd_days ~ ' days · current ' ~ s.current_dd|money) }}
+  {{ stat('P&L std dev', s.std|money, '', 'W ' ~ s.std_win|money ~ ' · L ' ~ s.std_loss|money) }}
+  {{ stat('SQN', s.sqn|num(2), '', '≥ 2.5 good (needs many trades)', 'System Quality Number = avg P&L × √n ÷ std dev') }}
+  {{ stat('Kelly %', pct(s.kelly), s.kelly|pnl_class, 'W − (1 − W) ÷ P/L ratio') }}
+  {{ stat('Trading days', s.days, '', s.win_days ~ ' green / ' ~ s.loss_days ~ ' red (' ~ pct(s.day_win_pct, 0) ~ ')') }}
+  {{ stat('Avg daily P&L', s.avg_day|money(true), s.avg_day|pnl_class, 'Best ' ~ s.best_day|money ~ ' · worst ' ~ s.worst_day|money) }}
+  {{ stat('Avg R-multiple', (s.avg_r|num(2) ~ 'R') if s.avg_r is not none else '—', s.avg_r|pnl_class, (s.r_count ~ ' trades with risk') if s.r_count else 'Set a stop/risk (Win/loss tab)') }}
+  {{ stat('MFE efficiency', pct(s.mfe_eff, 0), '', (s.mfe_count ~ ' trades with MFE/MAE') if s.mfe_count else 'No MFE/MAE yet') }}
+  {{ stat('Commissions & fees', s.fees|money, '', 'Avg ' ~ s.avg_fees|money ~ ' per trade') }}
+</div>
+<div class="grid grid-cols-1 xl:grid-cols-2 gap-4 mb-4">
+  <div class="card p-4"><div class="card-h mb-2">Cumulative P&L: net vs gross</div><div class="h-64"><canvas id="ch-cum"></canvas></div></div>
+  <div class="card p-4"><div class="card-h mb-2">Daily net P&L</div><div class="h-64"><canvas data-bar="daily"></canvas></div></div>
+</div>
+{% if s.open_realized %}<p class="text-xs text-slate-500">Partial exits inside still-open trades ({{ s.open_realized|money(true) }}) are not included above; the dashboard's Realized P&L includes them.</p>{% endif %}
+
+{% elif tab == 'timing' %}
+<div class="grid grid-cols-1 xl:grid-cols-2 gap-x-4">
+  <div>{{ section('Day of week (entry)', 'weekday', b.weekday, 'Day') }}</div>
+  <div>{{ section('Hour of day (entry)', 'hour', b.hour, 'Hour', note='' if s.hours_known else 'Needs execution times') }}</div>
+  <div>{{ section('Holding time', 'hold', b.hold, 'Duration') }}</div>
+  <div>{{ section('Month', 'month', b.month, 'Month') }}</div>
+  <div>{{ section('Month of year', 'month_of_year', b.month_of_year, 'Month') }}</div>
+  <div>{{ section('Year', 'year', b.year, 'Year') }}</div>
+</div>
+
+{% elif tab == 'price' %}
+<div class="grid grid-cols-1 xl:grid-cols-2 gap-x-4">
+  <div>{{ section('Entry price', 'entry_price', b.entry_price, 'Price') }}</div>
+  <div>{{ section('Position size (max shares / contracts)', 'size', b.size, 'Size') }}</div>
+  <div>{{ section('Position value (cost of entries)', 'value', b.value, 'Value') }}</div>
+</div>
+<p class="text-xs text-slate-500">Market volume and market-cap reports need market data per trade, which the journal doesn't store; "Volume" here is your traded quantity.</p>
+
+{% elif tab == 'instrument' %}
+<div class="grid grid-cols-1 xl:grid-cols-2 gap-x-4">
+  <div>{{ section('Side', 'side', b.side, 'Side', 'direction') }}</div>
+  <div>{{ section('Instrument', 'instrument', b.instrument, 'Instrument') }}</div>
+  {% if b.call_put %}<div>{{ section('Calls vs puts', 'call_put', b.call_put, 'Type') }}</div>{% endif %}
+</div>
+{{ section('Symbol', 'symbol', b.symbol, 'Symbol', 'symbol', h='h-72') }}
+
+{% elif tab == 'tags' %}
+<div class="grid grid-cols-1 xl:grid-cols-2 gap-x-4">
+  <div>{{ section('Setup', 'setup', b.setup, 'Setup', 'setup') }}</div>
+  <div>{{ section('Tag (a trade counts once per tag)', 'tag', b.tag, 'Tag', 'tag') }}</div>
+</div>
+
+{% elif tab == 'winloss' %}
+<div class="grid grid-cols-1 xl:grid-cols-3 gap-4 mb-4">
+  <div class="card p-4 xl:col-span-2 overflow-x-auto">
+    <div class="card-h mb-2">Winners vs losers</div>
+    {% set W = b.status|selectattr('label', 'equalto', 'Winners')|first %}{% set L = b.status|selectattr('label', 'equalto', 'Losers')|first %}
+    <table class="w-full text-sm tbl"><thead><tr><th></th><th class="text-right">Winners</th><th class="text-right">Losers</th></tr></thead><tbody>
+      <tr><td>Trades</td><td class="text-right">{{ s.wins }} ({{ pct(s.win_pct, 0) }})</td><td class="text-right">{{ s.losses }} ({{ pct(s.loss_pct, 0) }})</td></tr>
+      <tr><td>Total</td><td class="text-right text-emerald-400">{{ s.gross_profit|money }}</td><td class="text-right text-rose-400">{{ s.gross_loss|money }}</td></tr>
+      <tr><td>Average $</td><td class="text-right">{{ s.avg_win|money }}</td><td class="text-right">{{ s.avg_loss|money }}</td></tr>
+      <tr><td>Average %</td><td class="text-right">{{ pct(s.avg_ret_pct_win, 2) }}</td><td class="text-right">{{ pct(s.avg_ret_pct_loss, 2) }}</td></tr>
+      <tr><td>Largest</td><td class="text-right">{{ s.largest_win|money }}</td><td class="text-right">{{ s.largest_loss|money }}</td></tr>
+      <tr><td>Std deviation</td><td class="text-right">{{ s.std_win|money }}</td><td class="text-right">{{ s.std_loss|money }}</td></tr>
+      <tr><td>Avg hold</td><td class="text-right">{{ s.avg_hold_win|td }}</td><td class="text-right">{{ s.avg_hold_loss|td }}</td></tr>
+      <tr><td>Max consecutive</td><td class="text-right">{{ s.max_consec_wins }}</td><td class="text-right">{{ s.max_consec_losses }}</td></tr>
+      <tr><td>Commissions & fees</td><td class="text-right">{{ s.fees_win|money }}</td><td class="text-right">{{ s.fees_loss|money }}</td></tr>
+      <tr><td>Avg R</td><td class="text-right">{{ (s.avg_r_win|num(2) ~ 'R') if s.avg_r_win is not none else '—' }}</td><td class="text-right">{{ (s.avg_r_loss|num(2) ~ 'R') if s.avg_r_loss is not none else '—' }}</td></tr>
+    </tbody></table>
+  </div>
+  <div class="grid grid-cols-2 gap-2 content-start">
+    {{ stat('Expectancy', s.expectancy|money(true), s.expectancy|pnl_class, 'Win% × avg win + loss% × avg loss') }}
+    {{ stat('Expectancy (R)', (s.avg_r|num(2) ~ 'R') if s.avg_r is not none else '—', s.avg_r|pnl_class, (s.r_count ~ ' trades') if s.r_count else 'no risk set') }}
+    {{ stat('Profit factor', s.profit_factor|num(2)) }}
+    {{ stat('P/L ratio', s.pl_ratio|num(2), '', 'Avg win ÷ |avg loss|') }}
+    {{ stat('Kelly %', pct(s.kelly), s.kelly|pnl_class) }}
+    {{ stat('SQN', s.sqn|num(2)) }}
+    {{ stat('Total R', (s.total_r|num(2) ~ 'R') if s.total_r is not none else '—', s.total_r|pnl_class) }}
+    {{ stat('BE trades', s.be, '', 'Fees ' ~ s.fees_be|money) }}
+    {{ stat('Fees long / short', s.fees_long|money ~ ' / ' ~ s.fees_short|money) }}
+    {{ stat('Fees on open trades', s.fees_open|money) }}
+  </div>
+</div>
+<div class="grid grid-cols-1 xl:grid-cols-2 gap-x-4">
+  <div>{{ section('Trade P&L distribution', 'pnl_dist', b.pnl_dist, 'Net P&L') }}</div>
+  <div>
+    <div class="card p-4 mb-4" id="risk">
+      <div class="card-h mb-2">R-multiple</div>
+      <p class="text-sm text-slate-400 mb-2">R = net P&L ÷ planned risk. A trade's risk comes from its <b>Risk $</b>, else its <b>initial stop</b>
+        (|entry − stop| × size), both set on the trade page; otherwise the default below (like TraderSync's fixed risk scale).</p>
+      <form method="post" action="/reports/risk" class="flex flex-wrap items-center gap-2 mb-3">
+        <label class="text-sm text-slate-300">Default risk per trade $</label>
+        <input name="default_risk" value="{{ '%.2f'|format(default_risk) if default_risk else '' }}" inputmode="decimal" placeholder="e.g. 50" class="inp w-28">
+        <button class="btn btn-s text-xs">Save</button>
+      </form>
+      {% if b.r %}<div class="h-48 mb-3"><canvas data-bar="r"></canvas></div>{{ btable(b.r, 'R') }}
+      {% else %}<p class="text-sm text-slate-500">No trades have a risk yet.</p>{% endif %}
+    </div>
+  </div>
+</div>
+
+{% elif tab == 'drawdown' %}
+<div class="grid grid-cols-2 md:grid-cols-5 gap-2 mb-4">
+  {{ stat('Max drawdown', s.max_dd|money, 'text-rose-300', 'Peak-to-trough, closed trades') }}
+  {{ stat('Current drawdown', s.current_dd|money, s.current_dd|pnl_class) }}
+  {{ stat('Longest drawdown', s.max_dd_days ~ ' days', '', s.max_dd_trades ~ ' trades') }}
+  {{ stat('Recovery factor', s.recovery_factor|num(2), '', 'Net P&L ÷ |max drawdown|') }}
+  {{ stat('Net P&L', s.net|money(true), s.net|pnl_class) }}
+</div>
+<div class="grid grid-cols-1 xl:grid-cols-2 gap-4 mb-4">
+  <div class="card p-4"><div class="card-h mb-2">Underwater curve (drawdown from peak)</div><div class="h-64"><canvas id="ch-dd"></canvas></div></div>
+  <div class="card p-4"><div class="card-h mb-2">Cumulative net P&L</div><div class="h-64"><canvas id="ch-cum"></canvas></div></div>
+</div>
+<div class="card p-4 overflow-x-auto"><div class="card-h mb-2">Worst drawdowns</div>
+  <table class="w-full text-sm tbl"><thead><tr><th>From peak</th><th class="text-right">Peak</th><th class="text-right">Drawdown</th><th>Trough</th><th>Recovered</th><th class="text-right">Days</th><th class="text-right">Trades</th></tr></thead><tbody>
+  {% for e in dd.episodes %}<tr><td>{{ e.start }}</td><td class="text-right">{{ e.peak|money }}</td><td class="text-right text-rose-400">{{ e.trough|money }}</td><td>{{ e.trough_at }}</td><td>{{ e.recovered or 'not yet' }}</td><td class="text-right">{{ e.days }}</td><td class="text-right">{{ e.trades }}</td></tr>
+  {% else %}<tr><td colspan="7" class="text-slate-500">No drawdowns.</td></tr>{% endfor %}
+  </tbody></table>
+</div>
+
+{% elif tab == 'excursion' %}
+<div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-2 mb-4">
+  {{ stat('Coverage', s.mfe_count ~ ' / ' ~ s.closed, '', 'closed trades with MFE/MAE') }}
+  {{ stat('Avg MFE', s.avg_mfe|money, 'text-emerald-400', 'Max ' ~ s.max_mfe|money) }}
+  {{ stat('Avg MAE', s.avg_mae|money, 'text-rose-400', 'Max ' ~ s.max_mae|money) }}
+  {{ stat('MFE efficiency', pct(s.mfe_eff, 0), '', 'Avg of net P&L ÷ MFE per trade') }}
+  {{ stat('MAE efficiency', pct(s.mae_eff, 0), '', 'Avg of net P&L ÷ |MAE|') }}
+  {{ stat('Left on the table', s.left_on_table|money, '', 'Σ (MFE − gross P&L)') }}
+</div>
+<p class="text-xs text-slate-500 mb-3">MFE/MAE are measured from price bars between entry and exit when a stock trade's chart is opened (options aren't covered).
+  Best exit possible = MFE: the most the position was up while open.</p>
+{% if exc %}
+<div class="grid grid-cols-1 xl:grid-cols-2 gap-4 mb-4">
+  <div class="card p-4"><div class="card-h mb-2">MFE vs net P&L</div><div class="h-64"><canvas id="ch-mfe"></canvas></div></div>
+  <div class="card p-4"><div class="card-h mb-2">MAE vs net P&L</div><div class="h-64"><canvas id="ch-mae"></canvas></div></div>
+</div>
+<div class="card p-4 overflow-x-auto"><table class="w-full text-sm tbl"><thead><tr><th>Closed</th><th>Symbol</th><th class="text-right">Net P&L</th><th class="text-right">MFE</th><th class="text-right">MAE</th><th class="text-right">MFE eff.</th><th class="text-right">MAE eff.</th><th class="text-right">Left on table</th></tr></thead><tbody>
+  {% for e in exc|reverse %}<tr class="cursor-pointer" onclick="location='/trades/{{ e.id }}'"><td class="text-slate-400">{{ e.closed|local_dt }}</td><td class="text-white">{{ e.symbol }}</td>
+  <td class="text-right {{ e.net|pnl_class }}">{{ e.net|money }}</td><td class="text-right text-emerald-400/80">{{ e.mfe|money }}</td><td class="text-right text-rose-400/80">{{ e.mae|money }}</td>
+  <td class="text-right">{{ pct(e.eff, 0) }}</td><td class="text-right">{{ pct(e.mae_eff, 0) }}</td><td class="text-right">{{ e.left|money }}</td></tr>{% endfor %}
+</tbody></table></div>
+{% else %}<div class="card p-6 text-slate-500 text-sm">No trades with MFE/MAE in this selection yet. Open a closed stock trade's chart to measure it.</div>{% endif %}
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Instant filters come from the shared /static/app.js (data-autofilter); minimal fallback if it isn't loaded.
+document.addEventListener('DOMContentLoaded', () => {
+  if (document.documentElement.classList.contains('js')) return;
+  const f = document.getElementById('rf'); if (!f) return; let t;
+  f.querySelectorAll('.nojs-only').forEach(b => b.style.display = 'none');
+  f.addEventListener('change', e => { if (e.target.name !== 'symbol') f.requestSubmit(); });
+  f.addEventListener('input', e => { if (e.target.name === 'symbol') { clearTimeout(t); t = setTimeout(() => f.requestSubmit(), 300); } });
+});
+</script>
+<script>
+(function () {
+  const C = {{ charts|tojson }};
+  Chart.defaults.color = '#94a3b8'; Chart.defaults.borderColor = 'rgba(51,65,85,.35)';
+  const money = v => (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString(undefined, {maximumFractionDigits: 0});
+  const money2 = v => (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  const colors = a => a.map(v => v >= 0 ? 'rgba(16,185,129,.75)' : 'rgba(244,63,94,.75)');
+  const base = { responsive: true, maintainAspectRatio: false, animation: false, plugins: { legend: { display: false } } };
+  document.querySelectorAll('canvas[data-bar]').forEach(el => {
+    const s = C[el.dataset.bar]; if (!s || !s.labels.length) return;
+    new Chart(el, { type: 'bar', data: { labels: s.labels, datasets: [{ data: s.pnl, backgroundColor: colors(s.pnl), borderRadius: 3 }] },
+      options: { ...base, scales: { y: { ticks: { callback: money } }, x: { ticks: { autoSkip: true, maxRotation: 0 } } },
+        plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => money2(c.raw) + (s.count ? `  (${s.count[c.dataIndex]} trades` + (s.win_rate && s.win_rate[c.dataIndex] !== null ? `, ${s.win_rate[c.dataIndex]}% win)` : ')') : '') } } } } });
+  });
+  const line = (id, labels, sets) => { const el = document.getElementById(id); if (!el || !labels.length) return;
+    new Chart(el, { type: 'line', data: { labels, datasets: sets.map(d => ({ pointRadius: 0, tension: .2, borderWidth: 2, ...d })) },
+      options: { ...base, plugins: { legend: { display: sets.length > 1, position: 'bottom' }, tooltip: { callbacks: { label: c => (c.dataset.label ? c.dataset.label + ' ' : '') + money2(c.raw) } } },
+        scales: { x: { ticks: { maxTicksLimit: 8, callback: function (v) { return String(this.getLabelForValue(v)).slice(0, 10); } } }, y: { ticks: { callback: money } } } } }); };
+  line('ch-cum', C.cum.labels, [{ label: 'Net', data: C.cum.net, borderColor: '#818cf8' }, { label: 'Gross', data: C.cum.gross, borderColor: '#22d3ee', borderDash: [4, 3] }]);
+  line('ch-dd', C.drawdown.labels, [{ data: C.drawdown.values, borderColor: '#f43f5e', backgroundColor: 'rgba(244,63,94,.18)', fill: true }]);
+  const scatter = (id, pts, xl) => { const el = document.getElementById(id); if (!el) return;
+    new Chart(el, { type: 'scatter', data: { datasets: [{ data: pts, backgroundColor: pts.map(p => p.y >= 0 ? '#10b981' : '#f43f5e') }] },
+      options: { ...base, plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => `${c.raw.s}: ${xl} ${money2(c.raw.x)}, net ${money2(c.raw.y)}` } } },
+        scales: { x: { title: { display: true, text: xl }, ticks: { callback: money } }, y: { title: { display: true, text: 'Net P&L' }, ticks: { callback: money } } } } }); };
+  scatter('ch-mfe', C.mfe_scatter, 'MFE'); scatter('ch-mae', C.mae_scatter, 'MAE');
+})();
+</script>
+{% endblock %}

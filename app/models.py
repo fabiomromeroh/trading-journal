@@ -133,6 +133,10 @@ class Trade(Base):
     rating: Mapped[int | None] = mapped_column(Integer)
     mfe: Mapped[float | None] = mapped_column(Float)  # $ max favourable excursion
     mae: Mapped[float | None] = mapped_column(Float)  # $ max adverse excursion
+    # Planned risk (journal, preserved across rebuilds): R-multiple = net P&L / risk
+    initial_stop: Mapped[float | None] = mapped_column(Float)
+    risk_amount: Mapped[float | None] = mapped_column(Float)   # $ risk; overrides the stop-based risk
+    profit_target: Mapped[float | None] = mapped_column(Float)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
     account: Mapped[Account] = relationship()
     tags: Mapped[list[Tag]] = relationship(secondary=trade_tags, lazy="selectin")

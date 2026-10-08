@@ -10,7 +10,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import get_settings
-from app.routes import auth, dashboard, email_sync, imports, settings as settings_routes, trades
+from app.routes import auth, dashboard, email_sync, imports, reports, settings as settings_routes, trades
 
 logging.basicConfig(level=logging.INFO)
 PUBLIC_PREFIXES = ("/login", "/healthz", "/static", "/api/ingest/")  # /api/ingest: token auth
@@ -41,7 +41,7 @@ def create_app() -> FastAPI:
     app.add_middleware(SessionMiddleware, secret_key=s.secret_key, session_cookie="tj_session",
                        max_age=60 * 60 * 24 * 14, same_site="lax", https_only=s.cookie_secure)
     app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
-    for r in (auth.router, dashboard.router, trades.router, imports.router, settings_routes.router, email_sync.router):
+    for r in (auth.router, dashboard.router, trades.router, imports.router, settings_routes.router, email_sync.router, reports.router):
         app.include_router(r)
 
     @app.get("/healthz")
