@@ -42,7 +42,7 @@ class TF:
     fetch: str          # provider interval actually requested
     bar: timedelta      # nominal bar length
     lookback_days: int | None  # how far back intraday history goes (None = unlimited)
-    before: timedelta   # history fetched before entry (also feeds indicator warm-up)
+    before: timedelta   # history fetched before entry (~200+ bars so a 200-period MA is warmed up)
     after: timedelta    # history fetched after exit
     max_span: timedelta | None = None  # max request span (1m)
     focus_before: int = 50  # bars shown before entry
@@ -52,15 +52,15 @@ class TF:
 TIMEFRAMES: dict[str, TF] = {t.key: t for t in (
     TF("1m", "1 minute", "1m", timedelta(minutes=1), 29, timedelta(days=1), timedelta(days=1),
        max_span=timedelta(days=7), focus_before=60, focus_after=30),
-    TF("5m", "5 minutes", "5m", timedelta(minutes=5), 59, timedelta(days=4), timedelta(days=2),
+    TF("5m", "5 minutes", "5m", timedelta(minutes=5), 59, timedelta(days=7), timedelta(days=2),
        focus_before=50, focus_after=25),
-    TF("15m", "15 minutes", "15m", timedelta(minutes=15), 59, timedelta(days=10), timedelta(days=4),
+    TF("15m", "15 minutes", "15m", timedelta(minutes=15), 59, timedelta(days=14), timedelta(days=4),
        focus_before=40, focus_after=20),
-    TF("30m", "30 minutes", "30m", timedelta(minutes=30), 59, timedelta(days=20), timedelta(days=7),
+    TF("30m", "30 minutes", "30m", timedelta(minutes=30), 59, timedelta(days=30), timedelta(days=7),
        focus_before=40, focus_after=20),
-    TF("1h", "1 hour", "60m", timedelta(hours=1), 729, timedelta(days=45), timedelta(days=15),
+    TF("1h", "1 hour", "60m", timedelta(hours=1), 729, timedelta(days=60), timedelta(days=15),
        focus_before=50, focus_after=20),
-    TF("4h", "4 hours", "60m", timedelta(hours=4), 729, timedelta(days=150), timedelta(days=40),
+    TF("4h", "4 hours", "60m", timedelta(hours=4), 729, timedelta(days=200), timedelta(days=40),
        focus_before=50, focus_after=20),
     TF("1D", "Daily", "1d", timedelta(days=1), None, timedelta(days=420), timedelta(days=90),
        focus_before=60, focus_after=25),
