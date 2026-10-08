@@ -13,12 +13,24 @@
   <script src="https://unpkg.com/htmx.org@2.0.4"></script>
   <script defer src="https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
-  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/app.css?v=3">
+  <script defer src="/static/app.js?v=1"></script>
   {% block head %}{% endblock %}
 </head>
-<body class="bg-[#0b0f17] text-slate-200 font-sans antialiased" x-data="{ side: {{ 'false' if fullscreen else 'true' }} }">
+<body class="bg-[#0b0f17] text-slate-200 font-sans antialiased{{ ' side-collapsed' if fullscreen else '' }}"
+      x-data="{ side: {{ 'false' if fullscreen else 'true' }}, mnav: false,
+                toggleNav() { if (window.matchMedia('(max-width: 767px)').matches) this.mnav = !this.mnav; else this.side = !this.side; } }"
+      :class="{ 'side-collapsed': !side, 'mnav-open': mnav }" @keydown.escape.window="mnav = false">
+<header id="mobile-bar" class="md:hidden sticky top-0 z-40 flex items-center gap-3 px-3 py-2 bg-[#0f1520]/95 backdrop-blur border-b border-slate-800/80">
+  <button type="button" @click="mnav = !mnav" class="h-10 w-10 -ml-1 grid place-items-center rounded-lg text-slate-300 hover:bg-slate-800" aria-label="Open menu">
+    <svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" d="M4 6h16M4 12h16M4 18h16"/></svg>
+  </button>
+  <a href="/" class="flex items-center gap-2 min-w-0"><span class="h-7 w-7 rounded-lg bg-gradient-to-br from-indigo-500 to-cyan-400 grid place-items-center font-bold text-slate-900 text-xs">TJ</span><span class="font-semibold text-white truncate">{% block mobile_title %}Trading Journal{% endblock %}</span></a>
+  <button hx-post="/sync" hx-target="#sync-toast" hx-swap="innerHTML" @click="mnav = true" class="ml-auto h-10 px-3 rounded-lg bg-indigo-600 text-white text-sm font-medium" aria-label="Sync now">Sync</button>
+</header>
+<div id="nav-backdrop" class="md:hidden" @click="mnav = false"></div>
 <div class="flex min-h-screen">
-  <aside class="w-56 shrink-0 bg-[#0f1520] border-r border-slate-800/80 flex flex-col{{ ' sticky top-0 h-screen' if fullscreen else '' }}"{% if fullscreen %} x-show="side" style="display:none"{% endif %}>
+  <aside id="sidebar" class="w-60 md:w-56 shrink-0 bg-[#0f1520] border-r border-slate-800/80 flex flex-col">
     <div class="px-5 py-5 flex items-center gap-2">
       <div class="h-8 w-8 rounded-lg bg-gradient-to-br from-indigo-500 to-cyan-400 grid place-items-center font-bold text-slate-900">TJ</div>
       <div>
@@ -32,7 +44,7 @@
                       ('import','/import','Import','M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2'),
                       ('settings','/settings','Settings & Sync','M10.3 4.3c.4-1.7 3-1.7 3.4 0a1.7 1.7 0 002.6 1.1c1.5-.9 3.3.8 2.4 2.4a1.7 1.7 0 001 2.5c1.8.4 1.8 3 0 3.4a1.7 1.7 0 00-1 2.6c.9 1.5-.9 3.3-2.4 2.4a1.7 1.7 0 00-2.6 1c-.4 1.8-3 1.8-3.4 0a1.7 1.7 0 00-2.5-1c-1.6.9-3.3-.9-2.4-2.4a1.7 1.7 0 00-1.1-2.6c-1.7-.4-1.7-3 0-3.4a1.7 1.7 0 001.1-2.5c-.9-1.6.8-3.3 2.4-2.4a1.7 1.7 0 002.5-1.1zM15 12a3 3 0 11-6 0 3 3 0 016 0z')] %}
       {% for key, href, label, icon in items %}
-      <a href="{{ href }}" class="flex items-center gap-3 px-3 py-2 rounded-lg {{ 'bg-indigo-500/15 text-white' if nav == key else 'text-slate-400 hover:text-white hover:bg-slate-800/60' }}">
+      <a href="{{ href }}" class="flex items-center gap-3 px-3 py-2.5 md:py-2 rounded-lg {{ 'bg-indigo-500/15 text-white' if nav == key else 'text-slate-400 hover:text-white hover:bg-slate-800/60' }}">
         <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="{{ icon }}"/></svg>
         {{ label }}
       </a>
@@ -50,18 +62,18 @@
   </aside>
   <main class="flex-1 min-w-0">
     {% if has_demo %}
-    <div class="bg-amber-500/15 border-b border-amber-500/30 text-amber-200 text-sm px-6 py-2 flex items-center gap-3">
+    <div class="bg-amber-500/15 border-b border-amber-500/30 text-amber-200 text-sm px-4 md:px-6 py-2 flex flex-wrap items-center gap-x-3 gap-y-1">
       <span class="font-semibold uppercase tracking-wide text-[11px] bg-amber-500/25 rounded px-2 py-0.5">Sample data</span>
       <span>Charts and trades include generated demo data from “Sample account (demo)”. It is not real trading history.</span>
       <form method="post" action="/settings/demo/clear" class="ml-auto"><button class="underline hover:text-white">Clear sample data</button></form>
     </div>
     {% endif %}
     {% for b in banners %}
-    <div class="{{ 'bg-rose-500/15 border-rose-500/30 text-rose-200' if b.level == 'error' else 'bg-amber-500/10 border-amber-500/30 text-amber-200' }} border-b text-sm px-6 py-2 flex gap-3">
+    <div class="{{ 'bg-rose-500/15 border-rose-500/30 text-rose-200' if b.level == 'error' else 'bg-amber-500/10 border-amber-500/30 text-amber-200' }} border-b text-sm px-4 md:px-6 py-2 flex flex-wrap gap-x-3 gap-y-1">
       <span>{{ b.text }}</span><a class="ml-auto underline" href="{{ b.link }}">{{ b.link_text }}</a>
     </div>
     {% endfor %}
-    <div class="{{ 'px-3 py-3' if fullscreen else 'px-6 py-6 max-w-[1500px]' }}">
+    <div id="page" class="{{ 'px-2 md:px-3 py-2 md:py-3' if fullscreen else 'px-3 md:px-6 py-4 md:py-6' }}">
       {% block content %}{% endblock %}
     </div>
   </main>

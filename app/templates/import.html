@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Import · Trading Journal{% endblock %}
 {% block content %}
+<div class="max-w-[1500px]">
 <h1 class="text-2xl font-semibold text-white mb-1">Import trades</h1>
 <p class="text-sm text-slate-500 mb-5">Re-importing overlapping files is safe: fills already imported are recognised and skipped, and a matching fill from another file type is merged (e.g. thinkorswim adds exact times, Schwab.com adds fees).</p>
 {% if flash %}<div class="card border-sky-500/40 bg-sky-500/10 text-sky-100 p-3 mb-4 text-sm">{{ flash }}</div>{% endif %}
@@ -19,9 +20,9 @@
       <div class="text-xs text-slate-500 mt-1">Schwab.com Transactions export or thinkorswim Account Statement · detected automatically</div>
     </label>
     <div class="flex flex-wrap items-end gap-3 mt-4">
-      <div>
+      <div class="min-w-0 max-w-full">
         <label class="card-h block mb-1">Account</label>
-        <select name="account" class="inp">
+        <select name="account" class="inp w-full">
           <option value="">Auto (match account number{% if default_account %}, else {{ default_account.name }}{% else %} / new account{% endif %})</option>
           {% for a in accounts if not a.is_demo %}<option value="{{ a.id }}" {{ 'selected' if default_account and a.id == default_account.id }}>{{ a.name }}</option>{% endfor %}
         </select>
@@ -76,5 +77,6 @@
     {% else %}<tr><td colspan="13" class="text-slate-500 text-center py-6">No imports yet.</td></tr>{% endfor %}
     </tbody>
   </table>
+</div>
 </div>
 {% endblock %}

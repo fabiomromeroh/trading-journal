@@ -204,7 +204,7 @@ def test_chart_endpoint_timeframes(yahoo_client, db):
     page = c.get(f"/trades/{s.id}")
     assert page.status_code == 200 and "trade_chart.js" in page.text and 'id="tf-bar"' in page.text
     assert "max-w-[1500px]" not in page.text and "tradingview.com/chart/?symbol=OLDS" in page.text
-    assert "max-w-[1500px]" in c.get("/trades").text  # other pages keep the normal layout
+    assert "side-collapsed" in page.text and "side-collapsed" not in c.get("/trades").text.split("<body")[1][:80]
 
 
 def test_demo_trade_every_timeframe(db):

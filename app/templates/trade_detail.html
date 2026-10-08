@@ -4,7 +4,7 @@
 {% block content %}
 <div x-data="{ journal: localStorage.getItem('tj.journalPanel') !== '0' }" x-init="$watch('journal', v => localStorage.setItem('tj.journalPanel', v ? '1' : '0'))">
 <div class="flex flex-wrap items-center gap-x-3 gap-y-2 mb-2">
-  <button type="button" @click="side = !side" class="btn btn-s !px-2 !py-1.5" :title="side ? 'Hide menu' : 'Show menu'" aria-label="Toggle menu">
+  <button type="button" @click="toggleNav()" class="btn btn-s !px-2 !py-1.5 hidden md:inline-flex" :title="side ? 'Hide menu' : 'Show menu'" aria-label="Toggle menu">
     <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" d="M4 6h16M4 12h16M4 18h16"/></svg>
   </button>
   <a href="/trades" class="text-slate-400 hover:text-white text-sm">← Trades</a>
