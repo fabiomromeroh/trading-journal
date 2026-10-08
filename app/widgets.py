@@ -85,9 +85,15 @@ TRADE = [
     ("account", "Account", False), ("setup", "Setup", False), ("rating", "Rating", False),
 ]
 
+TRADE_GROUPS = {**dict.fromkeys(("net", "gross", "fees", "return", "return_per_share", "position_value"), "P&L"),
+                **dict.fromkeys(("entry_exit", "entry", "exit", "max_size", "hold", "fills", "opened", "closed"), "Execution"),
+                **dict.fromkeys(("mfe_mae", "mfe", "mae", "mfe_eff", "mae_eff", "best_exit", "left_on_table"), "MFE / MAE"),
+                **dict.fromkeys(("r_multiple", "risk", "stop", "target", "planned_rr", "target_pnl"), "Risk & R"),
+                **dict.fromkeys(("account", "setup", "rating"), "Journal")}
+
 CATALOGS = {
     "dashboard": [{"id": i, "title": t, "size": s, "group": g, "default": d} for i, t, s, g, d in DASHBOARD],
-    "trade": [{"id": i, "title": t, "size": "kpi", "group": "Trade", "default": d} for i, t, d in TRADE],
+    "trade": [{"id": i, "title": t, "size": "kpi", "group": TRADE_GROUPS.get(i, "Trade"), "default": d} for i, t, d in TRADE],
 }
 
 

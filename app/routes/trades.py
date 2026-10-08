@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.models import Tag, Trade, TradeFill
 from app.prices import excursion_basis, excursion_note, get_chart, update_trade_excursions
+from app.routes.reports import trade_extras
 from app.web import apply_trade_filters, base_context, parse_filters, templates
 
 router = APIRouter()
@@ -108,7 +109,8 @@ def trade_detail(trade_id: int, request: Request, db: Session = Depends(get_db))
     return templates.TemplateResponse(request, "trade_detail.html", base_context(
         request, db, nav="trades", t=t, prev_id=prev_id, next_id=next_id, all_tags=all_tags, setups=setups,
         saved=False, fullscreen=True, mfe_note=excursion_note(excursion_basis(t)), nav_rows=nav_rows,
-        list_qs=list_qs, in_list=in_list, list_filtered=filtered, list_truncated=len(nav_rows) >= SIDEBAR_LIMIT))
+        list_qs=list_qs, in_list=in_list, list_filtered=filtered, list_truncated=len(nav_rows) >= SIDEBAR_LIMIT,
+        **trade_extras(db, t)))
 
 
 @router.post("/trades/{trade_id}/journal")

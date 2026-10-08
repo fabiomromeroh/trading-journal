@@ -2,7 +2,7 @@
 {% block title %}{{ t.symbol }} · Trade #{{ t.id }}{% endblock %}
 {% block head %}<script src="https://unpkg.com/lightweight-charts@5.2.1/dist/lightweight-charts.standalone.production.js"></script>{% endblock %}
 {% block content %}
-<div x-data="{ journal: localStorage.getItem('tj.journalPanel') !== '0', tlist: localStorage.getItem('tj.tradeList') !== '0', tdrawer: false,
+<div id="trade-page" x-data="{ journal: localStorage.getItem('tj.journalPanel') !== '0', tlist: localStorage.getItem('tj.tradeList') !== '0', tdrawer: false,
                toggleList() { if (window.matchMedia('(min-width: 1024px)').matches) this.tlist = !this.tlist; else this.tdrawer = !this.tdrawer; } }"
      x-init="$watch('journal', v => localStorage.setItem('tj.journalPanel', v ? '1' : '0')); $watch('tlist', v => localStorage.setItem('tj.tradeList', v ? '1' : '0'))"
      @keydown.escape.window="tdrawer = false">
@@ -25,6 +25,8 @@
   <div class="ml-auto flex gap-2 text-sm">
     {% if prev_id %}<a id="prev-trade" href="/trades/{{ prev_id }}{{ '?' ~ list_qs if list_qs }}" class="btn btn-s !py-1" title="Previous in list (k)">← Prev</a>{% endif %}
     {% if next_id %}<a id="next-trade" href="/trades/{{ next_id }}{{ '?' ~ list_qs if list_qs }}" class="btn btn-s !py-1" title="Next in list (j)">Next →</a>{% endif %}
+    <span data-we="msg" class="text-xs self-center"></span>
+    <button type="button" data-we="edit" class="btn btn-s !py-1" title="Add, remove or reorder the stats above the chart">✎<span class="hidden sm:inline"> Stats</span></button>
     <button type="button" class="btn btn-s !py-1" @click="journal = !journal" x-text="journal ? 'Hide journal' : 'Journal'">Journal</button>
   </div>
 </div>
@@ -53,16 +55,21 @@
   </nav>
 </aside>
 <div class="flex-1 min-w-0">
-{% macro kv(label, value, cls='', id='', wid='', title='') %}<div class="rounded-lg border border-slate-800 bg-[#111827] px-3 py-1.5 min-w-0" data-widget="{{ wid or label|lower|replace(' ', '-')|replace('/', '')|replace('&', '') }}"{% if title %} title="{{ title }}"{% endif %}><div class="text-[10px] uppercase tracking-wide text-slate-500 font-semibold truncate">{{ label }}{% if title %} <span class="text-slate-600 cursor-help">ⓘ</span>{% endif %}</div><div {% if id %}id="{{ id }}" {% endif %}class="text-sm font-semibold truncate {{ cls or 'text-white' }}">{{ value }}</div></div>{% endmacro %}
-<div class="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-8 gap-2 mb-2">
-  {{ kv('Net P&L', t.net_pnl|money(true), t.net_pnl|pnl_class) }}
-  {{ kv('Gross P&L', t.gross_pnl|money(true), t.gross_pnl|pnl_class) }}
-  {{ kv('Fees', t.fees|money) }}
-  {{ kv('Return', (t.return_pct|num(2) ~ '%') if t.return_pct is not none else '—', t.return_pct|pnl_class) }}
-  {{ kv('Entry / exit', t.entry_price|num(2) ~ ' → ' ~ t.exit_price|num(2)) }}
-  {{ kv('Max size', t.quantity|qty ~ (' contracts' if t.asset_type == 'OPTION' else ' sh')) }}
-  {{ kv('Hold time', ((t.closed_at - t.opened_at)|td if t.closed_at else 'open') ~ ('' if t.time_known else ' (date only)')) }}
-  {{ kv('MFE / MAE', (t.mfe|money ~ ' / ' ~ t.mae|money) if t.mfe is not none else '—', '', 'mfe', 'mfe-mae', mfe_note) }}
+{% from "partials/widget_macros.html" import we_tools %}
+<div data-we="panel" class="card p-3 mb-2" hidden>
+  <div class="flex flex-wrap items-center gap-2 mb-2">
+    <span class="card-h mr-auto">Stat bar · add widgets</span>
+    <button type="button" data-we="save" class="btn btn-p text-xs">Save layout</button>
+    <button type="button" data-we="cancel" class="btn btn-s text-xs">Cancel</button>
+    <button type="button" data-we="reset" class="btn btn-d text-xs">Reset to default</button>
+  </div>
+  <div data-we="catalog"></div>
+  <p class="text-[11px] text-slate-500 mt-1">Drag ⠿ or use ↑ ↓ to reorder, ✕ to remove, then Save. Stored on the server, so phone and desktop match. R-multiple needs a stop or Risk $ (Journal panel → Risk &amp; target).</p>
+</div>
+<div id="trade-stats" data-page="trade" class="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-8 gap-2 mb-2">
+{% for wid in TL.order %}{% set w = TL.catalog[wid] %}
+  <div data-wid="{{ wid }}" data-title="{{ w.title }}" data-group="{{ w.group }}" class="relative min-w-0"{{ ' hidden' if wid not in TL.shown }}>{{ we_tools() }}{% include "partials/trade_stat.html" %}</div>
+{% endfor %}
 </div>
 
 <div class="flex flex-col xl:flex-row gap-3 items-start">
@@ -114,6 +121,7 @@
     <div class="card p-4 xl:max-h-[calc(100vh-24px)] xl:overflow-auto">
       <div class="card-h mb-3">Journal</div>
       {% include "partials/journal_form.html" %}
+      <div class="mt-4 pt-3 border-t border-slate-800">{% with saved=false %}{% include "partials/risk_form.html" %}{% endwith %}</div>
     </div>
   </aside>
 </div>
@@ -127,6 +135,9 @@ window.TJ_CHART = { tradeId: {{ t.id }}, symbol: {{ t.underlying|tojson }}, tz: 
   isStock: {{ 'true' if t.asset_type == 'STOCK' else 'false' }}, entry: {{ t.entry_price|tojson }}, exit: {{ t.exit_price|tojson }} };
 </script>
 <script src="/static/trade_chart.js?v=3"></script>
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js"></script>
+<script src="/static/widgets.js?v=1"></script>
+<script>WidgetEditor({ grid: '#trade-stats', toolbar: '#trade-page' });</script>
 <script>
 (function () {  // trade list: current row into view, quick search, j/k (and ↑/↓ inside the list) to move
   const items = () => [...document.querySelectorAll('[data-tl-item]')].filter((a) => a.style.display !== 'none');

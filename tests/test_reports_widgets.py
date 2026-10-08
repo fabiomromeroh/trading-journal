@@ -111,3 +111,23 @@ def test_risk_fields_survive_rebuild(demo, db):
     t2 = db.scalars(select(Trade).where(Trade.account_id == key[0], Trade.symbol == key[1],
                                         Trade.opened_at == key[2])).one()
     assert (t2.initial_stop, t2.risk_amount, t2.profit_target) == (1.5, 40.0, 9.0)
+
+
+def test_trade_page_stat_bar_and_risk_form(demo, db):
+    t = db.scalars(select(Trade).where(Trade.status == "CLOSED", Trade.asset_type == "STOCK")).first()
+    html = demo.get(f"/trades/{t.id}").text
+    assert 'id="trade-stats"' in html and 'data-page="trade"' in html
+    for wid in widgets.default_layout("trade"):
+        i = html.index(f'data-wid="{wid}"')
+        assert " hidden" not in html[i:html.index(">", i)]
+    i = html.index('data-wid="r_multiple"')
+    assert " hidden" in html[i:html.index(">", i)]
+    assert 'id="mfe"' in html and 'id="risk-form"' in html and 'id="trade-list"' in html
+    demo.post("/layout/trade", json={"widgets": ["r_multiple", "net", "best_exit"]})
+    demo.post(f"/trades/{t.id}/risk", data={"risk_amount": "25"})
+    html = demo.get(f"/trades/{t.id}").text
+    i_r, i_n, i_b = (html.index(f'data-wid="{w}"') for w in ("r_multiple", "net", "best_exit"))
+    assert i_r < i_n < i_b
+    assert f"{t.net_pnl / 25:.2f}R" in html[i_r:i_n]
+    i = html.index('data-wid="fees"')
+    assert " hidden" in html[i:html.index(">", i)]
