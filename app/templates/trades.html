@@ -10,12 +10,22 @@
 <div class="flex flex-wrap items-end justify-between gap-2 mb-3">
   <div>
     <h1 class="text-2xl font-semibold text-white">Trades</h1>
-    <p class="text-sm text-slate-500 flex flex-wrap items-center gap-x-1">{{ total }} trades ({{ n_closed }} closed, {{ n_open }} open) · total realized in view
+    <p class="text-sm text-slate-500 flex flex-wrap items-center gap-x-1">{{ total }} trade{{ 's' if total != 1 }} ({{ n_closed }} closed, {{ n_open }} open) · total realized in view
       <span class="{{ realized_pnl|pnl_class }} font-medium">{{ realized_pnl|money(true) }}</span>{{ info('realized_view') }}
       <span class="text-slate-600">(closed {{ filtered_pnl|money(true) }} + partial exits of open trades {{ open_realized|money(true) }})</span></p>
   </div>
 </div>
+{% if day %}
+<div class="card border-indigo-500/40 bg-indigo-500/10 p-3 mb-3 text-sm flex flex-wrap items-center gap-x-3 gap-y-1" id="day-banner">
+  <span class="text-slate-300">Realized on <b class="text-white">{{ day.isoformat() }}</b>:</span>
+  <span class="text-lg font-semibold {{ day_total|pnl_class }}">{{ day_total|money(true) }}</span>
+  <span class="text-slate-400">{{ day_rows|length }} trade{{ 's' if day_rows|length != 1 }} with a closing fill or fees that day
+    ({{ day_rows.values()|selectattr('partial')|list|length }} partial exit{{ 's' if day_rows.values()|selectattr('partial')|list|length != 1 }}) · includes trades opened or closed on other days</span>
+  <a href="/trades" class="ml-auto text-indigo-300 hover:underline">Clear day</a>
+</div>
+{% endif %}
 <form method="get" action="/trades" class="card p-3 mb-4 flex flex-wrap items-center gap-2 text-xs" data-autofilter="swap" data-target="#trades-results">
+  {% if day %}<input type="hidden" name="realized_day" value="{{ day.isoformat() }}">{% endif %}
   <div class="flex rounded-lg border border-slate-700 overflow-hidden max-w-full overflow-x-auto">
     {% for key, label in presets %}<button name="preset" value="{{ key }}" class="px-3 py-1.5 {{ 'bg-indigo-600 text-white' if f.preset == key else 'text-slate-400 hover:bg-slate-800' }}">{{ label }}</button>{% endfor %}
   </div>
@@ -26,7 +36,7 @@
   <select name="direction" class="inp text-xs"><option value="">Long & short</option>{% for v in ['LONG','SHORT'] %}<option {{ 'selected' if q.get('direction') == v }}>{{ v }}</option>{% endfor %}</select>
   <select name="asset" class="inp text-xs"><option value="">Stocks & options</option><option value="STOCK" {{ 'selected' if q.get('asset') == 'STOCK' }}>Stocks</option><option value="OPTION" {{ 'selected' if q.get('asset') == 'OPTION' }}>Options</option></select>
   <select name="status" class="inp text-xs"><option value="">Open & closed</option>{% for v in ['OPEN','CLOSED'] %}<option {{ 'selected' if q.get('status') == v }}>{{ v }}</option>{% endfor %}</select>
-  <select name="outcome" class="inp text-xs"><option value="">Wins & losses</option><option value="win" {{ 'selected' if q.get('outcome') == 'win' }}>Winners</option><option value="loss" {{ 'selected' if q.get('outcome') == 'loss' }}>Losers</option></select>
+  <select name="outcome" class="inp text-xs"><option value="">Wins & losses</option><option value="win" {{ 'selected' if q.get('outcome') == 'win' }}>Winners</option><option value="loss" {{ 'selected' if q.get('outcome') == 'loss' }}>Losers</option><option value="be" {{ 'selected' if q.get('outcome') == 'be' }}>Break-even</option></select>
   <select name="setup" class="inp text-xs"><option value="">Any setup</option>{% for s in setups %}<option {{ 'selected' if q.get('setup') == s }}>{{ s }}</option>{% endfor %}</select>
   <select name="tag" class="inp text-xs"><option value="">Any tag</option>{% for s in tags %}<option {{ 'selected' if q.get('tag') == s }}>{{ s }}</option>{% endfor %}</select>
   <span class="flex items-center gap-1">
@@ -44,14 +54,16 @@
       <div class="flex items-center gap-2 flex-wrap">
         <span class="text-white font-semibold">{{ t.symbol }}</span>
         <span class="pill {{ 'bg-emerald-500/15 text-emerald-300' if t.direction == 'LONG' else 'bg-rose-500/15 text-rose-300' }}">{{ t.direction }}</span>
-        {% if t.status == 'OPEN' %}<span class="pill bg-sky-500/15 text-sky-300">OPEN</span>{% else %}<span class="pill {{ 'bg-emerald-500/15 text-emerald-300' if t.net_pnl > 0 else 'bg-rose-500/15 text-rose-300' if t.net_pnl < 0 else 'bg-slate-500/20 text-slate-300' }}">{{ 'WIN' if t.net_pnl > 0 else 'LOSS' if t.net_pnl < 0 else 'BE' }}</span>{% endif %}
+        {% if t.status == 'OPEN' %}<span class="pill bg-sky-500/15 text-sky-300">OPEN</span>{% else %}<span class="pill {{ {'WIN': 'bg-emerald-500/15 text-emerald-300', 'LOSS': 'bg-rose-500/15 text-rose-300'}.get(outcome_label(t), 'bg-slate-500/20 text-slate-300') }}">{{ outcome_label(t) }}</span>{% endif %}
         {% if t.id in provisional_trades %}<span class="pill bg-amber-500/15 text-amber-300">provisional</span>{% endif %}
       </div>
       <div class="text-xs text-slate-500 mt-0.5">{{ t.opened_at|local_dt('%b %d %H:%M' if t.time_known else '%b %d') }}{% if t.closed_at %} → {{ t.closed_at|local_dt('%b %d %H:%M' if t.time_known else '%b %d') }}{% endif %} · {{ t.quantity|qty }} @ {{ t.entry_price|num(2) }}{% if t.exit_price %} → {{ t.exit_price|num(2) }}{% endif %}</div>
       {% if t.setup or t.tags %}<div class="text-xs text-slate-400 mt-0.5 truncate">{{ t.setup or '' }}{% for tg in t.tags %} #{{ tg.name }}{% endfor %}</div>{% endif %}
     </div>
     <div class="text-right shrink-0">
-      <div class="font-semibold {{ t.net_pnl|pnl_class }}">{{ t.net_pnl|money }}</div>
+      {% if day %}{% set dr = day_rows.get(t.id) %}<div class="font-semibold {{ dr.net|pnl_class }}" title="Realized on {{ day.isoformat() }}">{{ dr.net|money(true) }} <span class="text-[10px] text-slate-500 font-normal">{{ day.strftime('%b %d') }}</span></div>
+      <div class="text-[11px] text-slate-500">trade {{ t.net_pnl|money }}</div>{% else %}
+      <div class="font-semibold {{ t.net_pnl|pnl_class }}">{{ t.net_pnl|money }}</div>{% endif %}
       <div class="text-xs {{ t.return_pct|pnl_class }}">{{ (t.return_pct|num(1) ~ '%') if t.return_pct is not none else '' }}</div>
     </div>
   </a>
@@ -65,7 +77,7 @@
   <thead><tr>
     <th>{{ sort_link('opened', 'Opened') }}</th><th>{{ sort_link('closed', 'Closed') }}</th><th>{{ sort_link('symbol', 'Symbol') }}</th><th>Side</th><th>Status</th>
     <th class="text-right">{{ sort_link('qty', 'Qty') }}</th><th class="text-right">Entry</th><th class="text-right">Exit</th>
-    <th class="text-right">{{ sort_link('fees', 'Fees') }}</th><th class="text-right">{{ sort_link('pnl', 'Net P&L') }}</th><th class="text-right">{{ sort_link('return', 'Return') }}</th>
+    <th class="text-right">{{ sort_link('fees', 'Fees') }}</th>{% if day %}<th class="text-right text-indigo-200">Realized {{ day.strftime('%b %d') }}</th>{% endif %}<th class="text-right">{{ sort_link('pnl', 'Net P&L') }}</th><th class="text-right">{{ sort_link('return', 'Return') }}</th>
     <th>Hold</th><th>Setup / tags</th><th>Rating</th>
   </tr></thead>
   <tbody>
@@ -75,9 +87,10 @@
     <td class="text-slate-400">{{ t.closed_at|local_dt('%Y-%m-%d %H:%M' if t.time_known else '%Y-%m-%d') if t.closed_at else '—' }}</td>
     <td><a href="/trades/{{ t.id }}{{ '?' ~ list_qs if list_qs }}" class="text-white font-medium hover:underline">{{ t.symbol }}</a>{% if t.is_demo %} <span class="pill bg-amber-500/20 text-amber-300">demo</span>{% endif %}{% if t.id in provisional_trades %} <span class="pill bg-amber-500/15 text-amber-300" title="Includes a same-day fill from a SnapTrade order. Fees post with tomorrow's activity data.">provisional (fees pending)</span>{% endif %}</td>
     <td><span class="pill {{ 'bg-emerald-500/15 text-emerald-300' if t.direction == 'LONG' else 'bg-rose-500/15 text-rose-300' }}">{{ t.direction }}</span></td>
-    <td>{% if t.status == 'OPEN' %}<span class="pill bg-sky-500/15 text-sky-300">OPEN</span>{% else %}<span class="pill {{ 'bg-emerald-500/15 text-emerald-300' if t.net_pnl > 0 else 'bg-rose-500/15 text-rose-300' if t.net_pnl < 0 else 'bg-slate-500/20 text-slate-300' }}">{{ 'WIN' if t.net_pnl > 0 else 'LOSS' if t.net_pnl < 0 else 'BE' }}</span>{% if t.close_reason and t.close_reason != 'TRADE' %} <span class="text-[10px] text-slate-500">{{ t.close_reason|lower }}</span>{% endif %}{% endif %}</td>
+    <td>{% if t.status == 'OPEN' %}<span class="pill bg-sky-500/15 text-sky-300">OPEN</span>{% else %}<span class="pill {{ {'WIN': 'bg-emerald-500/15 text-emerald-300', 'LOSS': 'bg-rose-500/15 text-rose-300'}.get(outcome_label(t), 'bg-slate-500/20 text-slate-300') }}">{{ outcome_label(t) }}</span>{% if t.close_reason and t.close_reason != 'TRADE' %} <span class="text-[10px] text-slate-500">{{ t.close_reason|lower }}</span>{% endif %}{% endif %}</td>
     <td class="text-right">{{ t.quantity|qty }}</td><td class="text-right">{{ t.entry_price|num(2) }}</td><td class="text-right">{{ t.exit_price|num(2) }}</td>
     <td class="text-right text-slate-400">{{ t.fees|money }}</td>
+    {% if day %}{% set dr = day_rows.get(t.id) %}<td class="text-right font-semibold {{ dr.net|pnl_class }}">{{ dr.net|money(true) }}<div class="text-[10px] text-slate-500 font-normal">{% if dr.exits %}{{ dr.qty|qty }} {{ 'final exit' if dr.final and not dr.partial else 'partial' if not dr.final else 'partial + final' }}{% else %}fees only{% endif %}</div></td>{% endif %}
     <td class="text-right font-semibold {{ t.net_pnl|pnl_class }}">{{ t.net_pnl|money }}</td>
     <td class="text-right {{ t.return_pct|pnl_class }}">{{ (t.return_pct|num(1) ~ '%') if t.return_pct is not none else '—' }}</td>
     <td class="text-slate-400">{{ ((t.closed_at - t.opened_at)|td) if t.closed_at else '—' }}</td>
@@ -85,7 +98,7 @@
     <td class="text-amber-300">{{ '★' * (t.rating or 0) }}</td>
   </tr>
   {% else %}
-  <tr><td colspan="14" class="text-center text-slate-500 py-10">No trades match. <a class="text-indigo-300 underline" href="/import">Import a CSV</a></td></tr>
+  <tr><td colspan="{{ 15 if day else 14 }}" class="text-center text-slate-500 py-10">No trades match. <a class="text-indigo-300 underline" href="/import">Import a CSV</a></td></tr>
   {% endfor %}
   </tbody>
 </table>

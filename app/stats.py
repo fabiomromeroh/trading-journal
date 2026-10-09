@@ -6,6 +6,7 @@ from collections import OrderedDict, defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 
+from app import outcome
 from app.timeutil import utc_naive_to_tz
 
 WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -17,16 +18,22 @@ class Bucket:
     pnl: float = 0.0
     count: int = 0
     wins: int = 0
+    losses: int = 0
 
     @property
     def win_rate(self) -> float:
-        return self.wins / self.count * 100 if self.count else 0.0
+        """wins ÷ (wins + losses); break-even trades are excluded (see app.outcome)."""
+        decided = self.wins + self.losses
+        return self.wins / decided * 100 if decided else 0.0
 
     def add(self, pnl: float) -> None:
         self.pnl += pnl
         self.count += 1
-        if pnl > 0:
+        o = outcome.classify(pnl)
+        if o == "win":
             self.wins += 1
+        elif o == "loss":
+            self.losses += 1
 
 
 @dataclass
@@ -143,12 +150,13 @@ def compute(trades, tz: str, open_count: int = 0, events=None) -> Stats:
         st.net_pnl += pnl
         st.gross_pnl += t.gross_pnl
         st.fees += t.fees
-        if pnl > 0:
+        o = outcome.classify(pnl)
+        if o == "win":
             st.wins += 1
             st.gross_wins += pnl
             st.largest_win = max(st.largest_win, pnl)
             streak_w, streak_l = streak_w + 1, 0
-        elif pnl < 0:
+        elif o == "loss":
             st.losses += 1
             st.gross_losses += pnl
             st.largest_loss = min(st.largest_loss, pnl)
@@ -163,7 +171,7 @@ def compute(trades, tz: str, open_count: int = 0, events=None) -> Stats:
         opened_local = utc_naive_to_tz(t.opened_at, tz)
         hold = t.closed_at - t.opened_at
         holds.append(hold)
-        (holds_w if pnl > 0 else holds_l if pnl < 0 else []).append(hold)
+        (holds_w if o == "win" else holds_l if o == "loss" else []).append(hold)
         b("symbol", t.underlying).add(pnl)
         b("weekday", WEEKDAYS[opened_local.weekday()]).add(pnl)
         if t.time_known:

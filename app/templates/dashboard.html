@@ -25,13 +25,11 @@
 {% else %}
 
 {% from "partials/widget_macros.html" import we_tools, we_toolbar %}
-{% set SIZE = {'kpi': 'col-span-6 md:col-span-3 xl:col-span-2', 'wide': 'col-span-12 xl:col-span-8', 'third': 'col-span-12 xl:col-span-4',
-               'full': 'col-span-12', 'half': 'col-span-12 lg:col-span-6', 'quarter': 'col-span-12 md:col-span-6 xl:col-span-3'} %}
 <div class="mb-3">{{ we_toolbar('we-bar') }}</div>
-<div id="dash-grid" data-page="dashboard" class="grid grid-cols-12 gap-3 grid-flow-row-dense items-start mb-4">
+<div id="dash-grid" data-page="dashboard" data-widths='{{ L.widths|tojson }}' class="grid grid-cols-12 gap-3 grid-flow-row-dense items-start mb-4">
 {% for wid in L.order %}{% set w = L.catalog[wid] %}
-  <div data-wid="{{ wid }}" data-title="{{ w.title }}" data-group="{{ w.group }}" class="relative min-w-0 {{ SIZE[w.size] }}"{{ ' hidden' if wid not in L.shown }}>
-    {{ we_tools() }}
+  <div data-wid="{{ wid }}" data-title="{{ w.title }}" data-group="{{ w.group }}"{% if wid in L.resizable %} data-size="{{ L.sizes[wid] }}"{% endif %} class="relative min-w-0 {{ L.size_class[wid] }}"{{ ' hidden' if wid not in L.shown }}>
+    {{ we_tools(L.width_labels if wid in L.resizable else None, L.sizes.get(wid)) }}
     {% include "partials/dash_widget.html" %}
   </div>
 {% endfor %}
@@ -42,8 +40,8 @@
 {% block scripts %}
 {% if has_any %}
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js"></script>
-<script src="/static/widgets.js"></script>
-<script src="/static/pnl_widgets.js?v=1"></script>
+<script src="/static/widgets.js?v=2"></script>
+<script src="/static/pnl_widgets.js?v=2"></script>
 <script>
 const C = {{ charts|tojson }};
 Chart.defaults.color = '#94a3b8'; Chart.defaults.borderColor = 'rgba(51,65,85,.35)'; Chart.defaults.font.family = 'ui-sans-serif, system-ui, sans-serif';

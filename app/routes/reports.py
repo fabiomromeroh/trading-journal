@@ -43,10 +43,13 @@ def apply_extra_filters(stmt, q):
         stmt = stmt.where(Trade.status == q["status"])
     if q.get("asset") in ("STOCK", "OPTION"):
         stmt = stmt.where(Trade.asset_type == q["asset"])
+    from app import outcome as _oc
     if q.get("outcome") == "win":
-        stmt = stmt.where(Trade.status == "CLOSED", Trade.net_pnl > 0)
+        stmt = stmt.where(Trade.status == "CLOSED", _oc.sql_win(Trade.net_pnl))
     elif q.get("outcome") == "loss":
-        stmt = stmt.where(Trade.status == "CLOSED", Trade.net_pnl < 0)
+        stmt = stmt.where(Trade.status == "CLOSED", _oc.sql_loss(Trade.net_pnl))
+    elif q.get("outcome") == "be":
+        stmt = stmt.where(Trade.status == "CLOSED", _oc.sql_be(Trade.net_pnl))
     if q.get("setup"):
         stmt = stmt.where(Trade.setup == q["setup"])
     if q.get("tag"):
@@ -177,7 +180,8 @@ async def save_layout(page: str, request: Request, db: Session = Depends(get_db)
         body = json.loads(await request.body() or b"{}")
     except ValueError:
         return JSONResponse({"ok": False, "error": "bad JSON"}, status_code=400)
-    ids = widgets.save_layout(db, page, body.get("widgets") if isinstance(body, dict) else None)
+    ids = widgets.save_layout(db, page, body.get("widgets") if isinstance(body, dict) else None,
+                              sizes=body.get("sizes") if isinstance(body, dict) else None)
     return {"ok": True, "widgets": ids}
 
 

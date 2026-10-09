@@ -122,7 +122,7 @@ I = {
     "realized_view": ("Total realized in view", "Realized P&L of the trades listed (all pages), including partial exits of trades still open, after fees.",
                       "Σ net P&L of closed trades + Σ realized part of open trades matching the filters. Date filters select trades by open date here; the dashboard/calendar attribute P&L to the day of each exit fill."),
     # ---------------------------------------------------------------- reports-only
-    "be_trades": ("Break-even trades", "Closed trades whose net P&L is within ±$0.50 of zero.", "count of closed trades with |net| ≤ $0.50; fees paid on them shown below."),
+    "be_trades": ("Break-even trades", "Closed trades whose net P&L falls inside your break-even range (Settings).", "count of closed trades with lower ≤ net ≤ upper; fees paid on them shown below."),
     "fees_long_short": ("Fees long / short", "Fees paid on closed long vs closed short trades.", "Σ fees by direction (closed trades)."),
     "fees_open": ("Fees on open trades", "Commissions already paid on trades that are still open.", "Σ fees of open trades (counted in total realized on the day charged)."),
     "mfe_coverage": ("MFE/MAE coverage", "How many closed trades have MFE/MAE measured from price bars.", "closed trades with MFE ÷ closed trades."),
@@ -140,6 +140,11 @@ I = {
 ALIASES = {"win_pct": "win_rate", "loss_be_pct": "win_loss_be_pct", "max_dd": "max_drawdown", "mfe_capture": "mfe_eff",
            "avg_hold_trade": "avg_hold", "closed_trades": "total_trades", "net": "closed_net"}
 
+
+# definitions that depend on the break-even range (the current range is appended to "how it's calculated")
+BE_KEYS = {"win_rate", "win_loss_be_pct", "profit_factor", "avg_win_loss", "pl_ratio", "kelly", "largest", "streaks",
+           "hold_win_loss", "day_stats", "chart_winloss", "be_trades", "t_net", "std_dev", "tbl_direction", "tbl_setup",
+           "tbl_tag", "tbl_asset", "long_short"}
 
 # Reports stat-card labels → catalog ids
 LABELS = {
@@ -165,7 +170,12 @@ def info(key: str, page: str | None = None) -> dict | None:
     v = I.get(k) or I.get("t_" + k)
     if not v:
         return None
-    return {"key": k, "name": v[0], "desc": v[1], "calc": v[2]}
+    calc = v[2]
+    if k in BE_KEYS:
+        from app import outcome
+        calc += (f" {outcome.describe()} (Settings › Break-even range). BE trades are left out of wins, losses, "
+                 "gross profit/loss and averages, but their P&L still counts in net P&L and expectancy.")
+    return {"key": k, "name": v[0], "desc": v[1], "calc": calc}
 
 
 def all_info() -> dict:

@@ -27,8 +27,8 @@ DASHBOARD = [
     ("best_worst_day", "Best / worst day", "kpi", "Days", True),
     ("chart_equity", "Equity curve", "wide", "Charts", True),
     ("chart_winloss", "Win / loss donut", "third", "Charts", True),
-    ("chart_daily", "Daily realized P&L", "full", "Charts", True),
-    ("calendar", "P&L calendar", "full", "Charts", True),
+    ("chart_daily", "Daily realized P&L", "wide", "Charts", True),
+    ("calendar", "P&L calendar", "wide", "Charts", True),
     ("chart_symbol", "P&L by symbol", "half", "Charts", True),
     ("chart_weekday", "P&L by day of week", "half", "Charts", True),
     ("chart_hour", "P&L by hour", "half", "Charts", True),
@@ -106,6 +106,45 @@ CATALOGS = {
 }
 
 
+# Width options for non-KPI dashboard widgets (Edit widgets › S / M / L / Full). Tailwind classes;
+# phones are always full width. Catalog sizes map onto these as defaults.
+WIDTHS = {
+    "s": "col-span-12 md:col-span-6 xl:col-span-4",
+    "m": "col-span-12 lg:col-span-6",
+    "l": "col-span-12 xl:col-span-8",
+    "full": "col-span-12",
+}
+WIDTH_LABELS = {"s": "S", "m": "M", "l": "L", "full": "Full"}
+DEFAULT_WIDTH = {"third": "s", "half": "m", "wide": "l", "full": "full", "quarter": "quarter"}
+FIXED_CLASSES = {"kpi": "col-span-6 md:col-span-3 xl:col-span-2", "quarter": "col-span-12 md:col-span-6 xl:col-span-3"}
+
+
+def _sizes_key(page: str) -> str:
+    return f"layout:{page}:sizes"
+
+
+def get_sizes(db: Session, page: str) -> dict[str, str]:
+    """Effective width per widget: the saved choice, else the catalog default."""
+    out = {w["id"]: DEFAULT_WIDTH.get(w["size"], w["size"]) for w in CATALOGS[page] if "size" in w}
+    try:
+        saved = json.loads(get_state(db, _sizes_key(page)) or "{}")
+    except ValueError:
+        saved = {}
+    for k, v in (saved.items() if isinstance(saved, dict) else []):
+        if k in out and v in WIDTHS and resizable(page, k):
+            out[k] = v
+    return out
+
+
+def resizable(page: str, wid: str) -> bool:
+    w = next((w for w in CATALOGS[page] if w["id"] == wid), None)
+    return bool(w and w.get("size") and w["size"] != "kpi")
+
+
+def width_class(size: str) -> str:
+    return WIDTHS.get(size) or FIXED_CLASSES.get(size) or WIDTHS["full"]
+
+
 def default_layout(page: str) -> list[str]:
     return [w["id"] for w in CATALOGS[page] if w["default"]]
 
@@ -147,8 +186,11 @@ def clean(page: str, ids) -> list[str]:
     return out
 
 
-def save_layout(db: Session, page: str, ids) -> list[str]:
+def save_layout(db: Session, page: str, ids, sizes=None) -> list[str]:
     ids = clean(page, ids)
+    if isinstance(sizes, dict):
+        keep = {k: v for k, v in sizes.items() if isinstance(k, str) and v in WIDTHS and resizable(page, k)}
+        set_state(db, _sizes_key(page), json.dumps(keep) if keep else None)
     set_state(db, _key(page), json.dumps(ids))
     set_state(db, _key(page) + ":known", json.dumps([w["id"] for w in CATALOGS[page]]))
     db.commit()
@@ -157,6 +199,7 @@ def save_layout(db: Session, page: str, ids) -> list[str]:
 
 def reset_layout(db: Session, page: str) -> list[str]:
     set_state(db, _key(page), None)
+    set_state(db, _sizes_key(page), None)
     db.commit()
     return default_layout(page)
 
@@ -166,5 +209,8 @@ def layout_ctx(db: Session, page: str) -> dict:
     cat = {w["id"]: w for w in CATALOGS[page]}
     shown = get_layout(db, page)
     hidden = [w["id"] for w in CATALOGS[page] if w["id"] not in shown]
-    return {"page": page, "shown": shown, "order": shown + hidden, "catalog": cat,
+    sizes = get_sizes(db, page) if any("size" in w for w in CATALOGS[page]) else {}
+    return {"page": page, "shown": shown, "order": shown + hidden, "catalog": cat, "sizes": sizes,
+            "size_class": {k: width_class(v) for k, v in sizes.items()}, "widths": WIDTHS, "width_labels": WIDTH_LABELS,
+            "resizable": {k for k in sizes if resizable(page, k)},
             "groups": sorted({w["group"] for w in CATALOGS[page]}, key=[w["group"] for w in CATALOGS[page]].index)}

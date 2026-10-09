@@ -51,7 +51,22 @@
       if (j < 0 || j >= vis.length) return;
       if (dir < 0) vis[j].before(el); else vis[j].after(el);
     }
+    const widths = JSON.parse(grid.dataset.widths || '{}');
+    const allWidth = Object.values(widths).join(' ').split(/\s+/);
+    function resize(el, size) {
+      if (!widths[size]) return;
+      allWidth.forEach(c => c && el.classList.remove(c));
+      widths[size].split(/\s+/).forEach(c => el.classList.add(c));
+      el.dataset.size = size;
+      el.querySelectorAll('[data-we-size]').forEach(b => {
+        const on = b.dataset.weSize === size;
+        b.classList.toggle('bg-indigo-500/40', on); b.classList.toggle('text-white', on); b.setAttribute('aria-pressed', on);
+      });
+      window.dispatchEvent(new Event('resize'));  // let charts re-measure
+    }
     grid.addEventListener('click', ev => {
+      const sz = ev.target.closest('[data-we-size]');
+      if (sz) { ev.preventDefault(); ev.stopPropagation(); resize(sz.closest('[data-wid]'), sz.dataset.weSize); return; }
       const b = ev.target.closest('[data-we-act]'); if (!b) return;
       ev.preventDefault(); ev.stopPropagation();
       const el = b.closest('[data-wid]');
@@ -73,7 +88,8 @@
     $('cancel') && ($('cancel').onclick = () => location.reload());
     $('save') && ($('save').onclick = async () => {
       const ids = items().filter(e => !e.hidden).map(e => e.dataset.wid);
-      try { await post(`/layout/${page}`, { widgets: ids }); setEditing(false); flash('Layout saved'); }
+      const sizes = {}; items().forEach(e => { if (e.dataset.size) sizes[e.dataset.wid] = e.dataset.size; });
+      try { await post(`/layout/${page}`, { widgets: ids, sizes }); setEditing(false); flash('Layout saved'); }
       catch (e) { flash('Could not save: ' + e.message, true); }
     });
     $('reset') && ($('reset').onclick = async () => {

@@ -10,6 +10,10 @@
     return (v < 0 ? '-$' : '$') + a.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d }); };
   const sgn = v => (v > 0 ? '+' : '') + money(v);
   const cls = v => v > 0 ? 'text-emerald-400' : v < 0 ? 'text-rose-400' : 'text-slate-400';
+  // outcome of a day's net vs the break-even range [lo, hi] (Settings): 1 win, -1 loss, 0 BE
+  const oc = (v, C) => { const be = (C && C.be) || [0, 0]; return v > be[1] + 1e-9 ? 1 : v < be[0] - 1e-9 ? -1 : 0; };
+  const dayUrl = (d, C) => `/trades?realized_day=${d}` + (C && C.account ? `&account=${C.account}` : '');
+  window.PnlDayUrl = dayUrl;
   const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   function dayTitle(r) {
     const parts = [`${r.d}: realized ${money(r.net, 2)}`, `gross ${money(r.gross, 2)}, fees ${money(r.fees, 2)}`];
@@ -33,7 +37,7 @@
       const monthDays = C.days.filter(r => r.d.startsWith(`${y}-${String(m + 1).padStart(2, '0')}`));
       const maxAbs = Math.max(1, ...monthDays.map(r => Math.abs(r.net)));
       const tot = monthDays.reduce((a, r) => a + r.net, 0);
-      const g = monthDays.filter(r => r.net > 0.004).length, l = monthDays.filter(r => r.net < -0.004).length;
+      const g = monthDays.filter(r => oc(r.net, C) > 0).length, l = monthDays.filter(r => oc(r.net, C) < 0).length;
       $('total').innerHTML = monthDays.length
         ? `<span class="${cls(tot)} font-semibold">${sgn(tot)}</span> <span class="text-slate-500">· ${monthDays.length} day${monthDays.length > 1 ? 's' : ''} · <span class="text-emerald-400">${g} green</span> / <span class="text-rose-400">${l} red</span></span>`
         : '<span class="text-slate-500">No realized P&L this month</span>';
@@ -50,8 +54,9 @@
           if (!r) { row += `<div class="cal-cell bg-slate-800/30 text-slate-600${isToday}">${dt.getUTCDate()}</div>`; continue; }
           wkNet += r.net; wkTr += r.trades;
           const op = (0.18 + Math.min(1, Math.abs(r.net) / maxAbs) * 0.6).toFixed(2);
-          const bg = r.net > 0.004 ? `rgba(16,185,129,${op})` : r.net < -0.004 ? `rgba(244,63,94,${op})` : 'rgba(100,116,139,.35)';
-          row += `<a href="/trades?start=${d}&end=${d}" class="cal-cell block${isToday}" style="background:${bg}" title="${esc(dayTitle(r))}" aria-label="${esc(dayTitle(r))}">` +
+          const o = oc(r.net, C);
+          const bg = o > 0 ? `rgba(16,185,129,${op})` : o < 0 ? `rgba(244,63,94,${op})` : 'rgba(100,116,139,.35)';
+          row += `<a href="${dayUrl(d, C)}" class="cal-cell block${isToday}" style="background:${bg}" title="${esc(dayTitle(r))}" aria-label="${esc(dayTitle(r))}">` +
             `<div class="text-slate-200/80">${dt.getUTCDate()}</div><div class="font-semibold text-white">${money(r.net)}</div>` +
             `<div class="text-white/60">${r.exits ? r.trades + ' tr' + (r.partial ? ' · ' + r.partial + 'p' : '') : 'fees'}</div></a>`;
         }
@@ -83,13 +88,15 @@
       const fmt = dt => `${MON3[dt.getUTCMonth()]} ${dt.getUTCDate()}`;
       $('label').textContent = `${fmt(start)} – ${fmt(end)}, ${end.getUTCFullYear()}`;
       const tot = rows.reduce((a, r) => a + r.net, 0);
-      const g = rows.filter(r => r.net > 0.004).length, l = rows.filter(r => r.net < -0.004).length;
+      const g = rows.filter(r => oc(r.net, C) > 0).length, l = rows.filter(r => oc(r.net, C) < 0).length;
       $('sum').innerHTML = rows.length ? `Window: <span class="${cls(tot)}">${sgn(tot)}</span> · ${rows.length} days · ${g} green / ${l} red` : 'No realized P&L in this window';
       const data = { labels: rows.map(r => r.d), datasets: [{ data: rows.map(r => r.net), borderRadius: 3,
-        backgroundColor: rows.map(r => r.net >= 0 ? 'rgba(16,185,129,.75)' : 'rgba(244,63,94,.75)') }] };
+        backgroundColor: rows.map(r => { const o = oc(r.net, C); return o > 0 ? 'rgba(16,185,129,.75)' : o < 0 ? 'rgba(244,63,94,.75)' : 'rgba(148,163,184,.6)'; }) }] };
       if (chart) { chart.data = data; chart.update('none'); }
       else chart = new Chart(canvas, { type: 'bar', data, options: { responsive: true, maintainAspectRatio: false, animation: false,
         interaction: { mode: 'index', intersect: false },
+        onClick: (e, els) => { const r = els.length && chart._rows[els[0].index]; if (r) location.href = dayUrl(r.d, C); },
+        onHover: (e, els) => { e.native.target.style.cursor = els.length ? 'pointer' : 'default'; },
         plugins: { legend: { display: false }, tooltip: { callbacks: {
           label: c => `Realized ${money(c.raw, 2)}`,
           afterLabel: c => { const r = rows[c.dataIndex] || chart._rows[c.dataIndex]; return r ? dayTitle(r).split(' · ').slice(1).join('\n') : ''; } } } },

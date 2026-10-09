@@ -463,22 +463,44 @@ def place_fills(trade: Trade, candles: list[dict], tf: str) -> list[tuple]:
     return out
 
 
+def fill_kinds(trade: Trade) -> list[str]:
+    """Per fill (trade order): entry | add | partial | exit (the last closing fill of a closed trade)."""
+    fills = list(trade.fills)
+    last_close = max((i for i, f in enumerate(fills) if f.role == "CLOSE"), default=None)
+    out, seen_open = [], False
+    for i, f in enumerate(fills):
+        if f.role == "OPEN":
+            out.append("add" if seen_open else "entry")
+            seen_open = True
+        elif trade.status == "CLOSED" and i == last_close:
+            out.append("exit")
+        else:
+            out.append("partial")
+    return out
+
+
 def markers(trade: Trade, candles: list[dict], tf: str = "1D") -> tuple[list[dict], int]:
+    """One marker per fill, on its bar AND at its exact price (the chart draws it at that price level).
+    Extra fields (price, kind, side, qty, at, how) feed the chart's fill legend."""
     times = [c["time"] for c in candles]
+    kinds = fill_kinds(trade)
     out, hidden = [], 0
-    for f, i, how in place_fills(trade, candles, tf):
+    for (f, i, how), kind in zip(place_fills(trade, candles, tf), kinds):
         if i is None:
             hidden += 1
             continue
         buy = f.side == "BUY"
-        text = f"{'B' if buy else 'S'} {f.quantity:g} @ {f.price:g}"
+        text = f"{'B' if buy else 'S'} {f.quantity:g} @ {f.price:g} ({kind})"
         if how == "price":
             text += " (time est.)"
         elif how == "day":
             text += " (time n/a)"
+        known = _fill_time_known(f)
+        at = utc_naive_to_tz(f.executed_at, ET).strftime("%Y-%m-%d %H:%M ET" if known else "%Y-%m-%d (time n/a)")
         out.append({"time": times[i], "position": "belowBar" if buy else "aboveBar",
                     "color": "#22c55e" if buy else "#ef4444", "shape": "arrowUp" if buy else "arrowDown",
-                    "text": text})
+                    "text": text, "price": f.price, "kind": kind, "side": f.side, "qty": f.quantity, "at": at,
+                    "how": how})
     return sorted(out, key=lambda m: m["time"]), hidden
 
 

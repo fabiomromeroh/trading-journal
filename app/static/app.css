@@ -3,6 +3,8 @@
 .kpi-v { font-size: 1.45rem; font-weight: 700; color: #f8fafc; }
 .tbl th { font-size: .7rem; text-transform: uppercase; letter-spacing: .05em; color: #94a3b8; font-weight: 600; text-align: left; padding: .6rem .75rem; border-bottom: 1px solid #1f2937; white-space: nowrap; }
 .tbl td { padding: .55rem .75rem; border-bottom: 1px solid rgba(31,41,55,.7); white-space: nowrap; }
+.tbl th.text-right, .tbl td.text-right { text-align: right; }
+.tbl th.text-center, .tbl td.text-center { text-align: center; }
 .tbl tbody tr:hover { background: rgba(99,102,241,.06); }
 .inp { background: #0b1220; border: 1px solid #334155; border-radius: .5rem; padding: .4rem .6rem; font-size: .85rem; color: #e2e8f0; }
 .inp:focus { outline: none; border-color: #6366f1; }
@@ -67,3 +69,16 @@ form.is-loading { opacity: .7; }
   text-transform: none; letter-spacing: normal; font-weight: 400; pointer-events: none; }
 #tip-pop b { color: #fff; display: block; margin-bottom: .15rem; }
 #tip-pop .tip-calc { display: block; margin-top: .35rem; color: #94a3b8; font-size: 11px; }
+
+/* uniform stat cards (dashboard KPI, Reports stats, trade stat bar): fixed height, clamped subtitles */
+.kpi-card { height: 124px; display: flex; flex-direction: column; overflow: hidden; }
+.kpi-card .kpi-v { line-height: 1.25; }
+.kpi-sub { font-size: .75rem; line-height: 1rem; color: #64748b; margin-top: .25rem; overflow: hidden;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.stat-card { height: 96px; display: flex; flex-direction: column; overflow: hidden; }
+.stat-sub { font-size: 11px; line-height: 14px; color: #64748b; margin-top: 2px; overflow: hidden;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.tstat-card { height: 52px; overflow: hidden; }
+@media (max-width: 767px) { .kpi-card { height: 132px; } .kpi-card { padding: .75rem; } }
+/* tables of numbers: aligned columns */
+.tbl-num td, .tbl-num th { font-variant-numeric: tabular-nums; white-space: nowrap; }

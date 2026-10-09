@@ -24,14 +24,58 @@ SORTS = {
 
 
 LIST_KEYS = ("preset", "start", "end", "account", "symbol", "direction", "asset", "status", "outcome", "setup",
-             "tag", "sort", "dir")
+             "tag", "sort", "dir", "realized_day")
 
 
-def filtered_trades(request: Request):
-    """Trades-list query (filters + sort) shared by the list and the trade page's sidebar."""
+def realized_on_day(db: Session, f, day) -> dict:
+    """Trades with a realized event (closing fill, incl. partial exits of open trades, or fees) on
+    ``day`` (display-tz date), with each trade's realized amount that day. Same rule as the calendar,
+    so the total reconciles with the calendar cell / daily bar."""
+    from dataclasses import replace
+    from app import realized as rz
+    from app.config import get_settings
+    tz = get_settings().display_tz
+    trades = list(db.scalars(apply_trade_filters(select(Trade), replace(f, start=None, end=None))))
+    per: dict[int, dict] = {}
+    for e in rz.clip(rz.events(trades), tz, day, day):
+        if not e.is_close and abs(e.fees) < 0.004:
+            continue  # an opening fill without fees realizes nothing (same rule as the calendar)
+        r = per.setdefault(e.trade_id, {"net": 0.0, "gross": 0.0, "fees": 0.0, "qty": 0.0, "exits": 0,
+                                        "partial": False, "final": False})
+        r["net"] += e.net
+        r["gross"] += e.gross
+        r["fees"] += e.fees
+        if e.is_close:
+            r["qty"] += e.qty
+            r["exits"] += 1
+            r["final"] = r["final"] or e.final
+            r["partial"] = r["partial"] or not e.final
+    return per
+
+
+def _day_param(q):
+    from datetime import date
+    try:
+        return date.fromisoformat(q.get("realized_day", "")[:10]) if q.get("realized_day") else None
+    except ValueError:
+        return None
+
+
+def filtered_trades(request: Request, db: Session | None = None):
+    """Trades-list query (filters + sort) shared by the list and the trade page's sidebar.
+    ``realized_day=YYYY-MM-DD`` selects the trades that realized P&L that day (calendar / daily bar
+    drill-down) instead of filtering by open date."""
     f = parse_filters(request)
     q = request.query_params
-    stmt = apply_trade_filters(select(Trade), f)
+    day = _day_param(q)
+    if day is not None and db is not None:
+        from dataclasses import replace
+        per = realized_on_day(db, f, day)
+        f = replace(f, start=None, end=None)
+        stmt = apply_trade_filters(select(Trade), f).where(Trade.id.in_(list(per) or [-1]))
+        request.state.realized_day = (day, per)
+    else:
+        stmt = apply_trade_filters(select(Trade), f)
     if q.get("symbol"):
         stmt = stmt.where(Trade.underlying.ilike(f"%{q['symbol'].strip().upper()}%"))
     if q.get("direction") in ("LONG", "SHORT"):
@@ -40,10 +84,13 @@ def filtered_trades(request: Request):
         stmt = stmt.where(Trade.status == q["status"])
     if q.get("asset") in ("STOCK", "OPTION"):
         stmt = stmt.where(Trade.asset_type == q["asset"])
+    from app import outcome as _oc
     if q.get("outcome") == "win":
-        stmt = stmt.where(Trade.status == "CLOSED", Trade.net_pnl > 0)
+        stmt = stmt.where(Trade.status == "CLOSED", _oc.sql_win(Trade.net_pnl))
     elif q.get("outcome") == "loss":
-        stmt = stmt.where(Trade.status == "CLOSED", Trade.net_pnl < 0)
+        stmt = stmt.where(Trade.status == "CLOSED", _oc.sql_loss(Trade.net_pnl))
+    elif q.get("outcome") == "be":
+        stmt = stmt.where(Trade.status == "CLOSED", _oc.sql_be(Trade.net_pnl))
     if q.get("setup"):
         stmt = stmt.where(Trade.setup == q["setup"])
     if q.get("tag"):
@@ -59,7 +106,8 @@ def filtered_trades(request: Request):
 
 @router.get("/trades")
 def trades_list(request: Request, db: Session = Depends(get_db)):
-    stmt, f, q, sort, desc, list_qs = filtered_trades(request)
+    stmt, f, q, sort, desc, list_qs = filtered_trades(request, db)
+    day, day_rows = getattr(request.state, "realized_day", (None, None))
     total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
     try:
         page = max(1, int(q.get("page", 1) or 1))
@@ -79,7 +127,8 @@ def trades_list(request: Request, db: Session = Depends(get_db)):
         request, db, nav="trades", f=f, trades=rows, total=total, page=page, pages=max(1, -(-total // PAGE)),
         sort=sort, desc=desc, params=params, q=q, setups=sorted(setups), tags=tags, list_qs=list_qs,
         filtered_pnl=closed_pnl, n_closed=n_closed, n_open=n_open, open_realized=open_pnl,
-        realized_pnl=closed_pnl + open_pnl))
+        realized_pnl=closed_pnl + open_pnl, day=day, day_rows=day_rows or {},
+        day_total=sum(r["net"] for r in (day_rows or {}).values())))
 
 
 def _get_trade(db: Session, trade_id: int) -> Trade:
@@ -95,7 +144,7 @@ SIDEBAR_LIMIT = 1000
 @router.get("/trades/{trade_id}")
 def trade_detail(trade_id: int, request: Request, db: Session = Depends(get_db)):
     t = _get_trade(db, trade_id)
-    stmt, f, q, sort, desc, list_qs = filtered_trades(request)
+    stmt, f, q, sort, desc, list_qs = filtered_trades(request, db)
     cols = stmt.with_only_columns(Trade.id, Trade.symbol, Trade.opened_at, Trade.closed_at, Trade.direction,
                                   Trade.status, Trade.net_pnl, Trade.time_known, Trade.is_demo)
     nav_rows = db.execute(cols.limit(SIDEBAR_LIMIT)).all()

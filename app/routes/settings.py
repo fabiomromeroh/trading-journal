@@ -288,6 +288,25 @@ def load_demo(request: Request, db: Session = Depends(get_db)):
     return RedirectResponse("/", status_code=303)
 
 
+@router.post("/settings/break-even")
+def save_break_even(request: Request, lower: str = Form("0"), upper: str = Form("0"), db: Session = Depends(get_db)):
+    """Break-even range in $ for closed trades (and days). Nothing is stored per trade, so every
+    statistic, badge and filter uses the new range on the next page load; no rebuild needed."""
+    from app import outcome
+    try:
+        lo = float((lower or "0").replace("$", "").replace(",", "").strip() or 0)
+        hi = float((upper or "0").replace("$", "").replace(",", "").strip() or 0)
+        if abs(lo) > 100000 or abs(hi) > 100000:
+            raise ValueError("Break-even range is too large.")
+        lo, hi = outcome.save(db, lo, hi)
+        db.commit()
+        request.session["flash"] = f"Break-even range saved: {outcome.describe()}."
+    except ValueError as exc:
+        db.rollback()
+        request.session["flash"] = str(exc) if "range" in str(exc) else "Enter numbers like -3 and 3."
+    return RedirectResponse("/settings#break-even", status_code=303)
+
+
 @router.post("/settings/aliases")
 def save_aliases(request: Request, aliases: str = Form(""), db: Session = Depends(get_db)):
     """Ticker renames (OLD=NEW). Saving re-matches imported fills and rebuilds trades."""

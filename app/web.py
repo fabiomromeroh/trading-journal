@@ -67,6 +67,8 @@ def irish_time(dt, with_date: bool = True) -> str:
     return (f"{d:%b} {d.day} " if with_date else "") + f"{d:%H:%M} {d.tzname()}"
 
 
+from app import outcome as _outcome  # noqa: E402
+templates.env.globals.update(outcome_label=_outcome.label, be_range=_outcome.get, be_text=_outcome.describe)
 templates.env.filters.update(money=money, num=num, qty=qty, pnl_class=pnl_class, local_dt=local_dt, td=fmt_td,
                              irish_time=irish_time)
 from app import metric_info as _mi  # noqa: E402

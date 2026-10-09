@@ -98,6 +98,30 @@
   const pxd = (v) => Math.abs(v) < 10 ? 4 : 2;
   const volFmt = (v) => v >= 1e9 ? (v / 1e9).toFixed(2) + 'B' : v >= 1e6 ? (v / 1e6).toFixed(2) + 'M' : v >= 1e3 ? (v / 1e3).toFixed(1) + 'K' : String(Math.round(v));
 
+  // ------------------------------------------------------------------ fill markers
+  // Stocks: every fill is drawn on its candle AT its fill price: a dot (entry/exit = circle, add/partial =
+  // square) exactly at the price, plus a labelled arrow just beyond it (buy: below, pointing up; sell: above,
+  // pointing down). Options are charted on the underlying, so their fills stay above/below the bar.
+  const KIND_COLOR = { entry: { BUY: '#22c55e', SELL: '#ef4444' }, add: { BUY: '#86efac', SELL: '#fca5a5' },
+                       partial: { BUY: '#4ade80', SELL: '#fb923c' }, exit: { BUY: '#16a34a', SELL: '#dc2626' } };
+  function fillMarkers(ms) {
+    const out = [];
+    for (const m of ms) {
+      const buy = m.side ? m.side === 'BUY' : m.shape === 'arrowUp';
+      const color = (KIND_COLOR[m.kind] || {})[buy ? 'BUY' : 'SELL'] || m.color;
+      if (C.isStock && m.price !== undefined && m.price !== null) {
+        out.push({ time: m.time, position: 'atPriceMiddle', price: m.price, shape: (m.kind === 'add' || m.kind === 'partial') ? 'square' : 'circle',
+                   color, size: 1.1, id: 'dot' + out.length });
+        out.push({ time: m.time, position: buy ? 'atPriceBottom' : 'atPriceTop', price: m.price, shape: buy ? 'arrowUp' : 'arrowDown',
+                   color, size: 1.6, text: m.text, id: 'arr' + out.length });
+      } else {
+        out.push({ ...m, color, size: 1.6 });
+      }
+    }
+    return out.sort((a, b) => a.time - b.time);
+  }
+  function fillsAt(t) { return (data && data.markers || []).filter((m) => m.time === t); }
+
   // ------------------------------------------------------------------ chart build
   function lineOpts(color, extra) {
     return { color, lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false, ...extra };
@@ -125,7 +149,7 @@
       candleSeries.createPriceLine({ price: C.entry, color: '#818cf8', lineWidth: 1, lineStyle: 2, title: 'avg entry' });
       if (C.exit) candleSeries.createPriceLine({ price: C.exit, color: '#f59e0b', lineWidth: 1, lineStyle: 2, title: 'avg exit' });
     }
-    L.createSeriesMarkers(candleSeries, data.markers || []);
+    L.createSeriesMarkers(candleSeries, fillMarkers(data.markers || []));
 
     let pane = 1;
     const sub = [];
@@ -221,6 +245,15 @@
     if (rows.length) html += `<div class="flex flex-wrap gap-x-3">${rows.join('')}</div>`;
     const subs = legendSeries.filter((x) => x[3] > 0).map((x) => legendItem(x, param));
     if (subs.length) html += `<div class="flex flex-wrap gap-x-3 text-slate-500">${subs.join('')}</div>`;
+    const fills = fillsAt(kb.time);
+    if (fills.length) {
+      html += `<div class="flex flex-col gap-0.5 mt-0.5" data-fill-legend>` + fills.map((m) => {
+        const buy = m.side ? m.side === 'BUY' : m.shape === 'arrowUp';
+        const c = (KIND_COLOR[m.kind] || {})[buy ? 'BUY' : 'SELL'] || m.color;
+        return `<span><span style="color:${c}" class="font-semibold">${buy ? 'BUY' : 'SELL'} ${num(m.qty, m.qty % 1 ? 2 : 0)} @ ${Number(m.price).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 })}</span>` +
+          ` <span class="text-slate-300">${m.kind || ''}</span> <span class="text-slate-500">${m.at || ''}${m.how === 'price' ? ' · bar estimated from price' : ''}</span></span>`;
+      }).join('') + `</div>`;
+    }
     box.innerHTML = html;
   }
   function legendItem([name, color, s, , f], param) {

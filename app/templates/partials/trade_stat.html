@@ -1,6 +1,6 @@
 {# One stat card in the trade page's top bar. Context: wid, t, tm #}
 {% from "partials/info.html" import info %}
-{% macro kv(label, value, cls='', id='', title='') %}<div class="rounded-lg border border-slate-800 bg-[#111827] px-3 py-1.5 min-w-0 h-full"><div class="text-[10px] uppercase tracking-wide text-slate-500 font-semibold flex items-center min-w-0"><span class="truncate">{{ label }}</span>{{ info(wid, 'trade', title) }}</div><div {% if id %}id="{{ id }}" {% endif %}class="text-sm font-semibold truncate {{ cls or 'text-white' }}">{{ value }}</div></div>{% endmacro %}
+{% macro kv(label, value, cls='', id='', title='') %}<div class="tstat-card rounded-lg border border-slate-800 bg-[#111827] px-3 py-1.5 min-w-0"><div class="text-[10px] uppercase tracking-wide text-slate-500 font-semibold flex items-center min-w-0"><span class="truncate">{{ label }}</span>{{ info(wid, 'trade', title) }}</div><div {% if id %}id="{{ id }}" {% endif %}class="text-sm font-semibold truncate {{ cls or 'text-white' }}" title="{{ value }}">{{ value }}</div></div>{% endmacro %}
 {% macro pct(v, d=0) %}{{ (v|num(d) ~ '%') if v is not none else '—' }}{% endmacro %}
 {% set closed = t.status == 'CLOSED' %}
 {% if wid == 'net' %}{{ kv('Net P&L' if closed else 'Realized so far', t.net_pnl|money(true), t.net_pnl|pnl_class) }}

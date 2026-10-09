@@ -96,6 +96,20 @@
 
 {% include "partials/tos_email_settings.html" %}
 
+{% set ber = be_range() %}
+<div class="card p-5 mb-4" id="break-even">
+  <div class="card-h mb-2">Break-even range</div>
+  <p class="text-sm text-slate-400 mb-3">A closed trade whose net P&amp;L (after fees) is between these amounts counts as <b class="text-slate-200">break-even (BE)</b>:
+    it is left out of wins and losses, win %, gross profit/loss, profit factor and average win/loss, but its P&amp;L still counts in net P&amp;L,
+    expectancy and every total. Days inside the range are shown neutral on the calendar. Default 0 / 0 (only exactly $0.00 is BE).</p>
+  <form method="post" action="/settings/break-even" class="flex flex-wrap items-end gap-3">
+    <label><span class="card-h block mb-1">Lower ($, ≤ 0)</span><input name="lower" type="number" step="0.01" max="0" value="{{ '%.2f'|format(ber[0]) }}" class="inp w-28" inputmode="decimal"></label>
+    <label><span class="card-h block mb-1">Upper ($, ≥ 0)</span><input name="upper" type="number" step="0.01" min="0" value="{{ '%.2f'|format(ber[1]) }}" class="inp w-28" inputmode="decimal"></label>
+    <button class="btn btn-s text-xs">Save</button>
+    <span class="text-xs text-slate-500">Now: {{ be_text() }}</span>
+  </form>
+</div>
+
 <div class="card p-5 mb-4" id="aliases">
   <div class="card-h mb-2">Ticker renames</div>
   <p class="text-sm text-slate-400 mb-3">Some brokers keep the old ticker for past trades while thinkorswim shows the new one

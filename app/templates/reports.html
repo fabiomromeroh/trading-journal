@@ -2,7 +2,7 @@
 {% block title %}Reports · Trading Journal{% endblock %}
 {% from "partials/info.html" import info %}
 {% macro stat(label, value, cls='', sub='', title='', key=None) %}
-<div class="card p-3 min-w-0"><div class="card-h flex items-center min-w-0"><span class="truncate">{{ label }}</span>{{ info(key or label) }}</div><div class="text-lg font-bold truncate {{ cls or 'text-white' }}">{{ value }}</div>{% if sub %}<div class="text-[11px] text-slate-500 mt-0.5 truncate">{{ sub }}</div>{% endif %}</div>
+<div class="card stat-card p-3 min-w-0"><div class="card-h flex items-center min-w-0"><span class="truncate">{{ label }}</span>{{ info(key or label) }}</div><div class="text-lg font-bold truncate {{ cls or 'text-white' }}" title="{{ value }}">{{ value }}</div>{% if sub %}<div class="stat-sub" title="{{ sub }}">{{ sub }}</div>{% endif %}</div>
 {% endmacro %}
 {% macro pct(v, d=1) %}{{ (v|num(d) ~ '%') if v is not none else '—' }}{% endmacro %}
 {% macro btable(rows, first='Bucket', drill=None) %}
@@ -46,7 +46,7 @@
 
 {% if tab == 'overview' %}
 <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-2 mb-4">
-  <div class="col-span-2 card p-3 min-w-0 ring-1 ring-indigo-500/30"><div class="card-h flex items-center">Total realized P&L{{ info('realized') }}</div><div class="text-2xl font-bold {{ s.realized|pnl_class or 'text-white' }}">{{ s.realized|money(true) }}</div><div class="text-[11px] text-slate-500 mt-0.5">Closed {{ s.realized_closed|money(true) }} + partial exits of open trades {{ s.realized_open|money(true) }} · fees {{ s.realized_fees|money }} · {{ s.partial_exits }} partial exit{{ 's' if s.partial_exits != 1 }}</div></div>
+  <div class="col-span-2 card stat-card p-3 min-w-0 ring-1 ring-indigo-500/30"><div class="card-h flex items-center">Total realized P&L{{ info('realized') }}</div><div class="text-lg font-bold truncate {{ s.realized|pnl_class or 'text-white' }}">{{ s.realized|money(true) }}</div><div class="stat-sub">Closed {{ s.realized_closed|money(true) }} + partial exits of open trades {{ s.realized_open|money(true) }} · fees {{ s.realized_fees|money }} · {{ s.partial_exits }} partial exit{{ 's' if s.partial_exits != 1 }}</div></div>
   {{ stat('Closed trades net P&L', s.net|money(true), s.net|pnl_class, 'Gross ' ~ s.gross|money(true) ~ ' · fees ' ~ s.fees|money) }}
   {{ stat('Trades', s.closed + s.open, '', s.closed ~ ' closed · ' ~ s.open ~ ' open (' ~ pct(s.open_pct, 0) ~ ')') }}
   {{ stat('Win %', pct(s.win_pct), '', s.wins ~ 'W / ' ~ s.losses ~ 'L / ' ~ s.be ~ ' BE') }}

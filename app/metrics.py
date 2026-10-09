@@ -3,8 +3,9 @@ drawdown, R-multiples and MFE/MAE efficiency. Pure functions over Trade-like obj
 can be tested with simple fixtures.
 
 Conventions (same as the dashboard): statistics use CLOSED trades and their net P&L (after
-fees); a trade with net P&L == 0 is break-even (BE) and is excluded from Win %/Loss %
-denominators like TraderSync does. Times are bucketed in the display time zone; hour/weekday
+fees); a trade whose net P&L is inside the break-even range (Settings; default exactly $0)
+is BE and is excluded from Win %/Loss % denominators, gross profit/loss and avg win/loss like
+TraderSync does (see app.outcome). Times are bucketed in the display time zone; hour/weekday
 use the entry time, month/year/day the exit time.
 """
 from __future__ import annotations
@@ -14,6 +15,7 @@ from collections import OrderedDict, defaultdict
 from datetime import date, timedelta
 from statistics import median
 
+from app import outcome
 from app.timeutil import utc_naive_to_tz
 
 WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -153,9 +155,9 @@ def summarize(trades, tz: str = "America/New_York", default_risk: float | None =
     closed = closed_sorted(trades)
     n_open = sum(1 for t in trades if t.status == "OPEN")
     pnl = [t.net_pnl for t in closed]
-    wins = [t for t in closed if t.net_pnl > 0]
-    losses = [t for t in closed if t.net_pnl < 0]
-    be = [t for t in closed if t.net_pnl == 0]
+    wins = [t for t in closed if outcome.is_win(t.net_pnl)]
+    losses = [t for t in closed if outcome.is_loss(t.net_pnl)]
+    be = [t for t in closed if outcome.is_be(t.net_pnl)]
     n, nw, nl = len(closed), len(wins), len(losses)
     gp, gl = sum(t.net_pnl for t in wins), sum(t.net_pnl for t in losses)
     decided = nw + nl
@@ -172,9 +174,10 @@ def summarize(trades, tz: str = "America/New_York", default_risk: float | None =
     # streaks
     cw = cl = mw = ml = 0
     for t in closed:
-        if t.net_pnl > 0:
+        o = outcome.classify(t.net_pnl)
+        if o == "win":
             cw, cl = cw + 1, 0
-        elif t.net_pnl < 0:
+        elif o == "loss":
             cl, cw = cl + 1, 0
         mw, ml = max(mw, cw), max(ml, cl)
     rets = lambda ts: [t.return_pct for t in ts if t.return_pct is not None]  # noqa: E731
@@ -204,7 +207,8 @@ def summarize(trades, tz: str = "America/New_York", default_risk: float | None =
         "avg_trade": (sum(pnl) / n) if n else None, "expectancy": (sum(pnl) / n) if n else None,
         "median_trade": median(pnl) if pnl else None,
         "avg_win": avg_win, "avg_loss": avg_loss, "pl_ratio": pl_ratio,
-        "largest_win": max(pnl) if wins else None, "largest_loss": min(pnl) if losses else None,
+        "largest_win": max(t.net_pnl for t in wins) if wins else None,
+        "largest_loss": min(t.net_pnl for t in losses) if losses else None,
         "best_pct": max(rets(closed)) if rets(closed) else None,
         "worst_pct": min(rets(closed)) if rets(closed) else None,
         "avg_ret_pct": _avg(rets(closed)), "avg_ret_pct_win": _avg(rets(wins)),
@@ -212,8 +216,8 @@ def summarize(trades, tz: str = "America/New_York", default_risk: float | None =
         "avg_ret_pct_short": _avg(rets(shorts)),
         "ret_long": sum(t.net_pnl for t in longs), "ret_short": sum(t.net_pnl for t in shorts),
         "n_long": len(longs), "n_short": len(shorts),
-        "win_pct_long": _pct([t for t in longs if t.net_pnl > 0], [t for t in longs if t.net_pnl != 0]),
-        "win_pct_short": _pct([t for t in shorts if t.net_pnl > 0], [t for t in shorts if t.net_pnl != 0]),
+        "win_pct_long": _pct([t for t in longs if outcome.is_win(t.net_pnl)], [t for t in longs if not outcome.is_be(t.net_pnl)]),
+        "win_pct_short": _pct([t for t in shorts if outcome.is_win(t.net_pnl)], [t for t in shorts if not outcome.is_be(t.net_pnl)]),
         "std": sd, "std_win": pstdev([t.net_pnl for t in wins]), "std_loss": pstdev([t.net_pnl for t in losses]),
         "sqn": sqn, "kelly": kelly,
         "max_consec_wins": mw, "max_consec_losses": ml,
@@ -242,7 +246,8 @@ def summarize(trades, tz: str = "America/New_York", default_risk: float | None =
         "left_on_table": sum(t.mfe - t.gross_pnl for t in mfe_t) if mfe_t else None,
         "max_dd": dd["max_dd"], "current_dd": dd["current_dd"], "max_dd_days": dd["max_dd_days"],
         "max_dd_trades": dd["max_dd_trades"], "recovery_factor": (sum(pnl) / abs(dd["max_dd"])) if dd["max_dd"] else None,
-        "days": len(days), "win_days": sum(1 for x in day_pnls if x > 0), "loss_days": sum(1 for x in day_pnls if x < 0),
+        "days": len(days), "win_days": sum(1 for x in day_pnls if outcome.is_win(x)),
+        "loss_days": sum(1 for x in day_pnls if outcome.is_loss(x)),
         "avg_day": _avg(day_pnls), "best_day": max(day_pnls) if day_pnls else None,
         "worst_day": min(day_pnls) if day_pnls else None,
         "hours_known": any(t.time_known for t in closed) if closed else True,
@@ -328,8 +333,8 @@ def drawdown(closed, tz: str = "America/New_York") -> dict:
 # ----------------------------------------------------------------------------- breakdowns
 def bucket_row(label, ts) -> dict:
     pnl = [t.net_pnl for t in ts]
-    w = [x for x in pnl if x > 0]
-    lo = [x for x in pnl if x < 0]
+    w = [x for x in pnl if outcome.is_win(x)]
+    lo = [x for x in pnl if outcome.is_loss(x)]
     gl = sum(lo)
     return {"label": label, "trades": len(ts), "wins": len(w), "losses": len(lo),
             "win_pct": (len(w) / (len(w) + len(lo)) * 100) if (w or lo) else None,
@@ -385,7 +390,7 @@ def breakdowns(trades, tz: str, default_risk: float | None = None) -> dict:
         "instrument": group(closed, lambda t: "Options" if t.asset_type == "OPTION" else "Stocks", ["Stocks", "Options"]),
         "call_put": group(closed, lambda t: (t.option_type or "?").title() + "s" if t.asset_type == "OPTION" else None,
                           ["Calls", "Puts"]),
-        "status": group(closed, lambda t: "Winners" if t.net_pnl > 0 else "Losers" if t.net_pnl < 0 else "Break-even",
+        "status": group(closed, lambda t: {"win": "Winners", "loss": "Losers", "be": "Break-even"}[outcome.classify(t.net_pnl)],
                         ["Winners", "Losers", "Break-even"]),
         "entry_price": group(closed, lambda t: _range_label(t.entry_price, PRICE_BUCKETS), [b[2] for b in PRICE_BUCKETS]),
         "size": group(closed, lambda t: _range_label(t.quantity, SIZE_BUCKETS, True), [b[2] for b in SIZE_BUCKETS]),

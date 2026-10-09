@@ -1,6 +1,7 @@
 {# One dashboard widget's content. Context: wid, st, m, anchor, charts, recent, provisional_trades #}
 {% from "partials/info.html" import info %}
-{% macro kpi(label, value, cls='', sub='') %}<div class="card p-4 h-full"><div class="card-h flex items-center">{{ label }}{{ info(wid) }}</div><div class="kpi-v {{ cls }}">{{ value }}</div>{% if sub %}<div class="text-xs text-slate-500 mt-1">{{ sub }}</div>{% endif %}</div>{% endmacro %}
+{# KPI card: fixed height everywhere (title 1 line, value 1 line, subtitle clamped to 2 lines; full text on hover) #}
+{% macro kpi(label, value, cls='', sub='', subtitle=None) %}<div class="card kpi-card p-4"><div class="card-h flex items-center min-w-0"><span class="truncate">{{ label }}</span>{{ info(wid) }}</div><div class="kpi-v truncate {{ cls }}" title="{{ value }}">{{ value }}</div>{% if sub %}<div class="kpi-sub" title="{{ subtitle or sub }}">{{ sub }}</div>{% endif %}</div>{% endmacro %}
 {% macro pct(v, d=1) %}{{ (v|num(d) ~ '%') if v is not none else '—' }}{% endmacro %}
 {% macro btable(title, rows) %}
   <div class="card p-4 h-full overflow-x-auto">
@@ -14,10 +15,13 @@
 {% macro chart(title, id, h='h-64', note='') %}<div class="card p-4 h-full"><div class="card-h mb-2">{{ title }}{{ info(wid) }}{% if note %} <span class="normal-case text-amber-300">{{ note }}</span>{% endif %}</div><div class="{{ h }}"><canvas id="{{ id }}"></canvas></div></div>{% endmacro %}
 {% set na = 'Unfiltered view only' %}
 {% set R = st.realized_info %}
-{% if wid == 'realized' %}{{ kpi('Total realized P&L', st.realized|money(true), st.realized|pnl_class, 'Closed trades ' ~ R.closed_part|money(true) ~ ' + partial exits of open trades ' ~ R.open_part|money(true) ~ ' · fees ' ~ R.fees|money ~ ' · Σ daily = total ✓' ~ (' · ' ~ provisional_trades|length ~ ' trade(s) provisional (fees pending)' if provisional_trades else '')) }}
+{% if wid == 'realized' %}{{ kpi('Total realized P&L', st.realized|money(true), st.realized|pnl_class, 'Closed ' ~ R.closed_part|money(true) ~ ' + partials ' ~ R.open_part|money(true) ~ ' · fees ' ~ R.fees|money,
+    'Closed trades ' ~ R.closed_part|money(true) ~ ' + partial exits of open trades ' ~ R.open_part|money(true) ~ ' · fees ' ~ R.fees|money ~ ' · Σ daily = total ✓' ~ (' · ' ~ provisional_trades|length ~ ' trade(s) provisional (fees pending)' if provisional_trades else '')) }}
 {% elif wid == 'closed_net' %}{{ kpi('Closed trades net P&L', st.net_pnl|money(true), st.net_pnl|pnl_class, st.total_trades ~ ' closed trades · excludes partial exits of open trades (' ~ R.open_part|money(true) ~ ')') }}
 {% elif wid == 'unrealized' %}{% if anchor %}{{ kpi('Unrealized (open)', anchor.unrealized|money(true), anchor.unrealized|pnl_class, anchor.open_count ~ ' open · ' ~ (anchor.sources|join(' + ') or 'no prices') ~ (' ' ~ anchor.price_at|irish_time if anchor.price_at else '') ~ (' · no price: ' ~ anchor.missing_prices|join(', ') if anchor.missing_prices else '') ~ (' · ⚠ ' ~ anchor.discrepancies ~ ' position(s) differ from SnapTrade' if anchor.discrepancies else '')) }}{% else %}{{ kpi('Unrealized (open)', '—', '', 'No open positions') }}{% endif %}
-{% elif wid == 'total_pnl' %}{% if anchor and anchor.account_check %}{{ kpi('Total P&L', anchor.journal_total|money(true), anchor.journal_total|pnl_class, 'Realized + unrealized · account check (prices at SnapTrade sync ' ~ anchor.snap_as_of|irish_time ~ '): value ' ~ anchor.value|money ~ ' − net deposits ' ~ anchor.net_deposits|money ~ ' = ' ~ anchor.total_pnl|money(true) ~ (' ✓' if anchor.diff|abs < 1 else ' (diff ' ~ anchor.diff|money(true) ~ ')')) }}{% elif anchor %}{{ kpi('Total P&L', (st.realized + anchor.unrealized)|money(true), (st.realized + anchor.unrealized)|pnl_class, 'Realized in view + unrealized now · account check: unfiltered view with SnapTrade') }}{% else %}{{ kpi('Total P&L', '—', '', na) }}{% endif %}
+{% elif wid == 'total_pnl' %}{% if anchor and anchor.account_check %}{{ kpi('Total P&L', anchor.journal_total|money(true), anchor.journal_total|pnl_class,
+    'Realized + unrealized · account check ' ~ anchor.total_pnl|money(true) ~ (' ✓' if anchor.diff|abs < 1 else ' (diff ' ~ anchor.diff|money(true) ~ ')'),
+    'Realized + unrealized. Account check at SnapTrade sync prices (' ~ anchor.snap_as_of|irish_time ~ '): value ' ~ anchor.value|money ~ ' − net deposits ' ~ anchor.net_deposits|money ~ ' = ' ~ anchor.total_pnl|money(true) ~ (' ✓ matches journal' if anchor.diff|abs < 1 else ' (diff ' ~ anchor.diff|money(true) ~ ')')) }}{% elif anchor %}{{ kpi('Total P&L', (st.realized + anchor.unrealized)|money(true), (st.realized + anchor.unrealized)|pnl_class, 'Realized in view + unrealized now') }}{% else %}{{ kpi('Total P&L', '—', '', na) }}{% endif %}
 {% elif wid == 'positions' %}
 <div class="card p-4 h-full overflow-x-auto">
   <div class="flex flex-wrap items-center gap-2 mb-2">
@@ -25,26 +29,38 @@
     {% if anchor %}<div class="text-[11px] text-slate-500">Prices: {{ anchor.sources|join(' + ') or '—' }}{% if anchor.price_at %} · latest {{ anchor.price_at|irish_time }}{% endif %}{% if anchor.snap_as_of %} · SnapTrade synced {{ anchor.snap_as_of|irish_time }}{% endif %}</div>{% endif %}
   </div>
   {% if anchor and anchor.rows %}
-  <table class="w-full text-sm tbl">
-    <thead><tr><th class="text-left">Symbol</th><th class="text-right">Qty</th><th class="text-right">Avg cost</th><th class="text-right">Last</th><th class="text-left">Price time / source</th><th class="text-right">Open P/L</th><th class="text-right">Realized so far</th><th class="text-right">SnapTrade qty · price · cost</th><th class="text-right">P/L at sync</th></tr></thead>
+  <div class="overflow-x-auto -mx-1 px-1">
+  <table class="w-full text-sm tbl tbl-num table-auto">
+    <thead>
+      <tr class="text-[10px]"><th colspan="6" class="!border-b-0 !pb-0"></th><th colspan="4" class="text-center !border-b-0 !pb-0 text-slate-500">SnapTrade (last sync)</th><th class="!border-b-0"></th></tr>
+      <tr><th class="text-left">Symbol</th><th class="text-right">Qty</th><th class="text-right">Avg cost</th><th class="text-right">Last</th>
+      <th class="text-right">Open P/L</th><th class="text-right">Realized so far</th>
+      <th class="text-right">Qty</th><th class="text-right">Price</th><th class="text-right">Avg cost</th><th class="text-right">Open P/L</th>
+      <th class="text-left">Price time · source</th></tr>
+    </thead>
     <tbody>
     {% for r in anchor.rows %}
       <tr{% if r.trade_id %} class="cursor-pointer" onclick="location='/trades/{{ r.trade_id }}'"{% endif %}>
-        <td class="text-white">{{ r.symbol }}{% if r.direction == 'SHORT' %} <span class="text-[10px] text-amber-300">short</span>{% endif %}
-          {% for fl in r.flags %}<div class="text-[10px] text-amber-300">⚠ {{ fl }}</div>{% endfor %}</td>
-        <td class="text-right">{{ r.qty|qty if r.qty else '—' }}</td>
-        <td class="text-right">{{ r.avg|num(2) if r.avg is not none else '—' }}</td>
-        <td class="text-right text-white">{{ r.price|num(2) if r.price is not none else '—' }}</td>
-        <td class="text-[11px] text-slate-500 whitespace-nowrap">{{ r.at|irish_time if r.at else '' }}{% if r.source %} · {{ r.source }}{% endif %}</td>
-        <td class="text-right font-medium {{ r.pnl|pnl_class }}">{{ r.pnl|money(true) if r.pnl is not none else '—' }}</td>
-        <td class="text-right {{ r.realized|pnl_class }}">{{ r.realized|money(true) if r.trade_id else '' }}</td>
-        <td class="text-right text-slate-400 whitespace-nowrap">{% if r.snap_qty is not none %}{{ r.snap_qty|qty }} · {{ r.snap_price|num(2) }} · {{ r.snap_cost|num(2) if r.snap_cost else '—' }}{% else %}—{% endif %}</td>
-        <td class="text-right {{ r.snap_pnl|pnl_class }}">{{ r.snap_pnl|money(true) if r.snap_pnl is not none else '—' }}</td>
+        <td class="text-left text-white align-top">{{ r.symbol }}{% if r.direction == 'SHORT' %} <span class="text-[10px] text-amber-300">short</span>{% endif %}
+          {% for fl in r.flags %}<div class="text-[10px] text-amber-300 whitespace-normal">⚠ {{ fl }}</div>{% endfor %}</td>
+        <td class="text-right align-top">{{ r.qty|qty if r.qty else '—' }}</td>
+        <td class="text-right align-top">{{ r.avg|num(2) if r.avg is not none else '—' }}</td>
+        <td class="text-right align-top text-white">{{ r.price|num(2) if r.price is not none else '—' }}</td>
+        <td class="text-right align-top font-semibold {{ r.pnl|pnl_class }}">{{ r.pnl|money(true) if r.pnl is not none else '—' }}</td>
+        <td class="text-right align-top {{ r.realized|pnl_class }}">{{ r.realized|money(true) if r.trade_id else '' }}</td>
+        <td class="text-right align-top text-slate-400">{{ r.snap_qty|qty if r.snap_qty is not none else '—' }}</td>
+        <td class="text-right align-top text-slate-400">{{ r.snap_price|num(2) if r.snap_price is not none else '—' }}</td>
+        <td class="text-right align-top text-slate-400">{{ r.snap_cost|num(2) if r.snap_cost else '—' }}</td>
+        <td class="text-right align-top {{ r.snap_pnl|pnl_class }}">{{ r.snap_pnl|money(true) if r.snap_pnl is not none else '—' }}</td>
+        <td class="text-left align-top text-[11px] text-slate-500">{{ r.at|irish_time if r.at else '' }}{% if r.source %} · {{ r.source }}{% endif %}</td>
       </tr>
     {% endfor %}
     </tbody>
-    <tfoot><tr class="border-t border-slate-700"><td class="text-slate-400" colspan="5">Total</td><td class="text-right font-semibold {{ anchor.unrealized|pnl_class }}">{{ anchor.unrealized|money(true) }}</td><td></td><td></td><td class="text-right {{ anchor.unrealized_snap|pnl_class }}">{{ anchor.unrealized_snap|money(true) if anchor.snap_as_of else '—' }}</td></tr></tfoot>
+    <tfoot><tr class="border-t border-slate-700"><td class="text-left text-slate-400" colspan="4">Total</td>
+      <td class="text-right font-semibold {{ anchor.unrealized|pnl_class }}">{{ anchor.unrealized|money(true) }}</td><td></td><td></td><td></td><td></td>
+      <td class="text-right {{ anchor.unrealized_snap|pnl_class }}">{{ anchor.unrealized_snap|money(true) if anchor.snap_as_of else '—' }}</td><td></td></tr></tfoot>
   </table>
+  </div>
   <p class="text-[11px] text-slate-500 mt-2">Open P/L = qty × (last − FIFO avg cost of the remaining lots) × multiplier. Last = Yahoo's latest trade incl. pre/after-hours (refreshed at most every 90 s; Sync now forces it). thinkorswim marks at the bid/ask mid, so expect small differences.</p>
   {% else %}<p class="text-sm text-slate-500">No open positions.</p>{% endif %}
 </div>
@@ -98,8 +114,8 @@
       <button type="button" data-dw="today" class="btn btn-s !px-2 !py-0.5">Today</button>
     </div>
   </div>
-  <div class="h-52"><canvas id="ch-daily"></canvas></div>
-  <div data-dw="sum" class="text-[11px] text-slate-500 mt-1"></div>
+  <div class="h-72"><canvas id="ch-daily"></canvas></div>
+  <div class="flex flex-wrap justify-between gap-2 text-[11px] text-slate-500 mt-1"><span data-dw="sum"></span><span>Click a bar to list that day's trades</span></div>
 </div>
 {% elif wid == 'chart_symbol' %}{{ chart('P&L by symbol (top 12)', 'ch-symbol') }}
 {% elif wid == 'chart_weekday' %}{{ chart('P&L by day of week (entry)', 'ch-weekday') }}

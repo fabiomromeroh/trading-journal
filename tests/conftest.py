@@ -27,6 +27,8 @@ def db(tmp_path):
         Base.metadata.drop_all(dbmod.engine)
     Base.metadata.create_all(dbmod.engine)
     s = dbmod.SessionLocal()
+    from app import outcome
+    outcome.set_range(0, 0)
     yield s
     s.close()
 

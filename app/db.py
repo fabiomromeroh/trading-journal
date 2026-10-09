@@ -39,6 +39,8 @@ def configure(url: str) -> None:
 
 def get_db() -> Iterator[Session]:
     db = SessionLocal()
+    from app import outcome
+    outcome.load(db)  # break-even range for this request (Settings > Break-even range)
     try:
         yield db
     finally:

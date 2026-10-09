@@ -1,4 +1,5 @@
-{% macro we_tools() %}<div class="we-tools absolute -top-2.5 right-1.5 z-20 gap-1 rounded-lg bg-[#1e293b] border border-slate-600 px-1 py-0.5 shadow-lg text-slate-200 text-sm leading-none">
+{% macro we_tools(widths=None, cur=None) %}<div class="we-tools absolute -top-2.5 right-1.5 z-20 gap-1 rounded-lg bg-[#1e293b] border border-slate-600 px-1 py-0.5 shadow-lg text-slate-200 text-sm leading-none">
+  {% if widths %}<span class="flex items-center gap-0.5 pr-1 mr-0.5 border-r border-slate-600" role="group" aria-label="Width">{% for k, lab in widths.items() %}<button type="button" data-we-size="{{ k }}" class="we-size px-1.5 py-1 text-[11px] rounded {{ 'bg-indigo-500/40 text-white' if k == cur else 'hover:text-white' }}" aria-pressed="{{ 'true' if k == cur else 'false' }}" title="Width: {{ lab }}">{{ lab }}</button>{% endfor %}</span>{% endif %}
   <span class="we-handle cursor-move px-1.5 py-1 select-none touch-none" title="Drag to reorder" aria-label="Drag to reorder">⠿</span>
   <button type="button" data-we-act="up" class="px-1.5 py-1 hover:text-white" title="Move earlier" aria-label="Move earlier">↑</button>
   <button type="button" data-we-act="down" class="px-1.5 py-1 hover:text-white" title="Move later" aria-label="Move later">↓</button>
@@ -13,6 +14,6 @@
   <div data-we="panel" class="w-full card p-3" hidden>
     <div class="card-h mb-1">Add widgets</div>
     <div data-we="catalog"></div>
-    <p class="text-[11px] text-slate-500 mt-1">Drag ⠿ or use ↑ ↓ to reorder, ✕ to remove, then Save. The layout is stored on the server, so it's the same on phone and desktop.</p>
+    <p class="text-[11px] text-slate-500 mt-1">Drag ⠿ or use ↑ ↓ to reorder, S / M / L / Full to set a chart's width (phones always use full width), ✕ to remove, then Save. The layout is stored on the server, so it's the same on phone and desktop.</p>
   </div>
 </div>{% endmacro %}

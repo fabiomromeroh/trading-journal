@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app import outcome
 from app.config import get_settings
 from app.db import get_db
 from app.models import Execution, ImportBatch, Trade
@@ -45,7 +46,7 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
     charts = {
         "equity": {"labels": st.cumulative.get("labels", []), "values": st.cumulative.get("net", []),
                    "day": st.cumulative.get("day", [])},
-        "days": [d.as_dict() for d in all_days.values()], "focus": focus, "today": today.isoformat(),
+        "days": [d.as_dict() for d in all_days.values()], "focus": focus, "today": today.isoformat(), "be": list(outcome.get()), "account": f.account_id,
         "range": [f.start.isoformat() if f.start else None, f.end.isoformat() if f.end else None],
         "symbol": _series(st.by_symbol[:12] + ([] if len(st.by_symbol) <= 12 else [])),
         "weekday": _series(st.by_weekday),
