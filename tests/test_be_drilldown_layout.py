@@ -163,4 +163,5 @@ def test_fill_markers_carry_price_and_kind(db):
     mk, _ = prices.markers(t, daily, "1D")
     assert len(mk) == 4 and len({m["time"] for m in mk}) == 1  # all on the Oct 6 daily candle, each at its price
     js = open("app/static/trade_chart.js").read()
-    assert "atPriceMiddle" in js and "atPriceBottom" in js and "data-fill-legend" in js
+    assert "class FillsPrimitive" in js and "attachPrimitive" in js and "data-fill-legend" in js
+    assert "tj.chart.fills.v1" in js and "style: 'h', size: 'm', labels: false" in js  # default: small horizontal

@@ -81,6 +81,10 @@
           <button id="ind-btn" type="button" class="btn btn-s !py-1 text-xs flex items-center gap-1"><span class="italic font-serif">ƒx</span> Indicators</button>
           <div id="ind-menu" class="hidden absolute left-0 top-full mt-1 z-30 w-[min(340px,calc(100vw-1.5rem))] max-h-[70vh] overflow-auto rounded-xl border border-slate-700 bg-[#0f1520] p-3 shadow-2xl"></div>
         </div>
+        <div class="relative">
+          <button id="fills-btn" type="button" class="btn btn-s !py-1 text-xs flex items-center gap-1" aria-haspopup="true" aria-controls="fills-menu"><span aria-hidden="true">⇥</span> Fills</button>
+          <div id="fills-menu" class="hidden absolute left-0 top-full mt-1 z-30 w-[min(300px,calc(100vw-1.5rem))] rounded-xl border border-slate-700 bg-[#0f1520] p-3 shadow-2xl text-xs text-slate-300"></div>
+        </div>
         <div id="ind-chips" class="flex flex-wrap gap-1"></div>
         <div class="ml-auto flex items-center gap-3 text-xs text-slate-500">
           {% if t.asset_type == 'OPTION' %}<span>underlying {{ t.underlying }}; markers show option fills</span>{% endif %}
@@ -134,7 +138,7 @@
 window.TJ_CHART = { tradeId: {{ t.id }}, symbol: {{ t.underlying|tojson }}, tz: {{ settings().display_tz|tojson }},
   isStock: {{ 'true' if t.asset_type == 'STOCK' else 'false' }}, entry: {{ t.entry_price|tojson }}, exit: {{ t.exit_price|tojson }} };
 </script>
-<script src="/static/trade_chart.js?v=4"></script>
+<script src="/static/trade_chart.js?v=5"></script>
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js"></script>
 <script src="/static/widgets.js?v=1"></script>
 <script>WidgetEditor({ grid: '#trade-stats', toolbar: '#trade-page' });</script>

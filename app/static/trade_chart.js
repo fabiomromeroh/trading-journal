@@ -99,26 +99,97 @@
   const volFmt = (v) => v >= 1e9 ? (v / 1e9).toFixed(2) + 'B' : v >= 1e6 ? (v / 1e6).toFixed(2) + 'M' : v >= 1e3 ? (v / 1e3).toFixed(1) + 'K' : String(Math.round(v));
 
   // ------------------------------------------------------------------ fill markers
-  // Stocks: every fill is drawn on its candle AT its fill price: a dot (entry/exit = circle, add/partial =
-  // square) exactly at the price, plus a labelled arrow just beyond it (buy: below, pointing up; sell: above,
-  // pointing down). Options are charted on the underlying, so their fills stay above/below the bar.
-  const KIND_COLOR = { entry: { BUY: '#22c55e', SELL: '#ef4444' }, add: { BUY: '#86efac', SELL: '#fca5a5' },
-                       partial: { BUY: '#4ade80', SELL: '#fb923c' }, exit: { BUY: '#16a34a', SELL: '#dc2626' } };
-  function fillMarkers(ms) {
-    const out = [];
-    for (const m of ms) {
-      const buy = m.side ? m.side === 'BUY' : m.shape === 'arrowUp';
-      const color = (KIND_COLOR[m.kind] || {})[buy ? 'BUY' : 'SELL'] || m.color;
-      if (C.isStock && m.price !== undefined && m.price !== null) {
-        out.push({ time: m.time, position: 'atPriceMiddle', price: m.price, shape: (m.kind === 'add' || m.kind === 'partial') ? 'square' : 'circle',
-                   color, size: 1.1, id: 'dot' + out.length });
-        out.push({ time: m.time, position: buy ? 'atPriceBottom' : 'atPriceTop', price: m.price, shape: buy ? 'arrowUp' : 'arrowDown',
-                   color, size: 1.6, text: m.text, id: 'arr' + out.length });
-      } else {
-        out.push({ ...m, color, size: 1.6 });
-      }
+  // Drawn by a series primitive at the exact fill price on the fill's candle. Styles (Fills menu, saved in
+  // this browser): 'h' small horizontal arrow whose tip touches the price, left of the candle pointing right
+  // for buys and right of the candle pointing left for sells (never covers the body); 'v' small vertical
+  // arrow pointing at the price (buys from below, sells from above); 'dot'; 'off' (hover legend only).
+  // Several fills on one candle are stacked outward so they never overlap. Options are charted on the
+  // underlying, so their fills are placed just beyond the candle's high/low instead of at a price.
+  const LS_FILLS = 'tj.chart.fills.v1';
+  const FILL_DEFAULT = { style: 'h', size: 'm', labels: false };
+  const SIZES = { s: 9, m: 12, l: 16 };
+  const FILL_COLOR = { buy: '#22f06a', sell: '#ff3b55', partial: '#ffa31a' };
+  let fillOpts = (() => { try { return { ...FILL_DEFAULT, ...JSON.parse(localStorage.getItem(LS_FILLS) || '{}') }; } catch (e) { return { ...FILL_DEFAULT }; } })();
+  const saveFills = () => localStorage.setItem(LS_FILLS, JSON.stringify(fillOpts));
+  const isBuy = (m) => (m.side ? m.side === 'BUY' : m.shape === 'arrowUp');
+  const fillColor = (m) => (m.kind === 'partial' ? FILL_COLOR.partial : isBuy(m) ? FILL_COLOR.buy : FILL_COLOR.sell);
+  const shortLabel = (m) => `${isBuy(m) ? '+' : '−'}${Number(m.qty).toLocaleString('en-US', { maximumFractionDigits: 2 })} @${Number(m.price).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`;
+
+  class FillsPrimitive {
+    constructor() { this.fills = []; this.view = { zOrder: () => 'top', renderer: () => ({ draw: (t) => this.draw(t) }) }; }
+    attached(p) { this.chart = p.chart; this.series = p.series; this.request = p.requestUpdate; }
+    detached() { this.chart = this.series = null; }
+    setFills(f) { this.fills = f || []; if (this.request) this.request(); }
+    updateAllViews() {}
+    paneViews() { return [this.view]; }
+    draw(target) {
+      if (!this.chart || fillOpts.style === 'off' || !this.fills.length) return;
+      const chart = this.chart, series = this.series, ts = chart.timeScale();
+      const spacing = ts.options().barSpacing || 6;
+      const L = SIZES[fillOpts.size] || 12, body = Math.max(1, spacing * 0.4);
+      const bars = new Map((data.candles || []).map((b) => [b.time, b]));
+      target.useMediaCoordinateSpace(({ context: ctx }) => {
+        ctx.save(); ctx.lineJoin = 'round'; ctx.font = '600 10px ui-sans-serif, system-ui, sans-serif';
+        const stack = new Map();  // time|side -> count, to offset fills on the same candle
+        for (const m of this.fills) {
+          const x = ts.timeToCoordinate(m.time); if (x === null) continue;
+          const buy = isBuy(m);
+          let price = m.price;
+          if (!C.isStock) { const b = bars.get(m.time); if (!b) continue; price = buy ? b.low : b.high; }
+          const y = series.priceToCoordinate(price); if (y === null) continue;
+          const key = m.time + (buy ? 'b' : 's'), k = stack.get(key) || 0; stack.set(key, k + 1);
+          const color = fillColor(m);
+          ctx.fillStyle = color; ctx.strokeStyle = 'rgba(2,6,23,.95)'; ctx.lineWidth = 1.5;
+          let lx, ly, align;
+          if (fillOpts.style === 'h') {
+            const dir = buy ? 1 : -1;                         // buys point right (sit left), sells point left
+            const tip = x - dir * (body + 2 + k * (L + 3));
+            const tail = tip - dir * L, hh = Math.max(3, L * 0.38), head = tip - dir * Math.min(L * 0.55, 7);
+            ctx.beginPath();
+            ctx.moveTo(tip, y); ctx.lineTo(head, y - hh); ctx.lineTo(head, y - hh * 0.42); ctx.lineTo(tail, y - hh * 0.42);
+            ctx.lineTo(tail, y + hh * 0.42); ctx.lineTo(head, y + hh * 0.42); ctx.lineTo(head, y + hh); ctx.closePath();
+            ctx.stroke(); ctx.fill();
+            lx = tail - dir * 4; ly = y; align = buy ? 'right' : 'left';
+          } else if (fillOpts.style === 'v') {
+            const len = Math.round(L * 0.75), dir = buy ? 1 : -1;   // buys below pointing up
+            const cx = x + (k ? (k % 2 ? 1 : -1) * Math.ceil(k / 2) * (len * 0.8 + 2) : 0);
+            const tip = y, base = y + dir * len, hw = Math.max(3, len * 0.45);
+            ctx.beginPath(); ctx.moveTo(cx, tip); ctx.lineTo(cx - hw, base); ctx.lineTo(cx + hw, base); ctx.closePath();
+            ctx.stroke(); ctx.fill();
+            lx = cx; ly = base + dir * 8; align = 'center';
+          } else {
+            const r = Math.max(2.5, L * 0.28), cx = x + (buy ? -1 : 1) * k * (r * 2 + 1);
+            ctx.beginPath(); ctx.arc(cx, y, r, 0, Math.PI * 2); ctx.stroke(); ctx.fill();
+            lx = cx + (buy ? -1 : 1) * (r + 4); ly = y; align = buy ? 'right' : 'left';
+          }
+          if (fillOpts.labels && spacing >= 10) {   // only when zoomed in enough to stay readable
+            const txt = shortLabel(m), w = ctx.measureText(txt).width + 6;
+            const bx = align === 'right' ? lx - w : align === 'left' ? lx : lx - w / 2;
+            ctx.fillStyle = 'rgba(2,6,23,.85)'; ctx.fillRect(bx, ly - 7, w, 14);
+            ctx.fillStyle = color; ctx.textBaseline = 'middle'; ctx.textAlign = 'left'; ctx.fillText(txt, bx + 3, ly);
+          }
+        }
+        ctx.restore();
+      });
     }
-    return out.sort((a, b) => a.time - b.time);
+  }
+  let fillsPrim = null;
+
+  function renderFillsMenu() {
+    const m = $('fills-menu'); if (!m) return;
+    const seg = (name, opts, cur) => `<div class="flex rounded-lg border border-slate-700 overflow-hidden" role="group" aria-label="${name}">` +
+      opts.map(([v, lab]) => `<button type="button" data-fo="${name}" data-v="${v}" aria-pressed="${v === cur}" class="flex-1 px-2 py-1 ${v === cur ? 'bg-indigo-600 text-white' : 'hover:bg-slate-800'}">${lab}</button>`).join('') + '</div>';
+    m.innerHTML = `<div class="card-h mb-1">Fill markers</div>
+      ${seg('style', [['h', '→ Horizontal'], ['v', '↑ Vertical'], ['dot', '● Dot'], ['off', 'Off']], fillOpts.style)}
+      <div class="card-h mt-3 mb-1">Size</div>${seg('size', [['s', 'S'], ['m', 'M'], ['l', 'L']], fillOpts.size)}
+      <label class="flex items-center gap-2 mt-3"><input type="checkbox" data-fo="labels" ${fillOpts.labels ? 'checked' : ''}> Show labels (+qty @price) when zoomed in</label>
+      <div class="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-[11px]"><span><b style="color:${FILL_COLOR.buy}">■</b> buy</span><span><b style="color:${FILL_COLOR.sell}">■</b> sell / final exit</span><span><b style="color:${FILL_COLOR.partial}">■</b> partial exit</span></div>
+      <p class="text-[10px] text-slate-500 mt-2">The tip touches the exact fill price. Hover a candle for every fill's details. Saved in this browser.</p>`;
+    m.querySelectorAll('button[data-fo]').forEach((b) => b.addEventListener('click', (e) => {
+      e.stopPropagation(); fillOpts[b.dataset.fo] = b.dataset.v; saveFills(); renderFillsMenu(); if (fillsPrim) fillsPrim.setFills(data.markers);
+    }));
+    const lab = m.querySelector('input[data-fo=labels]');
+    lab.addEventListener('change', () => { fillOpts.labels = lab.checked; saveFills(); if (fillsPrim) fillsPrim.setFills(data.markers); });
   }
   function fillsAt(t) { return (data && data.markers || []).filter((m) => m.time === t); }
 
@@ -149,7 +220,9 @@
       candleSeries.createPriceLine({ price: C.entry, color: '#818cf8', lineWidth: 1, lineStyle: 2, title: 'avg entry' });
       if (C.exit) candleSeries.createPriceLine({ price: C.exit, color: '#f59e0b', lineWidth: 1, lineStyle: 2, title: 'avg exit' });
     }
-    L.createSeriesMarkers(candleSeries, fillMarkers(data.markers || []));
+    fillsPrim = new FillsPrimitive();
+    candleSeries.attachPrimitive(fillsPrim);
+    fillsPrim.setFills(data.markers || []);
 
     let pane = 1;
     const sub = [];
@@ -248,8 +321,7 @@
     const fills = fillsAt(kb.time);
     if (fills.length) {
       html += `<div class="flex flex-col gap-0.5 mt-0.5" data-fill-legend>` + fills.map((m) => {
-        const buy = m.side ? m.side === 'BUY' : m.shape === 'arrowUp';
-        const c = (KIND_COLOR[m.kind] || {})[buy ? 'BUY' : 'SELL'] || m.color;
+        const buy = isBuy(m), c = fillColor(m);
         return `<span><span style="color:${c}" class="font-semibold">${buy ? 'BUY' : 'SELL'} ${num(m.qty, m.qty % 1 ? 2 : 0)} @ ${Number(m.price).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 })}</span>` +
           ` <span class="text-slate-300">${m.kind || ''}</span> <span class="text-slate-500">${m.at || ''}${m.how === 'price' ? ' · bar estimated from price' : ''}</span></span>`;
       }).join('') + `</div>`;
@@ -378,6 +450,14 @@
     if (data.excursion && data.excursion.note && $('mfe')) $('mfe').parentElement.title = data.excursion.note;
   }
 
+  // fills menu
+  const fbtn = $('fills-btn'), fmenu = $('fills-menu');
+  if (fbtn) {
+    fbtn.addEventListener('click', (e) => { e.stopPropagation(); if (fmenu.classList.toggle('hidden') === false) renderFillsMenu(); });
+    document.addEventListener('click', (e) => { if (e.target.isConnected && !fmenu.contains(e.target) && e.target !== fbtn) fmenu.classList.add('hidden'); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') fmenu.classList.add('hidden'); });
+  }
+
   // menu open/close
   const btn = $('ind-btn'), menu = $('ind-menu');
   btn.addEventListener('click', (e) => { e.stopPropagation(); const open = menu.classList.toggle('hidden') === false; if (open) renderMenu(); });
@@ -386,5 +466,7 @@
 
   renderChips();
   load(localStorage.getItem(LS_TF) || null);
-  window.TJ_CHART_API = { load, get data() { return data; }, get indicators() { return inds; } };
+  window.TJ_CHART_API = { load, get data() { return data; }, get indicators() { return inds; },
+    get fills() { return { ...fillOpts }; }, setFills(o) { fillOpts = { ...fillOpts, ...o }; saveFills(); if (fillsPrim) fillsPrim.setFills(data.markers); },
+    get chart() { return chart; } };
 })();
