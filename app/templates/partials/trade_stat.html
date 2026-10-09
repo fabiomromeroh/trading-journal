@@ -1,8 +1,9 @@
 {# One stat card in the trade page's top bar. Context: wid, t, tm #}
-{% macro kv(label, value, cls='', id='', title='') %}<div class="rounded-lg border border-slate-800 bg-[#111827] px-3 py-1.5 min-w-0 h-full"{% if title %} title="{{ title }}"{% endif %}><div class="text-[10px] uppercase tracking-wide text-slate-500 font-semibold truncate">{{ label }}{% if title %} <span class="text-slate-600 cursor-help">ⓘ</span>{% endif %}</div><div {% if id %}id="{{ id }}" {% endif %}class="text-sm font-semibold truncate {{ cls or 'text-white' }}">{{ value }}</div></div>{% endmacro %}
+{% from "partials/info.html" import info %}
+{% macro kv(label, value, cls='', id='', title='') %}<div class="rounded-lg border border-slate-800 bg-[#111827] px-3 py-1.5 min-w-0 h-full"><div class="text-[10px] uppercase tracking-wide text-slate-500 font-semibold flex items-center min-w-0"><span class="truncate">{{ label }}</span>{{ info(wid, 'trade', title) }}</div><div {% if id %}id="{{ id }}" {% endif %}class="text-sm font-semibold truncate {{ cls or 'text-white' }}">{{ value }}</div></div>{% endmacro %}
 {% macro pct(v, d=0) %}{{ (v|num(d) ~ '%') if v is not none else '—' }}{% endmacro %}
 {% set closed = t.status == 'CLOSED' %}
-{% if wid == 'net' %}{{ kv('Net P&L', t.net_pnl|money(true), t.net_pnl|pnl_class) }}
+{% if wid == 'net' %}{{ kv('Net P&L' if closed else 'Realized so far', t.net_pnl|money(true), t.net_pnl|pnl_class) }}
 {% elif wid == 'gross' %}{{ kv('Gross P&L', t.gross_pnl|money(true), t.gross_pnl|pnl_class) }}
 {% elif wid == 'fees' %}{{ kv('Fees', t.fees|money) }}
 {% elif wid == 'return' %}{{ kv('Return', (t.return_pct|num(2) ~ '%') if t.return_pct is not none else '—', t.return_pct|pnl_class) }}

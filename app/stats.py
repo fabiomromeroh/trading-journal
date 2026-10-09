@@ -63,11 +63,16 @@ class Stats:
     by_tag: list[Bucket] = field(default_factory=list)
     by_hold: list[Bucket] = field(default_factory=list)
 
+    realized_info: dict = field(default_factory=dict)   # app.realized.summary of the events in view
+    cumulative: dict = field(default_factory=dict)      # per-day cumulative realized (labels/net/gross/day)
+    hours_known: bool = True
+
     @property
     def realized(self) -> float:
-        """All realized P&L: closed trades plus partial exits of open trades."""
+        """All realized P&L in view: closed trades plus partial exits of open trades (fill-level)."""
+        if self.realized_info:
+            return self.realized_info["total"]
         return self.net_pnl + self.open_realized
-    hours_known: bool = True
 
     @property
     def win_rate(self) -> float:
@@ -109,9 +114,14 @@ def hold_bucket(td: timedelta) -> str:
     return "> 1 week"
 
 
-def compute(trades, tz: str, open_count: int = 0) -> Stats:
+def compute(trades, tz: str, open_count: int = 0, events=None) -> Stats:
+    """Trade statistics over the closed trades in ``trades``; day-level figures (daily P&L, best/worst
+    day, equity curve, Realized) come from fill-level realized events (see app.realized): pass
+    ``events`` (already limited to the date range) or they are derived from ``trades``."""
+    from app import realized as rz
     st = Stats(open_trades=open_count)
     st.open_realized = sum(t.net_pnl or 0.0 for t in trades if t.status == "OPEN")
+    evs = rz.events(trades) if events is None else events
     closed = sorted([t for t in trades if t.status == "CLOSED" and t.closed_at],
                     key=lambda t: (t.closed_at, t.id or 0))
     sym, wd, hr = defaultdict(lambda: None), {}, {}
@@ -150,13 +160,7 @@ def compute(trades, tz: str, open_count: int = 0) -> Stats:
         cum += pnl
         peak = max(peak, cum)
         st.max_drawdown = min(st.max_drawdown, cum - peak)
-        closed_local = utc_naive_to_tz(t.closed_at, tz)
         opened_local = utc_naive_to_tz(t.opened_at, tz)
-        st.equity.append((closed_local.strftime("%Y-%m-%d %H:%M"), round(cum, 2)))
-        d = closed_local.date()
-        if d not in st.daily:
-            st.daily[d] = Bucket(d.isoformat())
-        st.daily[d].add(pnl)
         hold = t.closed_at - t.opened_at
         holds.append(hold)
         (holds_w if pnl > 0 else holds_l if pnl < 0 else []).append(hold)
@@ -177,6 +181,10 @@ def compute(trades, tz: str, open_count: int = 0) -> Stats:
         return sum(v, timedelta()) / len(v) if v else None
 
     st.avg_hold, st.avg_hold_win, st.avg_hold_loss = avg_td(holds), avg_td(holds_w), avg_td(holds_l)
+    st.daily = rz.daily(evs, tz)
+    st.realized_info = rz.summary(evs)
+    st.cumulative = rz.cumulative(st.daily)
+    st.equity = list(zip(st.cumulative["labels"], st.cumulative["net"]))
     if st.daily:
         best = max(st.daily.values(), key=lambda x: x.pnl)
         worst = min(st.daily.values(), key=lambda x: x.pnl)

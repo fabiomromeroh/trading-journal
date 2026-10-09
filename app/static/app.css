@@ -55,3 +55,15 @@ form.is-loading { opacity: .7; }
 @media (max-width: 1023px) {
   table.tbl { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; max-width: 100%; }
 }
+
+/* (i) metric tooltips: a small button + one floating popover (#tip-pop) positioned by app.js */
+.tip-btn { display: inline-grid; place-items: center; width: 15px; height: 15px; margin-left: 4px; border-radius: 999px;
+  border: 1px solid rgba(148,163,184,.45); color: #94a3b8; font: 600 9px/1 ui-sans-serif, system-ui, sans-serif; text-transform: none;
+  vertical-align: 1px; cursor: help; background: transparent; flex: none; }
+.tip-btn:hover, .tip-btn:focus-visible, .tip-btn[aria-expanded="true"] { color: #e2e8f0; border-color: #818cf8; outline: none; }
+@media (pointer: coarse) { .tip-btn { width: 20px; height: 20px; font-size: 11px; } }
+#tip-pop { position: fixed; z-index: 90; max-width: min(320px, calc(100vw - 16px)); background: #0b1220; border: 1px solid #334155;
+  border-radius: .6rem; padding: .55rem .7rem; font-size: 12px; line-height: 1.4; color: #cbd5e1; box-shadow: 0 10px 30px rgba(0,0,0,.5);
+  text-transform: none; letter-spacing: normal; font-weight: 400; pointer-events: none; }
+#tip-pop b { color: #fff; display: block; margin-bottom: .15rem; }
+#tip-pop .tip-calc { display: block; margin-top: .35rem; color: #94a3b8; font-size: 11px; }

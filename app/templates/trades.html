@@ -4,12 +4,15 @@
   {% set p = dict(params) %}{% set _ = p.update({'sort': key, 'dir': ('asc' if sort == key and desc else 'desc')}) %}
   <a href="?{{ p|urlencode }}" class="hover:text-white {{ 'text-indigo-300' if sort == key }}">{{ label }}{% if sort == key %} {{ '↓' if desc else '↑' }}{% endif %}</a>
 {% endmacro %}
+{% from "partials/info.html" import info %}
 {% block content %}
 <div id="trades-results">
 <div class="flex flex-wrap items-end justify-between gap-2 mb-3">
   <div>
     <h1 class="text-2xl font-semibold text-white">Trades</h1>
-    <p class="text-sm text-slate-500">{{ total }} trades · closed net P&L in view <span class="{{ filtered_pnl|pnl_class }}">{{ filtered_pnl|money(true) }}</span></p>
+    <p class="text-sm text-slate-500 flex flex-wrap items-center gap-x-1">{{ total }} trades ({{ n_closed }} closed, {{ n_open }} open) · total realized in view
+      <span class="{{ realized_pnl|pnl_class }} font-medium">{{ realized_pnl|money(true) }}</span>{{ info('realized_view') }}
+      <span class="text-slate-600">(closed {{ filtered_pnl|money(true) }} + partial exits of open trades {{ open_realized|money(true) }})</span></p>
   </div>
 </div>
 <form method="get" action="/trades" class="card p-3 mb-4 flex flex-wrap items-center gap-2 text-xs" data-autofilter="swap" data-target="#trades-results">

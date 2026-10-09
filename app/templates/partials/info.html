@@ -1,0 +1,2 @@
+{# (i) tooltip button for a metric id (catalog: app/metric_info.py). Hover, focus or tap to open. #}
+{% macro info(key, page=None, extra='') %}{% set i = metric_info(key, page) %}{% if i %}<button type="button" class="tip-btn" aria-label="About {{ i.name }}" aria-describedby="tip-pop" data-tip-title="{{ i.name }}" data-tip-desc="{{ i.desc }}" data-tip-calc="{{ i.calc }}{{ (' ' ~ extra) if extra }}">i</button>{% endif %}{% endmacro %}

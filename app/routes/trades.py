@@ -66,15 +66,20 @@ def trades_list(request: Request, db: Session = Depends(get_db)):
     except ValueError:
         page = 1
     rows = list(db.scalars(stmt.offset((page - 1) * PAGE).limit(PAGE)))
-    sub = stmt.where(Trade.status == "CLOSED").order_by(None).subquery()
-    agg = db.execute(select(func.sum(sub.c.net_pnl), func.count(sub.c.id))).first()
+    sub = stmt.order_by(None).subquery()
+    agg = db.execute(select(sub.c.status, func.coalesce(func.sum(sub.c.net_pnl), 0.0), func.count(sub.c.id))
+                     .group_by(sub.c.status)).all()
+    by_status = {st: (float(pnl or 0.0), int(n)) for st, pnl, n in agg}
+    closed_pnl, n_closed = by_status.get("CLOSED", (0.0, 0))
+    open_pnl, n_open = by_status.get("OPEN", (0.0, 0))
     setups = [s for s in db.scalars(select(Trade.setup).where(Trade.setup.is_not(None)).distinct()) if s]
     tags = list(db.scalars(select(Tag.name).order_by(Tag.name)))
     params = {k: v for k, v in q.items() if k not in ("sort", "dir", "page")}
     return templates.TemplateResponse(request, "trades.html", base_context(
         request, db, nav="trades", f=f, trades=rows, total=total, page=page, pages=max(1, -(-total // PAGE)),
         sort=sort, desc=desc, params=params, q=q, setups=sorted(setups), tags=tags, list_qs=list_qs,
-        filtered_pnl=(agg[0] or 0.0) if agg else 0.0))
+        filtered_pnl=closed_pnl, n_closed=n_closed, n_open=n_open, open_realized=open_pnl,
+        realized_pnl=closed_pnl + open_pnl))
 
 
 def _get_trade(db: Session, trade_id: int) -> Trade:

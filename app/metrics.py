@@ -144,8 +144,12 @@ def trade_metrics(t, default_risk: float | None = None) -> dict:
 
 
 # ----------------------------------------------------------------------------- summary
-def summarize(trades, tz: str = "America/New_York", default_risk: float | None = None) -> dict:
-    """All headline statistics for a set of trades (closed ones; open ones only counted)."""
+def summarize(trades, tz: str = "America/New_York", default_risk: float | None = None, events=None) -> dict:
+    """All headline statistics for a set of trades (closed ones; open ones only counted).
+    Day statistics and ``realized`` use fill-level realized events (app.realized), which include
+    partial exits of open trades; pass ``events`` already limited to the date range."""
+    from app import realized as rz
+    evs = rz.events(trades) if events is None else events
     closed = closed_sorted(trades)
     n_open = sum(1 for t in trades if t.status == "OPEN")
     pnl = [t.net_pnl for t in closed]
@@ -183,14 +187,17 @@ def summarize(trades, tz: str = "America/New_York", default_risk: float | None =
     vol = sum((t.quantity or 0) for t in closed)
     total_units = sum((t.quantity or 0) * (t.multiplier or 1) for t in closed)
     dd = drawdown(closed, tz)
-    days = daily(closed, tz)
-    day_pnls = [v["net"] for v in days.values()]
+    days = rz.daily(evs, tz)
+    day_pnls = [v.net for v in days.values()]
+    rsum = rz.summary(evs)
     out = {
         "closed": n, "open": n_open, "total": n + n_open,
         "wins": nw, "losses": nl, "be": len(be),
         "win_pct": win_rate, "loss_pct": (nl / decided * 100) if decided else None,
         "be_pct": (len(be) / n * 100) if n else None,
         "open_pct": (n_open / (n + n_open) * 100) if (n + n_open) else None,
+        "realized": rsum["total"], "realized_closed": rsum["closed_part"], "realized_open": rsum["open_part"],
+        "realized_fees": rsum["fees"], "partial_exits": rsum["partial_exits"],
         "net": sum(pnl), "gross": sum(t.gross_pnl for t in closed), "fees": sum(t.fees or 0 for t in closed),
         "gross_profit": gp, "gross_loss": gl,
         "profit_factor": (gp / abs(gl)) if gl else (math.inf if gp else None),

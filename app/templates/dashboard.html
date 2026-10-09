@@ -43,18 +43,26 @@
 {% if has_any %}
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js"></script>
 <script src="/static/widgets.js"></script>
+<script src="/static/pnl_widgets.js?v=1"></script>
 <script>
 const C = {{ charts|tojson }};
 Chart.defaults.color = '#94a3b8'; Chart.defaults.borderColor = 'rgba(51,65,85,.35)'; Chart.defaults.font.family = 'ui-sans-serif, system-ui, sans-serif';
 const money = v => (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString(undefined, {maximumFractionDigits: 0});
 const pnlColors = arr => arr.map(v => v >= 0 ? 'rgba(16,185,129,.75)' : 'rgba(244,63,94,.75)');
-const baseOpts = { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false },
+const money2 = v => (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+const signed = v => (v > 0 ? '+' : '') + money2(v);
+const hover = { mode: 'index', intersect: false };
+const baseOpts = { responsive: true, maintainAspectRatio: false, interaction: hover, plugins: { legend: { display: false },
   tooltip: { callbacks: { label: c => money(c.parsed.y ?? c.parsed.x) } } }, scales: { y: { ticks: { callback: money } } } };
 function initEquity() {
 const ctxE = document.getElementById('ch-equity').getContext('2d');
 const grad = ctxE.createLinearGradient(0, 0, 0, 260); grad.addColorStop(0, 'rgba(99,102,241,.35)'); grad.addColorStop(1, 'rgba(99,102,241,0)');
-new Chart(ctxE, { type: 'line', data: { labels: C.equity.labels, datasets: [{ data: C.equity.values, borderColor: '#818cf8', backgroundColor: grad, fill: true, pointRadius: 0, tension: .25, borderWidth: 2 }] },
-  options: { ...baseOpts, scales: { x: { ticks: { maxTicksLimit: 8, callback: function(v) { return this.getLabelForValue(v).slice(0, 10); } } }, y: { ticks: { callback: money } } } } });
+new Chart(ctxE, { type: 'line', data: { labels: C.equity.labels, datasets: [{ data: C.equity.values, borderColor: '#818cf8', backgroundColor: grad, fill: true, pointRadius: 0, pointHoverRadius: 4, pointHitRadius: 8, tension: .25, borderWidth: 2 }] },
+  options: { ...baseOpts, plugins: { legend: { display: false }, tooltip: { callbacks: {
+      title: items => items.length ? items[0].label : '',
+      label: c => 'Cumulative realized ' + signed(c.raw),
+      afterLabel: c => 'Day P&L ' + signed(C.equity.day[c.dataIndex] ?? 0) } } },
+    scales: { x: { ticks: { maxTicksLimit: 8, callback: function(v) { return this.getLabelForValue(v).slice(0, 10); } } }, y: { ticks: { callback: money } } } } });
 }
 function initWinloss() {
 new Chart(document.getElementById('ch-winloss'), { type: 'doughnut', data: { labels: ['Wins', 'Losses', 'Break-even'], datasets: [{ data: C.winloss, backgroundColor: ['#10b981', '#f43f5e', '#64748b'], borderWidth: 0 }] },
@@ -63,15 +71,18 @@ new Chart(document.getElementById('ch-winloss'), { type: 'doughnut', data: { lab
 const bar = (id, s, horizontal=false) => new Chart(document.getElementById(id), { type: 'bar',
   data: { labels: s.labels, datasets: [{ data: s.pnl, backgroundColor: pnlColors(s.pnl), borderRadius: 4 }] },
   options: { ...baseOpts, indexAxis: horizontal ? 'y' : 'x', scales: horizontal ? { x: { ticks: { callback: money } } } : { y: { ticks: { callback: money } } },
-    plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => money(c.raw) + (s.count ? `  (${s.count[c.dataIndex]} trades, ${s.win_rate[c.dataIndex]}% win)` : '') } } } } });
+    plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => money2(c.raw) + (s.count && s.count[c.dataIndex] != null ? `  (${s.count[c.dataIndex]} trades` + (s.win_rate && s.win_rate[c.dataIndex] != null ? `, ${s.win_rate[c.dataIndex]}% win)` : ')') : '') } } } } });
 const X = {{ xcharts|tojson }};
-const line = (id, labels, sets) => new Chart(document.getElementById(id), { type: 'line', data: { labels, datasets: sets.map(d => ({ pointRadius: 0, tension: .2, borderWidth: 2, ...d })) },
-  options: { ...baseOpts, plugins: { legend: { display: sets.length > 1, position: 'bottom' } }, scales: { x: { ticks: { maxTicksLimit: 8, callback: function(v) { return String(this.getLabelForValue(v)).slice(0, 10); } } }, y: { ticks: { callback: money } } } } });
+const line = (id, labels, sets, day) => new Chart(document.getElementById(id), { type: 'line', data: { labels, datasets: sets.map(d => ({ pointRadius: 0, pointHoverRadius: 4, tension: .2, borderWidth: 2, ...d })) },
+  options: { ...baseOpts, plugins: { legend: { display: sets.length > 1, position: 'bottom' }, tooltip: { callbacks: {
+      label: c => (c.dataset.label ? c.dataset.label + ' ' : '') + signed(c.raw),
+      footer: items => day && items.length && day[items[0].dataIndex] != null ? 'Day net P&L ' + signed(day[items[0].dataIndex]) : '' } } }, scales: { x: { ticks: { maxTicksLimit: 8, callback: function(v) { return String(this.getLabelForValue(v)).slice(0, 10); } } }, y: { ticks: { callback: money } } } } });
 const INIT = {
   chart_equity: initEquity, chart_winloss: initWinloss,
-  chart_daily: () => bar('ch-daily', C.daily), chart_symbol: () => bar('ch-symbol', C.symbol, true),
+  chart_daily: () => DailyPnl(document.getElementById('daily-widget'), C),
+  calendar: () => PnlCalendar(document.getElementById('pnl-calendar'), C), chart_symbol: () => bar('ch-symbol', C.symbol, true),
   chart_weekday: () => bar('ch-weekday', C.weekday), chart_hour: () => bar('ch-hour', C.hour), chart_hold: () => bar('ch-hold', C.hold),
-  chart_cum_gross: () => line('ch-cumgross', X.cumgross.labels, [{ label: 'Net', data: X.cumgross.net, borderColor: '#818cf8' }, { label: 'Gross', data: X.cumgross.gross, borderColor: '#22d3ee', borderDash: [4, 3] }]),
+  chart_cum_gross: () => line('ch-cumgross', X.cumgross.labels, [{ label: 'Net', data: X.cumgross.net, borderColor: '#818cf8' }, { label: 'Gross', data: X.cumgross.gross, borderColor: '#22d3ee', borderDash: [4, 3] }], X.cumgross.day),
   chart_drawdown: () => line('ch-dd', X.drawdown.labels, [{ data: X.drawdown.values, borderColor: '#f43f5e', backgroundColor: 'rgba(244,63,94,.18)', fill: true }]),
   chart_month: () => bar('ch-month', X.month), chart_price: () => bar('ch-price', X.price), chart_size: () => bar('ch-size', X.size),
   chart_pnl_dist: () => bar('ch-pnldist', X.pnldist),

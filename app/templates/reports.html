@@ -1,7 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Reports · Trading Journal{% endblock %}
-{% macro stat(label, value, cls='', sub='', title='') %}
-<div class="card p-3 min-w-0" {% if title %}title="{{ title }}"{% endif %}><div class="card-h truncate">{{ label }}</div><div class="text-lg font-bold truncate {{ cls or 'text-white' }}">{{ value }}</div>{% if sub %}<div class="text-[11px] text-slate-500 mt-0.5 truncate">{{ sub }}</div>{% endif %}</div>
+{% from "partials/info.html" import info %}
+{% macro stat(label, value, cls='', sub='', title='', key=None) %}
+<div class="card p-3 min-w-0"><div class="card-h flex items-center min-w-0"><span class="truncate">{{ label }}</span>{{ info(key or label) }}</div><div class="text-lg font-bold truncate {{ cls or 'text-white' }}">{{ value }}</div>{% if sub %}<div class="text-[11px] text-slate-500 mt-0.5 truncate">{{ sub }}</div>{% endif %}</div>
 {% endmacro %}
 {% macro pct(v, d=1) %}{{ (v|num(d) ~ '%') if v is not none else '—' }}{% endmacro %}
 {% macro btable(rows, first='Bucket', drill=None) %}
@@ -30,7 +31,7 @@
 <div class="flex flex-wrap items-end justify-between gap-3 mb-3">
   <div>
     <h1 class="text-2xl font-semibold text-white">Reports</h1>
-    <p class="text-sm text-slate-500">{{ s.closed }} closed{% if s.open %} · {{ s.open }} open{% endif %} trades · net P&L after fees · times in {{ settings().display_tz }}</p>
+    <p class="text-sm text-slate-500">{{ s.closed + s.open }} trades ({{ s.closed }} closed, {{ s.open }} open) · stats use closed trades · total realized includes partial exits · times in {{ settings().display_tz }}</p>
   </div>
   {% include "partials/report_filters.html" %}
 </div>
@@ -45,12 +46,13 @@
 
 {% if tab == 'overview' %}
 <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-2 mb-4">
-  {{ stat('Net P&L', s.net|money(true), s.net|pnl_class, 'Gross ' ~ s.gross|money(true) ~ ' · fees ' ~ s.fees|money) }}
-  {{ stat('Trades', s.closed, '', s.open ~ ' open (' ~ pct(s.open_pct, 0) ~ ')') }}
+  <div class="col-span-2 card p-3 min-w-0 ring-1 ring-indigo-500/30"><div class="card-h flex items-center">Total realized P&L{{ info('realized') }}</div><div class="text-2xl font-bold {{ s.realized|pnl_class or 'text-white' }}">{{ s.realized|money(true) }}</div><div class="text-[11px] text-slate-500 mt-0.5">Closed {{ s.realized_closed|money(true) }} + partial exits of open trades {{ s.realized_open|money(true) }} · fees {{ s.realized_fees|money }} · {{ s.partial_exits }} partial exit{{ 's' if s.partial_exits != 1 }}</div></div>
+  {{ stat('Closed trades net P&L', s.net|money(true), s.net|pnl_class, 'Gross ' ~ s.gross|money(true) ~ ' · fees ' ~ s.fees|money) }}
+  {{ stat('Trades', s.closed + s.open, '', s.closed ~ ' closed · ' ~ s.open ~ ' open (' ~ pct(s.open_pct, 0) ~ ')') }}
   {{ stat('Win %', pct(s.win_pct), '', s.wins ~ 'W / ' ~ s.losses ~ 'L / ' ~ s.be ~ ' BE') }}
   {{ stat('Loss % / BE %', pct(s.loss_pct) ~ ' / ' ~ pct(s.be_pct), '', 'BE % of all closed trades') }}
   {{ stat('Profit factor', s.profit_factor|num(2), '', 'Gross profit ' ~ s.gross_profit|money ~ ' / loss ' ~ s.gross_loss|money) }}
-  {{ stat('Expectancy', s.expectancy|money(true), s.expectancy|pnl_class, 'Avg net P&L per trade') }}
+  {{ stat('Expectancy', s.expectancy|money(true), s.expectancy|pnl_class, 'Avg net P&L per closed trade') }}
   {{ stat('Avg win / avg loss', s.avg_win|money ~ ' / ' ~ s.avg_loss|money, '', 'P/L ratio ' ~ s.pl_ratio|num(2)) }}
   {{ stat('Median trade', s.median_trade|money(true), s.median_trade|pnl_class) }}
   {{ stat('Largest win / loss', s.largest_win|money ~ ' / ' ~ s.largest_loss|money) }}
@@ -62,7 +64,7 @@
   {{ stat('Max consecutive', s.max_consec_wins ~ 'W / ' ~ s.max_consec_losses ~ 'L') }}
   {{ stat('Max drawdown', s.max_dd|money, 'text-rose-300', 'Longest ' ~ s.max_dd_days ~ ' days · current ' ~ s.current_dd|money) }}
   {{ stat('P&L std dev', s.std|money, '', 'W ' ~ s.std_win|money ~ ' · L ' ~ s.std_loss|money) }}
-  {{ stat('SQN', s.sqn|num(2), '', '≥ 2.5 good (needs many trades)', 'System Quality Number = avg P&L × √n ÷ std dev') }}
+  {{ stat('SQN', s.sqn|num(2), '', '≥ 2.5 good (needs many trades)') }}
   {{ stat('Kelly %', pct(s.kelly), s.kelly|pnl_class, 'W − (1 − W) ÷ P/L ratio') }}
   {{ stat('Trading days', s.days, '', s.win_days ~ ' green / ' ~ s.loss_days ~ ' red (' ~ pct(s.day_win_pct, 0) ~ ')') }}
   {{ stat('Avg daily P&L', s.avg_day|money(true), s.avg_day|pnl_class, 'Best ' ~ s.best_day|money ~ ' · worst ' ~ s.worst_day|money) }}
@@ -71,10 +73,10 @@
   {{ stat('Commissions & fees', s.fees|money, '', 'Avg ' ~ s.avg_fees|money ~ ' per trade') }}
 </div>
 <div class="grid grid-cols-1 xl:grid-cols-2 gap-4 mb-4">
-  <div class="card p-4"><div class="card-h mb-2">Cumulative P&L: net vs gross</div><div class="h-64"><canvas id="ch-cum"></canvas></div></div>
-  <div class="card p-4"><div class="card-h mb-2">Daily net P&L</div><div class="h-64"><canvas data-bar="daily"></canvas></div></div>
+  <div class="card p-4"><div class="card-h mb-2 flex items-center">Cumulative realized P&L: net vs gross{{ info('chart_cum_gross') }}</div><div class="h-64"><canvas id="ch-cum"></canvas></div></div>
+  <div class="card p-4"><div class="card-h mb-2 flex items-center">Daily realized P&L{{ info('chart_daily') }}</div><div class="h-64"><canvas data-bar="daily"></canvas></div></div>
 </div>
-{% if s.open_realized %}<p class="text-xs text-slate-500">Partial exits inside still-open trades ({{ s.open_realized|money(true) }}) are not included above; the dashboard's Realized P&L includes them.</p>{% endif %}
+<p class="text-xs text-slate-500">Daily and cumulative P&L are realized by fill day, including partial exits of trades still open; Σ daily = total realized. Trade statistics (win %, expectancy, profit factor…) use closed trades only.</p>
 
 {% elif tab == 'timing' %}
 <div class="grid grid-cols-1 xl:grid-cols-2 gap-x-4">
@@ -163,7 +165,7 @@
   {{ stat('Current drawdown', s.current_dd|money, s.current_dd|pnl_class) }}
   {{ stat('Longest drawdown', s.max_dd_days ~ ' days', '', s.max_dd_trades ~ ' trades') }}
   {{ stat('Recovery factor', s.recovery_factor|num(2), '', 'Net P&L ÷ |max drawdown|') }}
-  {{ stat('Net P&L', s.net|money(true), s.net|pnl_class) }}
+  {{ stat('Closed trades net P&L', s.net|money(true), s.net|pnl_class) }}
 </div>
 <div class="grid grid-cols-1 xl:grid-cols-2 gap-4 mb-4">
   <div class="card p-4"><div class="card-h mb-2">Underwater curve (drawdown from peak)</div><div class="h-64"><canvas id="ch-dd"></canvas></div></div>
@@ -220,18 +222,20 @@ document.addEventListener('DOMContentLoaded', () => {
   const money = v => (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString(undefined, {maximumFractionDigits: 0});
   const money2 = v => (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
   const colors = a => a.map(v => v >= 0 ? 'rgba(16,185,129,.75)' : 'rgba(244,63,94,.75)');
-  const base = { responsive: true, maintainAspectRatio: false, animation: false, plugins: { legend: { display: false } } };
+  const base = { responsive: true, maintainAspectRatio: false, animation: false, interaction: { mode: 'index', intersect: false }, plugins: { legend: { display: false } } };
+  const signed = v => (v > 0 ? '+' : '') + money2(v);
   document.querySelectorAll('canvas[data-bar]').forEach(el => {
     const s = C[el.dataset.bar]; if (!s || !s.labels.length) return;
     new Chart(el, { type: 'bar', data: { labels: s.labels, datasets: [{ data: s.pnl, backgroundColor: colors(s.pnl), borderRadius: 3 }] },
       options: { ...base, scales: { y: { ticks: { callback: money } }, x: { ticks: { autoSkip: true, maxRotation: 0 } } },
-        plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => money2(c.raw) + (s.count ? `  (${s.count[c.dataIndex]} trades` + (s.win_rate && s.win_rate[c.dataIndex] !== null ? `, ${s.win_rate[c.dataIndex]}% win)` : ')') : '') } } } } });
+        plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => money2(c.raw) + (s.count && s.count[c.dataIndex] != null ? `  (${s.count[c.dataIndex]} trades` + (s.win_rate && s.win_rate[c.dataIndex] !== null ? `, ${s.win_rate[c.dataIndex]}% win)` : ')') : '') } } } } });
   });
-  const line = (id, labels, sets) => { const el = document.getElementById(id); if (!el || !labels.length) return;
-    new Chart(el, { type: 'line', data: { labels, datasets: sets.map(d => ({ pointRadius: 0, tension: .2, borderWidth: 2, ...d })) },
-      options: { ...base, plugins: { legend: { display: sets.length > 1, position: 'bottom' }, tooltip: { callbacks: { label: c => (c.dataset.label ? c.dataset.label + ' ' : '') + money2(c.raw) } } },
+  const line = (id, labels, sets, day) => { const el = document.getElementById(id); if (!el || !labels.length) return;
+    new Chart(el, { type: 'line', data: { labels, datasets: sets.map(d => ({ pointRadius: 0, pointHoverRadius: 4, tension: .2, borderWidth: 2, ...d })) },
+      options: { ...base, plugins: { legend: { display: sets.length > 1, position: 'bottom' }, tooltip: { callbacks: { label: c => (c.dataset.label ? c.dataset.label + ' ' : '') + signed(c.raw),
+        footer: items => day && items.length && day[items[0].dataIndex] != null ? 'Day net P&L ' + signed(day[items[0].dataIndex]) : '' } } },
         scales: { x: { ticks: { maxTicksLimit: 8, callback: function (v) { return String(this.getLabelForValue(v)).slice(0, 10); } } }, y: { ticks: { callback: money } } } } }); };
-  line('ch-cum', C.cum.labels, [{ label: 'Net', data: C.cum.net, borderColor: '#818cf8' }, { label: 'Gross', data: C.cum.gross, borderColor: '#22d3ee', borderDash: [4, 3] }]);
+  line('ch-cum', C.cum.labels, [{ label: 'Net', data: C.cum.net, borderColor: '#818cf8' }, { label: 'Gross', data: C.cum.gross, borderColor: '#22d3ee', borderDash: [4, 3] }], C.cum.day);
   line('ch-dd', C.drawdown.labels, [{ data: C.drawdown.values, borderColor: '#f43f5e', backgroundColor: 'rgba(244,63,94,.18)', fill: true }]);
   const scatter = (id, pts, xl) => { const el = document.getElementById(id); if (!el) return;
     new Chart(el, { type: 'scatter', data: { datasets: [{ data: pts, backgroundColor: pts.map(p => p.y >= 0 ? '#10b981' : '#f43f5e') }] },

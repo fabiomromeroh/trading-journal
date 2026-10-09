@@ -66,13 +66,15 @@ def _series(rows, key="net"):
             "win_rate": [round(r["win_pct"], 1) if r["win_pct"] is not None else None for r in rows]}
 
 
-def report_data(trades, tz: str, risk: float | None) -> dict:
+def report_data(trades, tz: str, risk: float | None, events=None) -> dict:
+    from app import realized as rz
     closed = metrics.closed_sorted(trades)
-    s = metrics.summarize(trades, tz, risk)
+    evs = rz.events(trades) if events is None else events
+    s = metrics.summarize(trades, tz, risk, events=evs)
     b = metrics.breakdowns(trades, tz, risk)
     dd = metrics.drawdown(closed, tz)
-    days = metrics.daily(closed, tz)
-    cum = metrics.cumulative(closed, tz)
+    days = rz.daily(evs, tz)
+    cum = rz.cumulative(days)
     exc = []
     for t in closed:
         if t.mfe is None and t.mae is None:
@@ -89,7 +91,8 @@ def report_data(trades, tz: str, risk: float | None) -> dict:
                             "source": src, "r": r})
     charts = {
         "cum": cum, "drawdown": dd["series"],
-        "daily": {"labels": [d.isoformat() for d in days], "pnl": [round(v["net"], 2) for v in days.values()]},
+        "daily": {"labels": [d.isoformat() for d in days], "pnl": [round(v.net, 2) for v in days.values()],
+                  "count": [v.count for v in days.values()], "win_rate": [None for _ in days]},
         "mfe_scatter": [{"x": e["mfe"], "y": round(e["net"], 2), "s": e["symbol"]} for e in exc if e["mfe"] is not None],
         "mae_scatter": [{"x": e["mae"], "y": round(e["net"], 2), "s": e["symbol"]} for e in exc if e["mae"] is not None],
     }
@@ -106,7 +109,9 @@ def reports(request: Request, db: Session = Depends(get_db)):
         tab = "overview"
     tz = get_settings().display_tz
     risk = default_risk(db)
-    data = report_data(trades, tz, risk)
+    from app.web import realized_scope
+    evs, _, _ = realized_scope(db, f, lambda st: apply_extra_filters(st, request.query_params))
+    data = report_data(trades, tz, risk, events=evs)
     q = request.query_params
     setups = sorted(s for s in db.scalars(select(Trade.setup).where(Trade.setup.is_not(None)).distinct()) if s)
     tags = list(db.scalars(select(Tag.name).order_by(Tag.name)))
@@ -183,15 +188,17 @@ def reset_layout(page: str, db: Session = Depends(get_db)):
     return {"ok": True, "widgets": widgets.reset_layout(db, page)}
 
 
-def dashboard_extras(db: Session, trades, tz: str) -> dict:
+def dashboard_extras(db: Session, trades, tz: str, events=None, cumulative=None) -> dict:
     """Extra metrics/charts + widget layout for the customisable dashboard."""
+    from app import realized as rz
     risk = default_risk(db)
     closed = metrics.closed_sorted(trades)
     b = metrics.breakdowns(trades, tz, risk)
-    xcharts = {"cumgross": metrics.cumulative(closed, tz), "drawdown": metrics.drawdown(closed, tz)["series"],
+    evs = rz.events(trades) if events is None else events
+    xcharts = {"cumgross": cumulative or rz.cumulative(rz.daily(evs, tz)), "drawdown": metrics.drawdown(closed, tz)["series"],
                "month": _series(b["month"]), "price": _series(b["entry_price"]), "size": _series(b["size"]),
                "pnldist": _series(b["pnl_dist"])}
-    return {"m": metrics.summarize(trades, tz, risk), "xcharts": xcharts, "L": widgets.layout_ctx(db, "dashboard")}
+    return {"m": metrics.summarize(trades, tz, risk, events=evs), "xcharts": xcharts, "L": widgets.layout_ctx(db, "dashboard")}
 
 
 def trade_extras(db: Session, t: Trade) -> dict:

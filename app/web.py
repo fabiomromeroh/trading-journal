@@ -53,8 +53,24 @@ def local_dt(dt, fmt: str = "%Y-%m-%d %H:%M") -> str:
     return utc_naive_to_tz(dt, get_settings().display_tz).strftime(fmt)
 
 
-templates.env.filters.update(money=money, num=num, qty=qty, pnl_class=pnl_class, local_dt=local_dt, td=fmt_td)
-templates.env.globals.update(settings=get_settings)
+def irish_time(dt, with_date: bool = True) -> str:
+    """A UTC datetime (aware, or naive meaning UTC) in Irish time, e.g. 'Oct 9 16:21 IST'."""
+    if dt is None:
+        return "—"
+    from datetime import timezone
+    from zoneinfo import ZoneInfo
+    if isinstance(dt, str):
+        dt = datetime.fromisoformat(dt)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    d = dt.astimezone(ZoneInfo("Europe/Dublin"))
+    return (f"{d:%b} {d.day} " if with_date else "") + f"{d:%H:%M} {d.tzname()}"
+
+
+templates.env.filters.update(money=money, num=num, qty=qty, pnl_class=pnl_class, local_dt=local_dt, td=fmt_td,
+                             irish_time=irish_time)
+from app import metric_info as _mi  # noqa: E402
+templates.env.globals.update(settings=get_settings, metric_info=_mi.info)
 
 
 @dataclass
@@ -101,6 +117,21 @@ def parse_filters(request: Request) -> Filters:
     elif f.preset == "1y":
         f.start = today - timedelta(days=365)
     return f
+
+
+def realized_scope(db: Session, f: Filters, extra=None):
+    """Realized events for a view: built from every trade matching the non-date filters, then cut to
+    the date range by fill date (so a partial exit inside the range counts even if the trade opened or
+    closed outside it). ``extra`` applies more statement filters (e.g. the Reports symbol/side filters).
+    Returns (events in range, all events, trades used)."""
+    from dataclasses import replace
+    from app import realized as rz
+    stmt = apply_trade_filters(select(Trade), replace(f, start=None, end=None))
+    if extra:
+        stmt = extra(stmt)
+    trades = list(db.scalars(stmt))
+    evs = rz.events(trades)
+    return rz.clip(evs, get_settings().display_tz, f.start, f.end), evs, trades
 
 
 def apply_trade_filters(stmt, f: Filters):

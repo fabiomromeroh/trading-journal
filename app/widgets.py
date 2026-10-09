@@ -10,9 +10,10 @@ from app.services import get_state, set_state
 
 # id, title, size (kpi | half | full), group, default?
 DASHBOARD = [
-    ("realized", "Realized P&L", "kpi", "P&L", True),
+    ("realized", "Total realized P&L", "kpi", "P&L", True),
     ("unrealized", "Unrealized (open)", "kpi", "P&L", True),
     ("total_pnl", "Total P&L + account check", "kpi", "P&L", True),
+    ("positions", "Open positions (unrealized breakdown)", "full", "P&L", True),
     ("win_rate", "Win rate", "kpi", "Win/loss", True),
     ("profit_factor", "Profit factor", "kpi", "Win/loss", True),
     ("expectancy", "Expectancy", "kpi", "Win/loss", True),
@@ -26,7 +27,7 @@ DASHBOARD = [
     ("best_worst_day", "Best / worst day", "kpi", "Days", True),
     ("chart_equity", "Equity curve", "wide", "Charts", True),
     ("chart_winloss", "Win / loss donut", "third", "Charts", True),
-    ("chart_daily", "Daily net P&L", "full", "Charts", True),
+    ("chart_daily", "Daily realized P&L", "full", "Charts", True),
     ("calendar", "P&L calendar", "full", "Charts", True),
     ("chart_symbol", "P&L by symbol", "half", "Charts", True),
     ("chart_weekday", "P&L by day of week", "half", "Charts", True),
@@ -38,6 +39,7 @@ DASHBOARD = [
     ("tbl_tag", "By tag table", "quarter", "Tables", True),
     ("recent", "Recent closed trades", "full", "Tables", True),
     # extra metrics (from the Reports module)
+    ("closed_net", "Closed trades net P&L", "kpi", "P&L", False),
     ("gross_net", "Gross vs net P&L", "kpi", "P&L", False),
     ("fees", "Commissions & fees", "kpi", "P&L", False),
     ("long_short", "Long vs short return", "kpi", "P&L", False),
@@ -91,9 +93,16 @@ TRADE_GROUPS = {**dict.fromkeys(("net", "gross", "fees", "return", "return_per_s
                 **dict.fromkeys(("r_multiple", "risk", "stop", "target", "planned_rr", "target_pnl"), "Risk & R"),
                 **dict.fromkeys(("account", "setup", "rating"), "Journal")}
 
+def _desc(key: str, page: str | None = None) -> str:
+    from app.metric_info import info
+    i = info(key, page)
+    return f"{i['desc']} {i['calc']}" if i else ""
+
+
 CATALOGS = {
-    "dashboard": [{"id": i, "title": t, "size": s, "group": g, "default": d} for i, t, s, g, d in DASHBOARD],
-    "trade": [{"id": i, "title": t, "size": "kpi", "group": TRADE_GROUPS.get(i, "Trade"), "default": d} for i, t, d in TRADE],
+    "dashboard": [{"id": i, "title": t, "size": s, "group": g, "default": d, "info": _desc(i)} for i, t, s, g, d in DASHBOARD],
+    "trade": [{"id": i, "title": t, "size": "kpi", "group": TRADE_GROUPS.get(i, "Trade"), "default": d, "info": _desc(i, "trade")}
+              for i, t, d in TRADE],
 }
 
 
@@ -105,6 +114,11 @@ def _key(page: str) -> str:
     return f"layout:{page}"
 
 
+# Default widgets added after layouts could be saved: shown once in saved layouts too (after `anchor`),
+# unless the layout was saved when the widget already existed (then the user chose to hide it).
+INTRODUCED = {"dashboard": {"positions": "total_pnl"}}
+
+
 def get_layout(db: Session, page: str) -> list[str]:
     raw = get_state(db, _key(page))
     if not raw:
@@ -113,7 +127,15 @@ def get_layout(db: Session, page: str) -> list[str]:
         ids = json.loads(raw)
     except ValueError:
         return default_layout(page)
-    return clean(page, ids)
+    ids = clean(page, ids)
+    try:
+        known = set(json.loads(get_state(db, _key(page) + ":known") or "[]"))
+    except ValueError:
+        known = set()
+    for wid, after in INTRODUCED.get(page, {}).items():
+        if wid not in ids and wid not in known:
+            ids.insert(ids.index(after) + 1 if after in ids else len(ids), wid)
+    return ids
 
 
 def clean(page: str, ids) -> list[str]:
@@ -128,6 +150,7 @@ def clean(page: str, ids) -> list[str]:
 def save_layout(db: Session, page: str, ids) -> list[str]:
     ids = clean(page, ids)
     set_state(db, _key(page), json.dumps(ids))
+    set_state(db, _key(page) + ":known", json.dumps([w["id"] for w in CATALOGS[page]]))
     db.commit()
     return ids
 

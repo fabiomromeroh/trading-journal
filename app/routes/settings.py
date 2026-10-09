@@ -114,6 +114,8 @@ def backup(db: Session = Depends(get_db)):
 # ---------------------------------------------------------------- sync
 @router.post("/sync")
 def sync_now(request: Request, db: Session = Depends(get_db)):
+    from app import quotes
+    quotes.clear_cache()  # next dashboard load fetches fresh prices for the unrealized P&L
     run_id = start_background("manual")
     run = db.get(SyncRun, run_id)
     return templates.TemplateResponse(request, "partials/sync_status.html", {"request": request, "run": run})
