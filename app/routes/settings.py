@@ -41,6 +41,18 @@ def _alias_ctx(db):
             "alias_text": "\n".join(f"{k}={v}" for k, v in user.items())}
 
 
+def keepawake_ctx() -> dict:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from app.keepawake import state as ka
+    tz = ZoneInfo("Europe/Dublin")
+    fmt = lambda ts: datetime.fromtimestamp(ts, tz).strftime("%H:%M") if ts else None  # noqa: E731
+    return {"enabled": ka.enabled, "pinging": bool(ka.url), "active": ka.active(), "minutes": ka.minutes,
+            "interval_min": round(ka.interval / 60, 1), "until": fmt(ka.keep_until) if ka.active() else None,
+            "last_ping": fmt(ka.last_ping), "last_status": ka.last_ping_status, "pings": ka.pings,
+            "up_since": fmt(ka.started)}
+
+
 def _settings_ctx(request, db, **kw):
     for src in all_sources():
         if src.key == "snaptrade" and src.is_configured():
@@ -62,7 +74,7 @@ def _settings_ctx(request, db, **kw):
     from app.routes.security import security_ctx as _security_ctx
     return base_context(request, db, nav="settings", sources=sources, runs=runs, acct_rows=acct_rows,
                         active_run=running_sync(db), s=s, snaptrade=_snaptrade_ctx(db), **_alias_ctx(db),
-                        tos_email=_tos_email_ctx(request, db), **_security_ctx(db), **kw)
+                        tos_email=_tos_email_ctx(request, db), **_security_ctx(db), keepawake=keepawake_ctx(), **kw)
 
 
 @router.get("/settings")

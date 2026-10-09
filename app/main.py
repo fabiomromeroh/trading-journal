@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -10,7 +13,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import get_settings
-from app import db as dbmod, passwords
+from app import db as dbmod, keepawake, passwords
 from app.routes import auth, dashboard, email_sync, imports, reports, security, settings as settings_routes, trades
 
 logging.basicConfig(level=logging.INFO)
@@ -34,6 +37,8 @@ class RequireLogin(BaseHTTPMiddleware):
             if path.startswith("/auth/schwab/callback"):
                 request.session["pending_callback"] = str(request.url)
             return RedirectResponse(f"/login?next={path}", status_code=303)
+        if keepawake.counts_as_visit(request.method, path, bool(request.session.get("auth"))):
+            keepawake.state.touch()
         resp = await call_next(request)
         resp.headers.setdefault("X-Frame-Options", "DENY")
         resp.headers.setdefault("X-Content-Type-Options", "nosniff")
@@ -41,9 +46,23 @@ class RequireLogin(BaseHTTPMiddleware):
         return resp
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    ka = keepawake.state
+    task = None
+    if ka.enabled and ka.url:
+        task = asyncio.create_task(ka.run())
+        logging.getLogger(__name__).info("keep-awake: %d min after each visit, ping every %d s", ka.minutes, ka.interval)
+    yield
+    if task:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
 def create_app() -> FastAPI:
     s = get_settings()
-    app = FastAPI(title="Trading Journal", docs_url=None, redoc_url=None, openapi_url=None)
+    app = FastAPI(title="Trading Journal", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.add_middleware(RequireLogin)
     # Added last => runs first, so the session is available to RequireLogin.
     app.add_middleware(SessionMiddleware, secret_key=s.secret_key, session_cookie="tj_session",
@@ -53,7 +72,7 @@ def create_app() -> FastAPI:
         app.include_router(r)
 
     @app.get("/healthz")
-    def healthz():
+    def healthz():  # no DB; also the keep-awake ping target (never counts as a visit)
         return {"ok": True}
 
     return app

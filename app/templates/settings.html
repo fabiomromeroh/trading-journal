@@ -137,6 +137,14 @@
     <div>Display timezone: <span class="text-slate-200">{{ s.display_tz }}</span></div>
     <div>Price charts: <span class="text-slate-200">{{ s.price_provider }}</span>{% if s.polygon_api_key %} (Polygon key set){% endif %}</div>
     <div>Reminder emails: <span class="text-slate-200">{{ 'on' if s.reminders_enabled and s.smtp_host else 'off' }}</span></div>
+    {% set ka = keepawake %}
+    <div id="keep-awake" title="Render's free plan sleeps after 15 min without traffic. After each visit the app pings itself every {{ ka.interval_min }} min for {{ ka.minutes }} min, then lets the service sleep.">Keep-awake:
+      {% if not ka.enabled %}<span class="text-slate-200">off</span> (KEEP_AWAKE_MINUTES=0): will sleep when idle
+      {% elif not ka.pinging %}<span class="text-slate-200">inactive here</span> (not running on Render): will sleep when idle
+      {% elif ka.active %}<span class="text-emerald-300">Awake until {{ ka.until }} Dublin time</span>
+      {% else %}<span class="text-slate-200">will sleep when idle</span>{% endif %}
+      {% if ka.pinging and ka.enabled %}<div class="text-xs text-slate-500">{{ ka.minutes }} min after each visit · ping every {{ ka.interval_min }} min{% if ka.last_ping %} · last ping {{ ka.last_ping }} ({{ ka.last_status }}), {{ ka.pings }} since {{ ka.up_since }}{% else %} · no ping yet since start {{ ka.up_since }}{% endif %}</div>{% endif %}
+    </div>
     <div>Database: <span class="text-slate-200">{{ 'PostgreSQL' if s.database_url.startswith('postgresql') else 'SQLite' }}</span></div>
   </div>
 </div>
