@@ -1,0 +1,13 @@
+{# Coach insights widget. ctx: coach (list), info() #}
+{% from "partials/info.html" import info %}
+<div class="card p-4 h-full" data-testid="coach">
+  <div class="flex items-center justify-between mb-2"><div class="card-h flex items-center">Coach insights{{ info('coach') }}</div>
+    <a href="/ai-review" class="text-xs text-indigo-300 hover:text-white">AI review →</a></div>
+  <ul class="space-y-2 text-sm">
+    {% for i in coach %}
+    <li class="flex gap-2"><span class="mt-0.5 {{ {'warn': 'text-amber-300', 'good': 'text-emerald-400', 'info': 'text-sky-300'}[i.level] }}">{{ {'warn': '⚠', 'good': '✓', 'info': 'ℹ'}[i.level] }}</span>
+      <span><b class="text-slate-100">{{ i.title }}.</b> <span class="text-slate-400">{{ i.text }}</span></span></li>
+    {% else %}<li class="text-slate-500">No insights yet.</li>{% endfor %}
+  </ul>
+  <p class="text-[11px] text-slate-500 mt-3">Rule-based, computed on this server from your trades in view. Nothing is sent anywhere.</p>
+</div>

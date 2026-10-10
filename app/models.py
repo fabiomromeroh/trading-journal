@@ -137,11 +137,47 @@ class Trade(Base):
     initial_stop: Mapped[float | None] = mapped_column(Float)
     risk_amount: Mapped[float | None] = mapped_column(Float)   # $ risk; overrides the stop-based risk
     profit_target: Mapped[float | None] = mapped_column(Float)
+    stop_auto: Mapped[bool | None] = mapped_column(Boolean)      # True: initial_stop was set by the default-stop rule
+    exec_grade: Mapped[str | None] = mapped_column(String(2))    # optional execution grade A-F
+    journal: Mapped[str | None] = mapped_column(Text)            # JSON {question id: answer} (notes stays "Other notes")
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
     account: Mapped[Account] = relationship()
     tags: Mapped[list[Tag]] = relationship(secondary=trade_tags, lazy="selectin")
     fills: Mapped[list["TradeFill"]] = relationship(
         back_populates="trade", cascade="all, delete-orphan", order_by="TradeFill.position")
+    mistake_rows: Mapped[list["TradeMistake"]] = relationship(
+        cascade="all, delete-orphan", order_by="TradeMistake.name", lazy="selectin")
+
+    @property
+    def mistakes(self) -> list[str]:
+        return [m.name for m in self.mistake_rows]
+
+    @property
+    def answers(self) -> dict:
+        import json
+        try:
+            v = json.loads(self.journal) if self.journal else {}
+        except ValueError:
+            return {}
+        return v if isinstance(v, dict) else {}
+
+
+class TradeMistake(Base):
+    """A mistake tagged on a trade (the option list lives in journal_options; names are kept on old trades
+    even after an option is removed from the list)."""
+    __tablename__ = "trade_mistakes"
+    trade_id: Mapped[int] = mapped_column(ForeignKey("trades.id", ondelete="CASCADE"), primary_key=True)
+    name: Mapped[str] = mapped_column(String(80), primary_key=True)
+
+
+class JournalOption(Base):
+    """Persistent dropdown options: kind = setup | tag | mistake."""
+    __tablename__ = "journal_options"
+    __table_args__ = (UniqueConstraint("kind", "name", name="uq_journal_option"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[str] = mapped_column(String(12), index=True)
+    name: Mapped[str] = mapped_column(String(80))
+    position: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class TradeFill(Base):

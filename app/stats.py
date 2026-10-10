@@ -68,6 +68,7 @@ class Stats:
     by_asset: list[Bucket] = field(default_factory=list)
     by_setup: list[Bucket] = field(default_factory=list)
     by_tag: list[Bucket] = field(default_factory=list)
+    by_mistake: list[Bucket] = field(default_factory=list)
     by_hold: list[Bucket] = field(default_factory=list)
 
     realized_info: dict = field(default_factory=dict)   # app.realized.summary of the events in view
@@ -183,6 +184,10 @@ def compute(trades, tz: str, open_count: int = 0, events=None) -> Stats:
             b("tag", tag.name).add(pnl)
         if not t.tags:
             b("tag", "(untagged)").add(pnl)
+        for m in (getattr(t, "mistakes", None) or []):
+            b("mistake", m).add(pnl)
+        if not getattr(t, "mistakes", None):
+            b("mistake", "(no mistake)").add(pnl)
         b("hold", hold_bucket(hold) if t.time_known or hold >= timedelta(days=1) else "Same day (time unknown)").add(pnl)
 
     def avg_td(v):
@@ -204,6 +209,7 @@ def compute(trades, tz: str, open_count: int = 0, events=None) -> Stats:
     st.by_asset = list(buckets["asset"].values())
     st.by_setup = sorted(buckets["setup"].values(), key=lambda x: x.pnl, reverse=True)
     st.by_tag = sorted(buckets["tag"].values(), key=lambda x: x.pnl, reverse=True)
+    st.by_mistake = sorted(buckets["mistake"].values(), key=lambda x: x.pnl, reverse=True)
     order = ["< 5 min", "5-60 min", "1 h - 1 day", "Same day (time unknown)", "1-7 days", "> 1 week"]
     st.by_hold = [buckets["hold"][k] for k in order if k in buckets["hold"]]
     return st

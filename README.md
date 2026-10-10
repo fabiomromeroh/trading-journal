@@ -53,6 +53,20 @@ per-trade pages with a price chart, and journal notes, tags, setups and ratings.
 - **Single-user login**: argon2-hashed password (seeded from `APP_PASSWORD`, changeable with an emailed code), signed session cookie, simple brute-force
   throttle.
 
+## Journal panel, default stop, R levels and AI review
+
+**Dropdowns.** Setup (one value), Tags and Mistakes (several) are searchable dropdowns on the trade page. Type a new name and press Enter: it is added to the list for next time. **Manage** (bottom of each dropdown) renames or removes options. Removing only takes an option off the list; trades that already carry it keep it (rename changes it everywhere). Lists live in `journal_options`; mistakes in `trade_mistakes`; the first read seeds the mistake list (Chased entry, Oversized, No stop, Moved stop, ...) and imports the setups/tags you already use. Trades and Reports filter by setup, tag and mistake; Reports > Setups & tags has the mistake table (count, total and average P&L).
+
+**Questions.** The old Notes box is now "Other notes" (nothing was moved or lost). Above it are question boxes (thesis, what went well / wrong, did I follow my plan: Yes/Partly/No + note, lesson, emotions), a 1-5 rating and an execution grade. Everything autosaves on blur / change ("Saved ✓"). Add, rename, reorder or remove questions in Settings > "Journal, stops & R levels"; answers are stored per question id in `trades.journal` so renaming keeps them and removing only hides the box.
+
+**Default stop.** Setting "Default stop rule" = *Low of the entry day* (default) or *Manual only*. Stocks only: the stop is the daily-bar low (shorts: high) of the New York entry date, stored on the trade with `stop_auto = true` (shown as "auto: low of entry day"). A stop or Risk $ you type always wins and is never overwritten; "Use default stop" on a manual stop switches back. While the entry day is still running the auto stop is refreshed (the day's low can still fall). Options get no default stop (a stock-price stop says nothing about the premium): set Risk $ by hand. Existing stops/Risk $ stay as they are. Backfill: one background pass at first start after the update, after every sync (40 trades max), and Settings > "Apply default stop to all trades without one".
+
+**R maths.** Risk per share = |avg entry - stop|. Risk $ = risk per share x **max position size** x multiplier (a typed Risk $ overrides; the Reports "default risk" is the last fallback). R-multiple (closed) = net P&L / Risk $; reward:risk achieved = 1 : R. Open trades: Current R = (realized so far + open P&L at the latest quote) / Risk $, refreshed every minute while the tab is open. MFE R / MAE R = MFE or MAE in $ / Risk $. A stop on the wrong side of the entry is ignored and flagged; risk under 0.15% or over 20% of the entry is flagged as tiny / huge. Stat-bar widgets: Current R / R-multiple, Initial stop, Risk $, MFE / MAE (R), Mistakes, Execution grade (dashboard: Coach insights, By mistake).
+
+**Chart.** The stop is a red line; targets are dashed lines at your R multiples (default 3R, 8R, 10R; **R Levels** button: show/hide, edit the list, saved on the server). A level price touched after the entry bar is drawn bright with a check (bar precision).
+
+**AI review (no paid AI, nothing sent).** Reports > "AI review" builds an anonymised summary (stats, setup/tag/mistake breakdowns, R, hold times, MFE/MAE, hours, weekdays, your answers) plus a coaching prompt. Copy it or download .md / .json and paste it into any AI chat; ticker symbols and notes can be switched off. Account names/numbers are never included. "Coach insights" (dashboard widget, AI review page) is rule-based and runs on the server. A future option, only if you ever get an API key: let the server request the review automatically. Not built, nothing is called today.
+
 ## Password changes and email codes
 
 The login password is stored as an argon2id hash in the database. On first start it is seeded from

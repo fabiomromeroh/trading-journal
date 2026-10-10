@@ -19,9 +19,14 @@
 {% elif wid == 'mae_eff' %}{{ kv('MAE efficiency', pct(tm.mae_eff), '', title='Net P&L ÷ |MAE|') }}
 {% elif wid == 'best_exit' %}{{ kv('Best exit possible', tm.best_exit|money(true), 'text-emerald-300', title='= MFE: P&L at the best price between entry and exit') }}
 {% elif wid == 'left_on_table' %}{{ kv('Left on the table', tm.left_on_table|money, '', title='MFE − gross P&L') }}
+{% elif wid == 'r_now' %}{% if t.status == 'OPEN' %}{{ kv('Current R', (tm.current_r|num(2) ~ 'R') if tm.current_r is not none else '—', tm.current_r|pnl_class, 'rnow', 'Open trade: (realized so far + open P&L at the latest price) ÷ risk $' ~ ((' · price ' ~ tm.price|num(2)) if tm.price else ' · no live price') ~ ' · reward:risk now ' ~ (('1 : ' ~ tm.current_r|num(2)) if tm.current_r is not none else '—')) }}
+  {% else %}{{ kv('R-multiple', (tm.r_multiple|num(2) ~ 'R') if tm.r_multiple is not none else '—', tm.r_multiple|pnl_class, 'rnow', 'Net P&L ÷ risk $ (' ~ (tm.risk_source or 'no risk: stop price or Risk $ needed') ~ ') · reward:risk achieved ' ~ (('1 : ' ~ tm.r_multiple|num(2)) if tm.r_multiple is not none else '—')) }}{% endif %}
+{% elif wid == 'mfe_mae_r' %}{{ kv('MFE / MAE (R)', ((tm.mfe_r|num(1) ~ 'R / ' ~ tm.mae_r|num(1) ~ 'R') if tm.mfe_r is not none and tm.mae_r is not none else '—'), '', 'mferid', 'MFE and MAE in R: best / worst running P&L ÷ risk $') }}
+{% elif wid == 'mistakes' %}{{ kv('Mistakes', t.mistakes|join(', ') or 'none', 'text-rose-300' if t.mistakes else 'text-slate-400') }}
+{% elif wid == 'exec_grade' %}{{ kv('Execution grade', t.exec_grade or '—') }}
 {% elif wid == 'r_multiple' %}{{ kv('R-multiple', (tm.r_multiple|num(2) ~ 'R') if tm.r_multiple is not none else '—', tm.r_multiple|pnl_class, title='Net P&L ÷ risk (' ~ (tm.risk_source or 'no risk set') ~ ')') }}
 {% elif wid == 'risk' %}{{ kv('Risk $', tm.risk|money, '', title='Source: ' ~ (tm.risk_source or 'none (set a stop or Risk $)')) }}
-{% elif wid == 'stop' %}{{ kv('Initial stop', t.initial_stop|num(2)) }}
+{% elif wid == 'stop' %}{{ kv('Initial stop', (t.initial_stop|num(2)) if t.initial_stop is not none else '—', '', title=('Auto: ' ~ ('low' if t.direction == 'LONG' else 'high') ~ ' of the entry day (type a stop to override)') if t.stop_auto else 'Your stop') }}
 {% elif wid == 'target' %}{{ kv('Profit target', t.profit_target|num(2)) }}
 {% elif wid == 'planned_rr' %}{{ kv('Planned R:R', ('1 : ' ~ tm.planned_rr|num(2)) if tm.planned_rr is not none else '—', '', title='|target − entry| ÷ |entry − stop|') }}
 {% elif wid == 'target_pnl' %}{{ kv('Profit aim $', tm.target_pnl|money(true), '', title='P&L at the profit target') }}

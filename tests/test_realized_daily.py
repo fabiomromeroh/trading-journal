@@ -226,6 +226,6 @@ def test_new_default_widget_appears_in_saved_layouts(db):
     from app.services import set_state as ss
     ss(db, "layout:dashboard", json.dumps(["realized", "total_pnl", "win_rate"]))  # saved before "positions" existed
     db.commit()
-    assert widgets.get_layout(db, "dashboard") == ["realized", "total_pnl", "positions", "win_rate"]
+    assert widgets.get_layout(db, "dashboard") == ["realized", "total_pnl", "positions", "win_rate", "coach"]  # + Coach insights (introduced later)
     widgets.save_layout(db, "dashboard", ["realized", "win_rate"])  # user hides it on purpose
     assert widgets.get_layout(db, "dashboard") == ["realized", "win_rate"]

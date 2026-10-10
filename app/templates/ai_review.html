@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}AI review{% endblock %}
+{% block content %}
+<div class="flex flex-wrap items-end justify-between gap-3 mb-3">
+  <div>
+    <h1 class="text-2xl font-semibold text-white">AI review</h1>
+    <p class="text-sm text-slate-500">Copy an anonymised summary of your trades plus a coaching prompt into any AI chat (ChatGPT, Claude, Grok, all have free tiers). Nothing is sent from this server.</p>
+  </div>
+  {% include "partials/report_filters.html" %}
+</div>
+<div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
+  <section class="xl:col-span-2 space-y-4">
+    <div class="card p-4" x-data="{ copied: false, async copy() { try { await navigator.clipboard.writeText(this.$refs.md.value); } catch (e) { this.$refs.md.select(); document.execCommand('copy'); } this.copied = true; setTimeout(() => this.copied = false, 2500); } }">
+      <div class="flex flex-wrap items-center gap-2 mb-2">
+        <div class="card-h mr-auto">Prompt + data <span class="normal-case text-slate-500">({{ n_closed }} closed trades · {{ chars|int }} characters)</span></div>
+        <button type="button" class="btn btn-p text-sm" @click="copy()" data-testid="copy-prompt">Copy prompt + data</button>
+        <a class="btn btn-s text-sm" href="/ai-review/export.md?{{ qs }}" download>Download .md</a>
+        <a class="btn btn-s text-sm" href="/ai-review/export.json?{{ qs }}" download>Download .json</a>
+        <span x-show="copied" x-cloak class="text-emerald-400 text-sm">Copied ✓ now paste it into your AI chat</span>
+      </div>
+      <textarea x-ref="md" readonly rows="14" class="inp w-full font-mono text-[11px] leading-snug" aria-label="Prompt and data">{{ md }}</textarea>
+      {% if n_closed < 20 %}<p class="text-xs text-amber-300 mt-2">Only {{ n_closed }} closed trades in view: advice from a small sample is shaky. Widen the period for a better review.</p>{% endif %}
+    </div>
+    <div class="card p-4 text-sm text-slate-400 space-y-2">
+      <div class="card-h">How to use it</div>
+      <ol class="list-decimal ml-5 space-y-1">
+        <li>Pick the period / filters above (the summary follows them).</li>
+        <li>Press <b>Copy prompt + data</b>, open any AI chat, paste, send.</li>
+        <li>Ask follow-ups: “which single rule would have saved me the most?”, “compare my best and worst setup”.</li>
+      </ol>
+      <p class="text-xs text-slate-500">Tip: the 5-10 most useful things you can add are in the notes boxes of each trade (what went wrong, emotions, lesson): the AI quotes your own words back to you.</p>
+      <p class="text-xs text-slate-500">Possible later option: if you ever get an API key, the app could request this review automatically. Not built; nothing is called today.</p>
+    </div>
+  </section>
+  <aside class="space-y-4">
+    <div class="card p-4">
+      <div class="card-h mb-2">Privacy</div>
+      <form method="get" class="space-y-2 text-sm" data-autofilter>
+        {% for k, x in params.items() %}<input type="hidden" name="{{ k }}" value="{{ x }}">{% endfor %}
+        <input type="hidden" name="symbols" value="0"><input type="hidden" name="notes" value="0">
+        <label class="flex items-center gap-2"><input type="checkbox" name="symbols" value="1" {{ 'checked' if symbols }}> Include ticker symbols</label>
+        <label class="flex items-center gap-2"><input type="checkbox" name="notes" value="1" {{ 'checked' if notes }}> Include my written notes</label>
+        <noscript><button class="btn btn-s text-xs">Apply</button></noscript>
+      </form>
+      <p class="text-xs text-slate-500 mt-2">Always left out: account names and numbers, broker ids, exact times. Review the text before you paste: your notes are in your own words.</p>
+    </div>
+    {% include "partials/coach.html" %}
+  </aside>
+</div>
+{% endblock %}

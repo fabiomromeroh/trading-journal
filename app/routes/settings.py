@@ -53,6 +53,13 @@ def keepawake_ctx() -> dict:
             "up_since": fmt(ka.started)}
 
 
+def _journal_ctx(db):
+    from app import options, stops
+    from app.routes.journal import chart_r_config
+    return {"stop_rule": stops.get_rule(db), "rules": stops.RULES, "r": chart_r_config(db),
+            "questions": options.get_questions(db)}
+
+
 def _settings_ctx(request, db, **kw):
     for src in all_sources():
         if src.key == "snaptrade" and src.is_configured():
@@ -75,7 +82,7 @@ def _settings_ctx(request, db, **kw):
     from app.routes.backup import settings_ctx as _backup_ctx
     return base_context(request, db, nav="settings", sources=sources, runs=runs, acct_rows=acct_rows,
                         active_run=running_sync(db), s=s, snaptrade=_snaptrade_ctx(db), **_alias_ctx(db),
-                        tos_email=_tos_email_ctx(request, db), **_security_ctx(db), keepawake=keepawake_ctx(), backups=_backup_ctx(request, db), **kw)
+                        tos_email=_tos_email_ctx(request, db), **_security_ctx(db), keepawake=keepawake_ctx(), backups=_backup_ctx(request, db), journal_cfg=_journal_ctx(db), **kw)
 
 
 @router.get("/settings")

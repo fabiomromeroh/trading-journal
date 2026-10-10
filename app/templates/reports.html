@@ -42,6 +42,7 @@
   <a href="?{% for k, x in params.items() %}{{ k }}={{ x|urlencode }}&{% endfor %}tab={{ key }}"
      class="whitespace-nowrap px-3 py-2 text-sm border-b-2 {{ 'border-indigo-400 text-white' if tab == key else 'border-transparent text-slate-400 hover:text-white' }}">{{ label }}</a>
   {% endfor %}
+  <a href="/ai-review?{% for k, x in params.items() %}{{ k }}={{ x|urlencode }}&{% endfor %}" class="whitespace-nowrap px-3 py-2 text-sm border-b-2 border-transparent text-indigo-300 hover:text-white ml-auto">AI review →</a>
 </nav>
 
 {% if tab == 'overview' %}
@@ -109,6 +110,7 @@
   <div>{{ section('Setup', 'setup', b.setup, 'Setup', 'setup') }}</div>
   <div>{{ section('Tag (a trade counts once per tag)', 'tag', b.tag, 'Tag', 'tag') }}</div>
 </div>
+{{ section('Mistakes (a trade counts once per mistake: count, total and average P&L)', 'mistake', b.mistake, 'Mistake', 'mistake', note='What each repeated mistake cost you') }}
 
 {% elif tab == 'winloss' %}
 <div class="grid grid-cols-1 xl:grid-cols-3 gap-4 mb-4">

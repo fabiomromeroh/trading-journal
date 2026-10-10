@@ -38,6 +38,10 @@
     <option value="">Any tag</option>
     {% for s in tags %}<option {{ 'selected' if q.get('tag') == s }}>{{ s }}</option>{% endfor %}
   </select>{% endif %}
+  {% if mistakes %}<select name="mistake" class="inp text-xs" aria-label="Mistake">
+    <option value="">Any mistake</option>
+    {% for s in mistakes %}<option {{ 'selected' if q.get('mistake') == s }}>{{ s }}</option>{% endfor %}
+  </select>{% endif %}
   <button class="btn btn-s text-xs nojs-only">Apply</button>
   {% if params %}<a href="?{% if tab %}tab={{ tab }}{% endif %}" class="text-slate-400 hover:text-white underline px-1">Clear</a>{% endif %}
 </form>

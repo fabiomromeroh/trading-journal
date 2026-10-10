@@ -87,20 +87,48 @@ def position_value(t) -> float:
     return t.cost_basis if getattr(t, "cost_basis", None) else (t.entry_price or 0) * (t.quantity or 0) * (t.multiplier or 1)
 
 
+def stop_side_ok(t) -> bool:
+    """A stop must be below the entry for longs and above it for shorts."""
+    stop = getattr(t, "initial_stop", None)
+    if stop is None or not t.entry_price:
+        return False
+    return stop < t.entry_price if t.direction == "LONG" else stop > t.entry_price
+
+
+def risk_per_share(t) -> float | None:
+    """|avg entry - initial stop| (valid stops only)."""
+    return abs(t.entry_price - t.initial_stop) if stop_side_ok(t) else None
+
+
 def risk_of(t, default_risk: float | None = None) -> tuple[float | None, str | None]:
-    """Planned risk in $ for R-multiples: the trade's own Risk $, else |entry - initial stop| x size,
-    else the default risk per trade (Settings on the Reports page). Returns (risk, source)."""
+    """Planned risk in $ for R-multiples: the trade's own Risk $, else (avg entry - initial stop) x max position
+    size x multiplier (an auto "low of the day" stop counts like a manual one), else the default risk per trade
+    (Reports > default risk). A stop on the wrong side of the entry is ignored. Returns (risk, source)."""
     r = getattr(t, "risk_amount", None)
     if r and r > 0:
         return float(r), "risk $"
-    stop = getattr(t, "initial_stop", None)
-    if stop and t.entry_price:
-        per = abs(t.entry_price - stop)
-        if per > 0:
-            return per * (t.quantity or 0) * (t.multiplier or 1), "stop"
+    per = risk_per_share(t)
+    if per:
+        return per * (t.quantity or 0) * (t.multiplier or 1), ("auto stop" if getattr(t, "stop_auto", None) else "stop")
     if default_risk and default_risk > 0:
         return float(default_risk), "default"
     return None, None
+
+
+def risk_warnings(t) -> list[str]:
+    out = []
+    stop = getattr(t, "initial_stop", None)
+    if stop is not None and t.entry_price:
+        if not stop_side_ok(t):
+            out.append(f"Stop {stop:,.2f} is {'above' if t.direction == 'LONG' else 'below'} the entry "
+                       f"{t.entry_price:,.2f}: invalid for a {t.direction.lower()}, so it isn't used.")
+        else:
+            pct = abs(t.entry_price - stop) / t.entry_price * 100
+            if pct < 0.15:
+                out.append(f"Risk is tiny ({pct:.2f}% of the entry): R-multiples will look huge.")
+            elif pct > 20:
+                out.append(f"Risk is huge ({pct:.0f}% of the entry): check the stop.")
+    return out
 
 
 def r_multiple(t, default_risk: float | None = None) -> float | None:
@@ -124,16 +152,32 @@ def mae_efficiency(t) -> float | None:
     return t.net_pnl / abs(t.mae) * 100
 
 
-def trade_metrics(t, default_risk: float | None = None) -> dict:
-    """Per-trade stats for the trade page's stat bar."""
+def trade_metrics(t, default_risk: float | None = None, price: float | None = None) -> dict:
+    """Per-trade stats for the trade page's stat bar. ``price`` = latest price (open trades: current R)."""
     risk, src = risk_of(t, default_risk)
     stop, target = getattr(t, "initial_stop", None), getattr(t, "profit_target", None)
     planned_rr = None
     if stop and target and t.entry_price and abs(t.entry_price - stop) > 0:
         planned_rr = abs(target - t.entry_price) / abs(t.entry_price - stop)
     qty = (t.quantity or 0) * (t.multiplier or 1)
+    open_pnl = current_r = None
+    if t.status == "OPEN" and price is not None:
+        from app.stats import open_lots
+        lots = open_lots(t)
+        q = sum(x for x, _ in lots)
+        if q:
+            sign = 1 if t.direction == "LONG" else -1
+            open_pnl = sign * (price * q - sum(x * p for x, p in lots)) * (t.multiplier or 1)
+            if risk:
+                current_r = ((t.net_pnl or 0.0) + open_pnl) / risk
+    rps = risk_per_share(t)
     return {
         "risk": risk, "risk_source": src, "r_multiple": r_multiple(t, default_risk), "planned_rr": planned_rr,
+        "risk_per_share": rps, "open_pnl": open_pnl, "current_r": current_r, "price": price,
+        "r_now": current_r if t.status == "OPEN" else r_multiple(t, default_risk),
+        "mfe_r": (t.mfe / risk) if (risk and t.mfe is not None) else None,
+        "mae_r": (t.mae / risk) if (risk and t.mae is not None) else None,
+        "warnings": risk_warnings(t),
         "mfe_eff": mfe_efficiency(t), "mae_eff": mae_efficiency(t),
         "best_exit": t.mfe if t.mfe is not None else None,
         "left_on_table": (t.mfe - t.gross_pnl) if (t.mfe is not None and t.status == "CLOSED") else None,
@@ -143,6 +187,19 @@ def trade_metrics(t, default_risk: float | None = None) -> dict:
         "target_pnl": ((target - t.entry_price) * qty * (1 if t.direction == "LONG" else -1))
         if target and t.entry_price else None,
     }
+
+
+def r_levels(t, multiples) -> list[dict]:
+    """Price of each R multiple (entry + n x risk/share for longs, minus for shorts) and whether price got there
+    after entry, judged from MFE when known (best running P&L / risk reaches n R)."""
+    rps = risk_per_share(t)
+    if not rps:
+        return []
+    sign = 1 if t.direction == "LONG" else -1
+    out = []
+    for n in multiples:
+        out.append({"r": n, "price": round(t.entry_price + sign * n * rps, 4)})
+    return out
 
 
 # ----------------------------------------------------------------------------- summary
@@ -386,6 +443,7 @@ def breakdowns(trades, tz: str, default_risk: float | None = None) -> dict:
         "symbol": group(closed, lambda t: t.underlying, sort="net"),
         "setup": group(closed, lambda t: t.setup or "(no setup)", sort="net"),
         "tag": group(closed, lambda t: [x.name for x in t.tags] or ["(untagged)"], sort="net"),
+        "mistake": group(closed, lambda t: getattr(t, "mistakes", None) or ["(no mistake)"], sort="net"),
         "side": group(closed, lambda t: t.direction.title(), ["Long", "Short"]),
         "instrument": group(closed, lambda t: "Options" if t.asset_type == "OPTION" else "Stocks", ["Stocks", "Options"]),
         "call_put": group(closed, lambda t: (t.option_type or "?").title() + "s" if t.asset_type == "OPTION" else None,

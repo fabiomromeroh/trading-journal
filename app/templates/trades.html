@@ -39,6 +39,7 @@
   <select name="outcome" class="inp text-xs"><option value="">Wins & losses</option><option value="win" {{ 'selected' if q.get('outcome') == 'win' }}>Winners</option><option value="loss" {{ 'selected' if q.get('outcome') == 'loss' }}>Losers</option><option value="be" {{ 'selected' if q.get('outcome') == 'be' }}>Break-even</option></select>
   <select name="setup" class="inp text-xs"><option value="">Any setup</option>{% for s in setups %}<option {{ 'selected' if q.get('setup') == s }}>{{ s }}</option>{% endfor %}</select>
   <select name="tag" class="inp text-xs"><option value="">Any tag</option>{% for s in tags %}<option {{ 'selected' if q.get('tag') == s }}>{{ s }}</option>{% endfor %}</select>
+  <select name="mistake" class="inp text-xs" aria-label="Mistake"><option value="">Any mistake</option>{% for s in mistakes %}<option {{ 'selected' if q.get('mistake') == s }}>{{ s }}</option>{% endfor %}</select>
   <span class="flex items-center gap-1">
     <select name="sort" class="inp text-xs" aria-label="Sort by">{% for k, l in [('opened','Opened'),('closed','Closed'),('symbol','Symbol'),('pnl','Net P&L'),('return','Return'),('qty','Qty'),('fees','Fees'),('hold','Hold')] %}<option value="{{ k }}" {{ 'selected' if sort == k }}>Sort: {{ l }}</option>{% endfor %}</select>
     <select name="dir" class="inp text-xs" aria-label="Sort direction"><option value="desc" {{ 'selected' if desc }}>↓</option><option value="asc" {{ 'selected' if not desc }}>↑</option></select>
@@ -94,7 +95,7 @@
     <td class="text-right font-semibold {{ t.net_pnl|pnl_class }}">{{ t.net_pnl|money }}</td>
     <td class="text-right {{ t.return_pct|pnl_class }}">{{ (t.return_pct|num(1) ~ '%') if t.return_pct is not none else '—' }}</td>
     <td class="text-slate-400">{{ ((t.closed_at - t.opened_at)|td) if t.closed_at else '—' }}</td>
-    <td class="text-slate-400 max-w-[220px] truncate">{{ t.setup or '' }}{% for tg in t.tags %} <span class="pill bg-indigo-500/15 text-indigo-300">{{ tg.name }}</span>{% endfor %}</td>
+    <td class="text-slate-400 max-w-[220px] truncate">{{ t.setup or '' }}{% for tg in t.tags %} <span class="pill bg-indigo-500/15 text-indigo-300">{{ tg.name }}</span>{% endfor %}{% for m in t.mistakes %} <span class="pill bg-rose-500/15 text-rose-300" title="Mistake">{{ m }}</span>{% endfor %}</td>
     <td class="text-amber-300">{{ '★' * (t.rating or 0) }}</td>
   </tr>
   {% else %}

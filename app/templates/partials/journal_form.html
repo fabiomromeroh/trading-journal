@@ -1,25 +1,95 @@
-<form hx-post="/trades/{{ t.id }}/journal" hx-swap="outerHTML" class="space-y-3" x-data="{ rating: {{ t.rating or 0 }} }">
-  <div>
-    <label class="card-h">Setup</label>
-    <input name="setup" list="setup-list" value="{{ t.setup or '' }}" placeholder="e.g. Breakout, Episodic pivot" class="inp w-full mt-1">
-    <datalist id="setup-list">{% for s in setups %}<option value="{{ s }}">{% endfor %}</datalist>
+{# Journal panel. ctx: t, saved, opt{setup,tag,mistake}, opt_usage, questions, answers, grades, plan_choices #}
+{% macro combo(kind, label, multi, selected, ph) %}
+<div x-data='tjCombo({{ {"kind": kind, "label": label, "multi": multi, "options": opt[kind], "usage": opt_usage[kind], "selected": selected}|tojson|forceescape }})'
+     @tj-change="$dispatch('tj-save')" @click.outside="open = false; manage = false" @keydown.escape="open = false; manage = false" class="relative" data-combo="{{ kind }}">
+  <label class="card-h">{{ label }}</label>
+  <input type="hidden" name="{{ {'setup': 'setup', 'tag': 'tags', 'mistake': 'mistakes'}[kind] }}" :value="value">
+  <div class="mt-1 flex flex-wrap items-center gap-1 rounded-lg border border-slate-700 bg-[#0b1220] px-1.5 py-1 min-h-[38px] cursor-text" @click="open = true; $refs.q.focus()">
+    <template x-for="s in selected" :key="s">
+      <span class="inline-flex items-center gap-1 rounded-full bg-indigo-500/20 text-indigo-200 text-xs pl-2 pr-1 py-0.5">
+        <span x-text="s"></span><button type="button" class="text-indigo-300 hover:text-white leading-none px-1" @click.stop="drop(s)" :aria-label="'Remove ' + s">×</button>
+      </span>
+    </template>
+    <input x-ref="q" x-model="q" @focus="open = true" @keydown.enter="enter($event)" @keydown.backspace="if (!q && multi && selected.length) drop(selected[selected.length - 1])"
+           placeholder="{{ ph }}" autocomplete="off" aria-label="{{ label }}" class="flex-1 min-w-[6rem] bg-transparent outline-none text-sm text-slate-200 py-0.5">
+    <button type="button" class="text-slate-500 px-1" @click.stop="open = !open" aria-label="Show options">▾</button>
   </div>
-  <div>
-    <label class="card-h">Tags <span class="normal-case text-slate-500">(comma separated)</span></label>
-    <input name="tags" value="{{ t.tags|map(attribute='name')|join(', ') }}" placeholder="A+ setup, followed plan" class="inp w-full mt-1">
-    <div class="flex flex-wrap gap-1 mt-2">{% for n in all_tags %}<button type="button" class="pill bg-slate-800 text-slate-300 hover:bg-indigo-500/30"
-      @click="let i=$root.querySelector('[name=tags]'); let v=i.value.split(',').map(s=>s.trim()).filter(Boolean); if(!v.includes('{{ n }}')){v.push('{{ n }}')}; i.value=v.join(', ')">+ {{ n }}</button>{% endfor %}</div>
-  </div>
-  <div>
-    <label class="card-h">Rating</label>
-    <input type="hidden" name="rating" :value="rating || ''">
-    <div class="flex gap-1 mt-1 text-2xl">
-      <template x-for="i in 5"><button type="button" @click="rating = (rating === i ? 0 : i)" :class="i <= rating ? 'text-amber-300' : 'text-slate-600'">★</button></template>
+  <div x-show="open" x-cloak class="absolute left-0 right-0 z-40 mt-1 rounded-xl border border-slate-700 bg-[#0f1520] shadow-2xl text-sm">
+    <div class="max-h-56 overflow-auto py-1" x-show="!manage">
+      <template x-for="o in matches" :key="o">
+        <button type="button" class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-slate-800" @click="pick(o)">
+          <span class="w-4 text-emerald-400" x-text="has(o) ? '✓' : ''"></span><span x-text="o" class="flex-1"></span>
+        </button>
+      </template>
+      <button type="button" x-show="canAdd" class="w-full px-3 py-1.5 text-left text-indigo-300 hover:bg-slate-800" @click="add()">+ Add “<span x-text="q.trim()"></span>”</button>
+      <div x-show="!matches.length && !canAdd" class="px-3 py-2 text-xs text-slate-500">Type to add your first option.</div>
+    </div>
+    <div class="max-h-64 overflow-auto py-1" x-show="manage">
+      <div class="px-3 py-1 text-[11px] text-slate-500">Rename or remove. Removing only takes it off this list: trades that use it keep it.</div>
+      <template x-for="o in options" :key="o">
+        <div class="flex items-center gap-2 px-3 py-1">
+          <template x-if="editing !== o"><span class="flex-1 truncate" x-text="o"></span></template>
+          <template x-if="editing === o"><input x-model="draft" @keydown.enter.prevent="rename(o)" @blur="rename(o)" x-init="$nextTick(() => $el.focus())" class="inp flex-1 !py-0.5 text-xs"></template>
+          <span class="text-[10px] text-slate-500" x-text="usage[o] ? usage[o] + '×' : ''"></span>
+          <button type="button" class="text-xs text-slate-400 hover:text-white" @click="startEdit(o)" :aria-label="'Rename ' + o">✎</button>
+          <button type="button" class="text-xs text-rose-300 hover:text-rose-200" @click="removeOption(o)" :aria-label="'Remove ' + o">✕</button>
+        </div>
+      </template>
+    </div>
+    <div class="flex justify-between border-t border-slate-800 px-3 py-1.5 text-xs">
+      <button type="button" class="text-slate-400 hover:text-white" @click="manage = !manage; editing = null" x-text="manage ? '← Back' : 'Manage'"></button>
+      <button type="button" class="text-slate-400 hover:text-white" @click="open = false; manage = false">Close</button>
     </div>
   </div>
-  <div>
-    <label class="card-h">Notes</label>
-    <textarea name="notes" rows="7" class="inp w-full mt-1" placeholder="Why did you take it? What went well / badly?">{{ t.notes or '' }}</textarea>
+</div>
+{% endmacro %}
+<form id="journal-form" method="post" action="/trades/{{ t.id }}/journal" class="space-y-3" x-ref="form"
+      x-data='tjJournal({{ {"id": t.id, "rating": t.rating or 0, "saved": saved}|tojson|forceescape }})'
+      @tj-save="save()" @submit.prevent="save()">
+  {{ combo('setup', 'Setup', false, [t.setup] if t.setup else [], 'Pick or add…') }}
+  {{ combo('tag', 'Tags', true, t.tags|map(attribute='name')|list, 'Pick or add…') }}
+  {{ combo('mistake', 'Mistakes', true, t.mistakes, 'Add mistakes') }}
+  <div class="flex items-end gap-4">
+    <div>
+      <label class="card-h">Rating</label>
+      <input type="hidden" name="rating" :value="rating || ''">
+      <div class="flex gap-1 mt-1 text-2xl leading-none">
+        <template x-for="i in 5"><button type="button" @click="rating = (rating === i ? 0 : i); save()" :class="i <= rating ? 'text-amber-300' : 'text-slate-600'" :aria-label="i + ' stars'">★</button></template>
+      </div>
+    </div>
+    <div>
+      <label class="card-h" for="grade">Execution grade</label>
+      <select id="grade" name="grade" class="inp mt-1 block" @change="save()">
+        <option value="">—</option>{% for g in grades %}<option {{ 'selected' if t.exec_grade == g }}>{{ g }}</option>{% endfor %}
+      </select>
+    </div>
   </div>
-  <div class="flex items-center gap-3"><button class="btn btn-p">Save journal</button>{% if saved %}<span class="text-emerald-400 text-sm">Saved ✓</span>{% endif %}</div>
+  <div class="space-y-2.5 pt-1" data-testid="journal-questions">
+    {% for q in questions %}
+    <div>
+      <label class="card-h normal-case !tracking-normal !text-[12px] text-slate-300" for="ans_{{ q.id }}">{{ q.label }}</label>
+      {% if q.type == 'plan' %}
+      <div class="mt-1 flex flex-wrap gap-1" role="radiogroup" aria-label="{{ q.label }}" x-data="{ c: '{{ answers.get(q.id ~ '__choice', '') }}' }">
+        <input type="hidden" name="ans_{{ q.id }}__choice" :value="c">
+        {% for val, lab in plan_choices %}<button type="button" role="radio" :aria-checked="c === '{{ val }}'" @click="c = (c === '{{ val }}' ? '' : '{{ val }}'); $nextTick(() => save())"
+          :class="c === '{{ val }}' ? '{{ {'yes': 'bg-emerald-500/25 text-emerald-200 border-emerald-500/50', 'partly': 'bg-amber-500/25 text-amber-200 border-amber-500/50', 'no': 'bg-rose-500/25 text-rose-200 border-rose-500/50'}[val] }}' : 'border-slate-700 text-slate-400'"
+          class="px-3 py-1 rounded-lg border text-xs">{{ lab }}</button>{% endfor %}
+      </div>
+      {% endif %}
+      <textarea id="ans_{{ q.id }}" name="ans_{{ q.id }}" rows="{{ 2 if q.type == 'plan' else 3 }}" @blur="save()" @input="saved = false" class="inp w-full mt-1"
+        placeholder="{{ 'Why / why not…' if q.type == 'plan' else '' }}">{{ answers.get(q.id, '') }}</textarea>
+    </div>
+    {% endfor %}
+    <div>
+      <label class="card-h normal-case !tracking-normal !text-[12px] text-slate-300" for="notes">Other notes</label>
+      <textarea id="notes" name="notes" rows="4" @blur="save()" @input="saved = false" class="inp w-full mt-1" placeholder="Anything else">{{ t.notes or '' }}</textarea>
+    </div>
+  </div>
+  <div class="flex items-center gap-3 text-sm">
+    <button class="btn btn-p">Save journal</button>
+    <span x-show="saving" class="text-slate-400">Saving…</span>
+    <span x-show="saved && !saving" class="text-emerald-400" data-testid="journal-saved">Saved ✓</span>
+    <span x-show="error" x-cloak class="text-rose-300">Couldn't save: retry</span>
+    <a href="/settings#journal-settings" class="ml-auto text-xs text-slate-500 hover:text-white" title="Add, rename or remove the question boxes">Edit questions</a>
+  </div>
 </form>

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import timezone
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
@@ -8,8 +9,9 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app import stops
 from app.db import get_db
-from app.models import Tag, Trade, TradeFill
+from app.models import Tag, Trade, TradeFill, TradeMistake
 from app.prices import excursion_basis, excursion_note, get_chart, update_trade_excursions
 from app.routes.reports import trade_extras
 from app.web import apply_trade_filters, base_context, parse_filters, templates
@@ -24,7 +26,7 @@ SORTS = {
 
 
 LIST_KEYS = ("preset", "start", "end", "account", "symbol", "direction", "asset", "status", "outcome", "setup",
-             "tag", "sort", "dir", "realized_day")
+             "tag", "mistake", "sort", "dir", "realized_day")
 
 
 def realized_on_day(db: Session, f, day) -> dict:
@@ -95,6 +97,8 @@ def filtered_trades(request: Request, db: Session | None = None):
         stmt = stmt.where(Trade.setup == q["setup"])
     if q.get("tag"):
         stmt = stmt.where(Trade.tags.any(Tag.name == q["tag"]))
+    if q.get("mistake"):
+        stmt = stmt.where(Trade.mistake_rows.any(TradeMistake.name == q["mistake"]))
     sort = q.get("sort", "opened")
     sort = sort if sort in SORTS else "opened"
     desc = q.get("dir", "desc") != "asc"
@@ -120,15 +124,24 @@ def trades_list(request: Request, db: Session = Depends(get_db)):
     by_status = {st: (float(pnl or 0.0), int(n)) for st, pnl, n in agg}
     closed_pnl, n_closed = by_status.get("CLOSED", (0.0, 0))
     open_pnl, n_open = by_status.get("OPEN", (0.0, 0))
-    setups = [s for s in db.scalars(select(Trade.setup).where(Trade.setup.is_not(None)).distinct()) if s]
-    tags = list(db.scalars(select(Tag.name).order_by(Tag.name)))
+    setups, tags, mistakes = filter_options(db)
     params = {k: v for k, v in q.items() if k not in ("sort", "dir", "page")}
     return templates.TemplateResponse(request, "trades.html", base_context(
         request, db, nav="trades", f=f, trades=rows, total=total, page=page, pages=max(1, -(-total // PAGE)),
-        sort=sort, desc=desc, params=params, q=q, setups=sorted(setups), tags=tags, list_qs=list_qs,
+        sort=sort, desc=desc, params=params, q=q, setups=setups, tags=tags, mistakes=mistakes, list_qs=list_qs,
         filtered_pnl=closed_pnl, n_closed=n_closed, n_open=n_open, open_realized=open_pnl,
         realized_pnl=closed_pnl + open_pnl, day=day, day_rows=day_rows or {},
         day_total=sum(r["net"] for r in (day_rows or {}).values())))
+
+
+def filter_options(db: Session):
+    """(setups, tags, mistakes) for filter dropdowns: the option lists plus anything trades already carry."""
+    from app import options
+    setups = set(options.names(db, "setup")) | {x for x in db.scalars(select(Trade.setup).where(Trade.setup.is_not(None)).distinct()) if x}
+    tags = set(options.names(db, "tag")) | set(db.scalars(select(Tag.name)))
+    mistakes = set(options.names(db, "mistake")) | set(db.scalars(select(TradeMistake.name).distinct()))
+    key = lambda x: x.lower()  # noqa: E731
+    return sorted(setups, key=key), sorted(tags, key=key), sorted(mistakes, key=key)
 
 
 def _get_trade(db: Session, trade_id: int) -> Trade:
@@ -144,6 +157,7 @@ SIDEBAR_LIMIT = 1000
 @router.get("/trades/{trade_id}")
 def trade_detail(trade_id: int, request: Request, db: Session = Depends(get_db)):
     t = _get_trade(db, trade_id)
+    _auto_stop(db, t)
     stmt, f, q, sort, desc, list_qs = filtered_trades(request, db)
     cols = stmt.with_only_columns(Trade.id, Trade.symbol, Trade.opened_at, Trade.closed_at, Trade.direction,
                                   Trade.status, Trade.net_pnl, Trade.time_known, Trade.is_demo)
@@ -157,41 +171,120 @@ def trade_detail(trade_id: int, request: Request, db: Session = Depends(get_db))
     else:  # filters exclude this trade: chronological neighbours
         prev_id = db.scalar(select(Trade.id).where(Trade.opened_at > t.opened_at).order_by(Trade.opened_at.asc()))
         next_id = db.scalar(select(Trade.id).where(Trade.opened_at < t.opened_at).order_by(Trade.opened_at.desc()))
-    all_tags = list(db.scalars(select(Tag.name).order_by(Tag.name)))
-    setups = sorted(s for s in db.scalars(select(Trade.setup).where(Trade.setup.is_not(None)).distinct()) if s)
     filtered = any(k in q for k in LIST_KEYS if k not in ("sort", "dir"))
     return templates.TemplateResponse(request, "trade_detail.html", base_context(
-        request, db, nav="trades", t=t, prev_id=prev_id, next_id=next_id, all_tags=all_tags, setups=setups,
-        saved=False, fullscreen=True, mfe_note=excursion_note(excursion_basis(t)), nav_rows=nav_rows,
+        request, db, nav="trades", t=t, prev_id=prev_id, next_id=next_id,
+        saved=False, fullscreen=True, **journal_ctx(db, t), stop_rule=stops.get_rule(db), opened_ts=int(t.opened_at.replace(tzinfo=timezone.utc).timestamp()), mfe_note=excursion_note(excursion_basis(t)), nav_rows=nav_rows,
         list_qs=list_qs, in_list=in_list, list_filtered=filtered, list_truncated=len(nav_rows) >= SIDEBAR_LIMIT,
-        **trade_extras(db, t)))
+        **trade_extras(db, t, live_price(t))))
+
+
+def _auto_stop(db: Session, t: Trade) -> None:
+    """Default initial stop (low of the entry day) when the trade has none yet; never blocks the page."""
+    try:
+        if stops.apply_default(db, t) in ("set", "refreshed"):
+            db.commit()
+    except Exception:  # noqa: BLE001  price provider trouble must not break the trade page
+        db.rollback()
+
+
+def live_price(t: Trade) -> float | None:
+    """Latest price of an open stock trade (cached ~90 s) for Current R; None when unavailable."""
+    if t.status != "OPEN":
+        return None
+    from app import quotes
+    try:
+        q = quotes.get_quotes([t]).get(t.symbol) if quotes.enabled() else None
+    except Exception:  # noqa: BLE001
+        return None
+    return q.price if q else None
+
+
+def journal_ctx(db: Session, t: Trade) -> dict:
+    from app import options
+    from app.routes.journal import chart_r_config
+    return {"opt": {k: options.names(db, k) for k in options.KINDS},
+            "opt_usage": {k: options.usage(db, k) for k in options.KINDS},
+            "questions": options.get_questions(db), "answers": t.answers, "grades": options.GRADES,
+            "plan_choices": options.PLAN_CHOICES, "r_cfg": chart_r_config(db)}
+
+
+def _names(raw: str) -> list[str]:
+    out: list[str] = []
+    for n in (raw or "").split(","):
+        n = " ".join(n.split())[:60]
+        if n and n.lower() not in [x.lower() for x in out]:
+            out.append(n)
+    return out
 
 
 @router.post("/trades/{trade_id}/journal")
-def save_journal(trade_id: int, request: Request, notes: str = Form(""), setup: str = Form(""),
-                 rating: str = Form(""), tags: str = Form(""), db: Session = Depends(get_db)):
+async def save_journal(trade_id: int, request: Request, db: Session = Depends(get_db)):
+    """Save the journal panel. Only the fields that were posted change (autosave posts everything it shows)."""
+    from datetime import datetime as _dt
+    from app import options
     t = _get_trade(db, trade_id)
-    t.notes = notes.strip() or None
-    t.setup = setup.strip()[:80] or None
-    t.rating = int(rating) if rating.isdigit() and 1 <= int(rating) <= 5 else None
-    names = []
-    for n in tags.split(","):
-        n = n.strip()[:60]
-        if n and n.lower() not in [x.lower() for x in names]:
-            names.append(n)
-    tag_objs = []
-    for n in names:
-        tag = db.scalar(select(Tag).where(func.lower(Tag.name) == n.lower()))
-        if tag is None:
-            tag = Tag(name=n)
-            db.add(tag)
-        tag_objs.append(tag)
-    t.tags = tag_objs
+    form = await request.form()
+    has = lambda k: k in form  # noqa: E731
+    if has("notes"):
+        t.notes = str(form["notes"]).strip() or None
+    if has("setup"):
+        name = options.add(db, "setup", str(form["setup"])) if str(form["setup"]).strip() else None
+        t.setup = (name or "")[:80] or None
+    if has("rating"):
+        r = str(form["rating"])
+        t.rating = int(r) if r.isdigit() and 1 <= int(r) <= 5 else None
+    if has("grade"):
+        g = str(form["grade"]).strip().upper()
+        t.exec_grade = g if g in options.GRADES else None
+    if has("tags"):
+        tag_objs = []
+        for n in _names(str(form["tags"])):
+            n = options.add(db, "tag", n) or n
+            tag = db.scalar(select(Tag).where(func.lower(Tag.name) == n.lower()))
+            if tag is None:
+                tag = Tag(name=n)
+                db.add(tag)
+            tag_objs.append(tag)
+        t.tags = tag_objs
+    if has("mistakes"):
+        want = [options.add(db, "mistake", n) or n for n in _names(str(form["mistakes"]))]
+        have = {m.name: m for m in t.mistake_rows}
+        for n, m in list(have.items()):
+            if n not in want:
+                t.mistake_rows.remove(m)
+        for n in want:
+            if n not in have:
+                t.mistake_rows.append(TradeMistake(trade_id=t.id, name=n))
+    answers = t.answers
+    qids = {q["id"]: q for q in options.get_questions(db)}
+    touched = False
+    for key in form.keys():
+        if key.startswith("ans_"):
+            qid = key[4:]
+            val = str(form[key]).strip()
+            answers[qid] = val
+            if not val:
+                answers.pop(qid, None)
+            touched = True
+    if touched:
+        t.journal = json.dumps(answers) if answers else None
+    _ = qids
     db.commit()
+    if request.headers.get("x-autosave"):
+        return JSONResponse({"ok": True, "at": _dt.now(timezone.utc).isoformat()})
     return templates.TemplateResponse(request, "partials/journal_form.html", {
-        "request": request, "t": t, "saved": True,
-        "all_tags": list(db.scalars(select(Tag.name).order_by(Tag.name))),
-        "setups": sorted(s for s in db.scalars(select(Trade.setup).where(Trade.setup.is_not(None)).distinct()) if s)})
+        "request": request, "t": t, "saved": True, **journal_ctx(db, t)})
+
+
+@router.get("/trades/{trade_id}/r.json")
+def trade_r(trade_id: int, db: Session = Depends(get_db)):
+    """Current R of an open trade at the latest quote (polled by the stat bar)."""
+    from app.metrics import trade_metrics
+    from app.routes.reports import default_risk
+    t = _get_trade(db, trade_id)
+    m = trade_metrics(t, default_risk(db), live_price(t))
+    return {"current_r": m["current_r"], "price": m["price"], "open_pnl": m["open_pnl"], "r_multiple": m["r_multiple"]}
 
 
 @router.get("/trades/{trade_id}/chart.json")
@@ -202,6 +295,10 @@ def trade_chart(trade_id: int, tf: str | None = None, db: Session = Depends(get_
     exc = update_trade_excursions(db, t)
     db.commit()
     data["mfe"], data["mae"] = t.mfe, t.mae
+    from app.metrics import trade_metrics
+    from app.routes.reports import default_risk
+    m = trade_metrics(t, default_risk(db))
+    data["mfe_r"], data["mae_r"] = m["mfe_r"], m["mae_r"]
     data["excursion"] = {**exc, "note": excursion_note(exc)}
     return JSONResponse(json.loads(json.dumps(data, default=str)))
 

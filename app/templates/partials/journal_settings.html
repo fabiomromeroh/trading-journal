@@ -1,0 +1,41 @@
+<div id="journal-settings" class="card p-5 mb-4">
+  <div class="card-h mb-1">Journal, stops &amp; R levels</div>
+  <p class="text-sm text-slate-400 mb-4">Defaults for the trade page. A stop you type on a trade always wins.</p>
+  <form method="post" action="/settings/journal/save" class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+    <div>
+      <label class="text-sm text-slate-300" for="stop_rule">Default stop rule</label>
+      <select id="stop_rule" name="stop_rule" class="inp w-full mt-1">
+        {% for k, v in journal_cfg.rules.items() %}<option value="{{ k }}" {{ 'selected' if journal_cfg.stop_rule == k }}>{{ v }}</option>{% endfor %}
+      </select>
+      <p class="text-[11px] text-slate-500 mt-1">Stocks only: the stop is the day's low (shorts: high) of the New York entry date, from the daily bar, marked “auto”. Risk $ = (avg entry − stop) × max position size. Options have no default stop.</p>
+    </div>
+    <div>
+      <label class="text-sm text-slate-300" for="r_levels">Chart R targets</label>
+      <input id="r_levels" name="r_levels" class="inp w-full mt-1" value="{{ journal_cfg.r.levels|join(', ') }}" placeholder="3, 8, 10">
+      <input type="hidden" name="r_form" value="1">
+      <label class="flex items-center gap-2 text-sm text-slate-300 mt-2"><input type="checkbox" name="r_show" {{ 'checked' if journal_cfg.r.show }}> Show stop and R lines on the chart</label>
+    </div>
+    <div class="md:col-span-2 flex flex-wrap gap-2"><button class="btn btn-p text-xs">Save</button></div>
+  </form>
+  <form method="post" action="/settings/journal/backfill-stops" class="mb-5 flex flex-wrap items-center gap-3">
+    <button class="btn btn-s text-xs" {{ 'disabled' if journal_cfg.stop_rule == 'manual' }}>Apply default stop to all trades without one</button>
+    <span class="text-xs text-slate-500">Fetches the entry-day bar per stock trade (cached). Manual stops and Risk $ are never touched. Also runs once automatically after this update.</span>
+  </form>
+  <div x-data='tjQuestions({{ {"rows": journal_cfg.questions}|tojson|forceescape }})' data-testid="question-editor">
+    <div class="card-h mb-1">Note questions</div>
+    <p class="text-xs text-slate-500 mb-2">The boxes on each trade's Journal panel. Renaming keeps old answers; removing hides the box (answers stay stored). “Plan” shows Yes / Partly / No plus a note.</p>
+    <div class="space-y-1.5">
+      <template x-for="(q, i) in rows" :key="i">
+        <div class="flex flex-wrap items-center gap-2">
+          <input x-model="q.label" class="inp flex-1 min-w-[12rem]" aria-label="Question" placeholder="Question">
+          <select x-model="q.type" class="inp text-xs" aria-label="Type"><option value="text">Text box</option><option value="plan">Yes / Partly / No + note</option></select>
+          <button type="button" class="btn btn-s !px-2 text-xs" @click="up(i)" aria-label="Move up">↑</button>
+          <button type="button" class="btn btn-d !px-2 text-xs" @click="del(i)" aria-label="Remove question">✕</button>
+        </div>
+      </template>
+    </div>
+    <div class="mt-3 flex items-center gap-2"><button type="button" class="btn btn-s text-xs" @click="add()">+ Add question</button>
+      <button type="button" class="btn btn-p text-xs" @click="save()">Save questions</button><span x-show="saved" x-cloak class="text-emerald-400 text-sm">Saved ✓</span></div>
+  </div>
+</div>
+<script src="/static/journal.js?v=2"></script>

@@ -191,6 +191,62 @@
     const lab = m.querySelector('input[data-fo=labels]');
     lab.addEventListener('change', () => { fillOpts.labels = lab.checked; saveFills(); if (fillsPrim) fillsPrim.setFills(data.markers); });
   }
+  // ------------------------------------------------------------------ stop + R levels
+  // Stop = red solid line. R targets = entry +/- n x (entry - stop) as dashed green lines labelled "3R 215.30";
+  // a level the price reached after entry (from the entry bar on, bar precision) is brighter, thicker, with a check.
+  // The autoscale includes the stop, every reached level and the next one still to go (so 10R can't squash the candles).
+  const rCfg = { show: C.showR !== false, levels: (C.rLevels || [3, 8, 10]).slice() };
+  const fmtP = (v) => Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  function rPlan() {
+    if (!C.isStock || !C.stop || !C.entry || !data || !data.candles) return null;
+    const sign = C.direction === 'SHORT' ? -1 : 1, rps = Math.abs(C.entry - C.stop);
+    if (!rps || (sign > 0 ? C.stop >= C.entry : C.stop <= C.entry)) return null;
+    const k = data.candles; let i0 = 0;
+    for (let i = 0; i < k.length; i++) { if (k[i].time <= C.opened) i0 = i; else break; }
+    const levels = rCfg.levels.map((n) => {
+      const price = C.entry + sign * n * rps;
+      const reached = k.slice(i0).some((b) => (sign > 0 ? b.high >= price : b.low <= price));
+      return { n, price, reached };
+    });
+    return { sign, rps, levels, stop: C.stop };
+  }
+  function drawR(series) {
+    const p = rPlan(); if (!p || !rCfg.show) return;
+    series.createPriceLine({ price: p.stop, color: '#ef4444', lineWidth: 2, lineStyle: 0,
+      title: 'stop ' + fmtP(p.stop) + (C.stopAuto ? ' (auto)' : '') });
+    for (const l of p.levels) {
+      series.createPriceLine({ price: l.price, color: l.reached ? '#34d399' : 'rgba(52,211,153,.6)', lineWidth: l.reached ? 2 : 1, lineStyle: 2,
+        title: (l.reached ? '✓ ' : '') + l.n + 'R ' + fmtP(l.price) });
+    }
+  }
+  function rAutoscale(orig) {
+    const r = orig(); const p = rPlan(); if (!r || !p || !rCfg.show) return r;
+    const lv = [p.stop]; let nextAdded = false;
+    for (const l of p.levels.slice().sort((a, b) => a.n - b.n)) { if (l.reached) lv.push(l.price); else if (!nextAdded) { lv.push(l.price); nextAdded = true; } }
+    r.priceRange = { minValue: Math.min(r.priceRange.minValue, ...lv), maxValue: Math.max(r.priceRange.maxValue, ...lv) };
+    return r;
+  }
+  function renderRMenu() {
+    const m = $('r-menu'); if (!m) return;
+    const p = rPlan();
+    m.innerHTML = `<div class="card-h mb-1">Stop &amp; R levels</div>
+      <label class="flex items-center gap-2"><input type="checkbox" id="r-show" ${rCfg.show ? 'checked' : ''}> Show stop and R targets</label>
+      <label class="block mt-3">Targets (R multiples, comma separated)
+        <input id="r-levels" class="inp w-full mt-1" value="${rCfg.levels.join(', ')}" inputmode="decimal" placeholder="3, 8, 10"></label>
+      <div class="mt-2 flex gap-2"><button type="button" id="r-save" class="btn btn-p text-xs">Save</button><button type="button" id="r-123" class="btn btn-s text-xs" title="1R, 2R, 3R, 8R, 10R">+1R 2R</button></div>
+      <p class="text-[11px] text-slate-500 mt-2">${p ? `1R = ${fmtP(p.rps)} per share (entry ${fmtP(C.entry)} to stop ${fmtP(C.stop)}). ✓ = price got there after entry.` :
+        'No valid stop for this trade yet (options have none; set a stop or Risk $ in the Journal panel).'} Saved on the server for phone and desktop.</p>`;
+    const apply = async (levels) => {
+      const raw = levels.split(',').map((s) => parseFloat(s)).filter((x) => x > 0 && x <= 100);
+      rCfg.show = $('r-show').checked; rCfg.levels = [...new Set(raw)].sort((a, b) => a - b).slice(0, 8);
+      if (!rCfg.levels.length) rCfg.levels = [3, 8, 10];
+      try { await fetch('/chart/r-levels', { method: 'POST', body: JSON.stringify(rCfg) }); } catch (e) { /* offline: keep local */ }
+      if (data && data.candles) build(); renderRMenu();
+    };
+    $('r-save').addEventListener('click', () => apply($('r-levels').value));
+    $('r-123').addEventListener('click', () => apply('1, 2, ' + rCfg.levels.filter((x) => x > 2).join(', ')));
+    $('r-show').addEventListener('change', () => apply($('r-levels').value));
+  }
   function fillsAt(t) { return (data && data.markers || []).filter((m) => m.time === t); }
 
   // ------------------------------------------------------------------ chart build
@@ -214,12 +270,13 @@
       localization: { locale: 'en-US', timeFormatter: crossFmt },
     });
     candleSeries = chart.addSeries(L.CandlestickSeries, { upColor: UP, downColor: DOWN, borderVisible: false,
-      wickUpColor: UP, wickDownColor: DOWN, priceLineVisible: false });
+      wickUpColor: UP, wickDownColor: DOWN, priceLineVisible: false, autoscaleInfoProvider: rAutoscale });
     candleSeries.setData(k.map(({ time, open, high, low, close }) => ({ time, open, high, low, close })));
     if (C.isStock) {
       candleSeries.createPriceLine({ price: C.entry, color: '#818cf8', lineWidth: 1, lineStyle: 2, title: 'avg entry' });
       if (C.exit) candleSeries.createPriceLine({ price: C.exit, color: '#f59e0b', lineWidth: 1, lineStyle: 2, title: 'avg exit' });
     }
+    drawR(candleSeries);
     fillsPrim = new FillsPrimitive();
     candleSeries.attachPrimitive(fillsPrim);
     fillsPrim.setFills(data.markers || []);
@@ -461,6 +518,9 @@
       const f = (v) => (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
       $('mfe').textContent = f(data.mfe) + ' / ' + f(data.mae);
     }
+    if ($('mferid') && data.mfe_r !== null && data.mfe_r !== undefined && data.mae_r !== null && data.mae_r !== undefined) {
+      $('mferid').textContent = data.mfe_r.toFixed(1) + 'R / ' + data.mae_r.toFixed(1) + 'R';
+    }
     if (data.excursion && data.excursion.note && $('mfe')) $('mfe').parentElement.title = data.excursion.note;
   }
 
@@ -470,6 +530,28 @@
     fbtn.addEventListener('click', (e) => { e.stopPropagation(); if (fmenu.classList.toggle('hidden') === false) renderFillsMenu(); });
     document.addEventListener('click', (e) => { if (e.target.isConnected && !fmenu.contains(e.target) && e.target !== fbtn) fmenu.classList.add('hidden'); });
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape') fmenu.classList.add('hidden'); });
+  }
+
+  // R levels menu
+  const rbtn = $('r-btn'), rmenu = $('r-menu');
+  if (rbtn) {
+    rbtn.addEventListener('click', (e) => { e.stopPropagation(); if (rmenu.classList.toggle('hidden') === false) renderRMenu(); });
+    document.addEventListener('click', (e) => { if (e.target.isConnected && !rmenu.contains(e.target) && e.target !== rbtn) rmenu.classList.add('hidden'); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') rmenu.classList.add('hidden'); });
+  }
+  // open trade: keep Current R live (latest quote every minute, only while the tab is visible)
+  if (C.open && $('rnow')) {
+    const tick = async () => {
+      if (document.hidden) return;
+      try {
+        const j = await (await fetch(`/trades/${C.tradeId}/r.json`)).json();
+        if (j.current_r !== null && j.current_r !== undefined) {
+          $('rnow').textContent = (j.current_r >= 0 ? '+' : '') + j.current_r.toFixed(2) + 'R';
+          $('rnow').className = 'text-sm font-semibold truncate ' + (j.current_r > 0 ? 'text-emerald-400' : j.current_r < 0 ? 'text-rose-400' : 'text-white');
+        }
+      } catch (e) { /* keep last value */ }
+    };
+    setInterval(tick, 60000);
   }
 
   // menu open/close
@@ -482,5 +564,5 @@
   load(localStorage.getItem(LS_TF) || null);
   window.TJ_CHART_API = { load, get data() { return data; }, get indicators() { return inds; },
     get fills() { return { ...fillOpts }; }, setFills(o) { fillOpts = { ...fillOpts, ...o }; saveFills(); if (fillsPrim) fillsPrim.setFills(data.markers); },
-    get chart() { return chart; }, fitTrade, showLatest };
+    get chart() { return chart; }, get rPlan() { return rPlan(); }, get rCfg() { return rCfg; }, fitTrade, showLatest };
 })();

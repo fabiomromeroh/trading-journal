@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from app import metrics, widgets
 from app.config import get_settings
 from app.db import get_db
-from app.models import Tag, Trade
+from app.models import Tag, Trade, TradeMistake
 from app.services import get_state, set_state
 from app.web import apply_trade_filters, base_context, parse_filters, templates
 
@@ -22,7 +22,7 @@ TABS = [("overview", "Overview"), ("timing", "Days & times"), ("price", "Price &
         ("instrument", "Instrument & symbol"), ("tags", "Setups & tags"), ("winloss", "Win/loss & expectancy"),
         ("drawdown", "Drawdown"), ("excursion", "MFE / MAE")]
 # Query parameters shared with the Trades page filters.
-EXTRA_PARAMS = ("symbol", "direction", "status", "asset", "outcome", "setup", "tag")
+EXTRA_PARAMS = ("symbol", "direction", "status", "asset", "outcome", "setup", "tag", "mistake")
 
 
 def default_risk(db: Session) -> float | None:
@@ -54,6 +54,8 @@ def apply_extra_filters(stmt, q):
         stmt = stmt.where(Trade.setup == q["setup"])
     if q.get("tag"):
         stmt = stmt.where(Trade.tags.any(Tag.name == q["tag"]))
+    if q.get("mistake"):
+        stmt = stmt.where(Trade.mistake_rows.any(TradeMistake.name == q["mistake"]))
     return stmt
 
 
@@ -116,11 +118,11 @@ def reports(request: Request, db: Session = Depends(get_db)):
     evs, _, _ = realized_scope(db, f, lambda st: apply_extra_filters(st, request.query_params))
     data = report_data(trades, tz, risk, events=evs)
     q = request.query_params
-    setups = sorted(s for s in db.scalars(select(Trade.setup).where(Trade.setup.is_not(None)).distinct()) if s)
-    tags = list(db.scalars(select(Tag.name).order_by(Tag.name)))
+    from app.routes.trades import filter_options
+    setups, tags, mistakes = filter_options(db)
     params = {k: v for k, v in q.items() if k != "tab" and v}
     return templates.TemplateResponse(request, "reports.html", base_context(
-        request, db, nav="reports", f=f, q=q, tab=tab, tabs=TABS, params=params, setups=setups, tags=tags,
+        request, db, nav="reports", f=f, q=q, tab=tab, tabs=TABS, params=params, setups=setups, tags=tags, mistakes=mistakes,
         default_risk=risk, flash=request.session.pop("flash", None), **data))
 
 
@@ -153,15 +155,28 @@ def _num(v: str):
 
 @router.post("/trades/{trade_id}/risk")
 def save_trade_risk(trade_id: int, request: Request, initial_stop: str = Form(""), risk_amount: str = Form(""),
-                    profit_target: str = Form(""), db: Session = Depends(get_db)):
+                    profit_target: str = Form(""), reset_auto: str = Form(""), db: Session = Depends(get_db)):
+    """Manual stop / Risk $ / target. A typed stop always wins over the default-stop rule (clears the auto flag);
+    "Use default stop" (reset_auto) or clearing the stop re-applies the rule."""
+    from app import stops
     t = db.get(Trade, trade_id)
     if t is None:
         raise HTTPException(404, "Trade not found")
-    t.initial_stop, t.risk_amount, t.profit_target = _num(initial_stop), _num(risk_amount), _num(profit_target)
+    new_stop = _num(initial_stop)
+    if reset_auto or new_stop is None:
+        t.initial_stop, t.stop_auto = None, None
+    elif new_stop != t.initial_stop or not t.stop_auto:
+        t.initial_stop, t.stop_auto = new_stop, None
+    t.risk_amount, t.profit_target = _num(risk_amount), _num(profit_target)
+    if t.initial_stop is None:
+        stops._MISS.pop(t.key, None)
+        stops.apply_default(db, t)
     db.commit()
     risk = default_risk(db)
+    from app.routes.trades import live_price
     return templates.TemplateResponse(request, "partials/risk_form.html", {
-        "request": request, "t": t, "tm": metrics.trade_metrics(t, risk), "default_risk": risk, "saved": True})
+        "request": request, "t": t, "tm": metrics.trade_metrics(t, risk, live_price(t)), "default_risk": risk,
+        "saved": True, "stop_rule": stops.get_rule(db)})
 
 
 # ------------------------------------------------------------------------- widget layouts
@@ -202,10 +217,12 @@ def dashboard_extras(db: Session, trades, tz: str, events=None, cumulative=None)
     xcharts = {"cumgross": cumulative or rz.cumulative(rz.daily(evs, tz)), "drawdown": metrics.drawdown(closed, tz)["series"],
                "month": _series(b["month"]), "price": _series(b["entry_price"]), "size": _series(b["size"]),
                "pnldist": _series(b["pnl_dist"])}
-    return {"m": metrics.summarize(trades, tz, risk, events=evs), "xcharts": xcharts, "L": widgets.layout_ctx(db, "dashboard")}
+    from app import coach
+    return {"m": metrics.summarize(trades, tz, risk, events=evs), "xcharts": xcharts, "L": widgets.layout_ctx(db, "dashboard"),
+            "coach": coach.insights(trades, tz, risk)}
 
 
-def trade_extras(db: Session, t: Trade) -> dict:
+def trade_extras(db: Session, t: Trade, price: float | None = None) -> dict:
     """Per-trade stats + the stat-bar layout for the trade page."""
     risk = default_risk(db)
-    return {"tm": metrics.trade_metrics(t, risk), "TL": widgets.layout_ctx(db, "trade"), "default_risk": risk}
+    return {"tm": metrics.trade_metrics(t, risk, price), "TL": widgets.layout_ctx(db, "trade"), "default_risk": risk}

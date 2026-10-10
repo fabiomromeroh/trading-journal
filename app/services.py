@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.instruments import ExecRecord
 from app.matching import Item, Match, day_from_match_key, match
-from app.models import Account, Execution, Trade, TradeFill, utcnow
+from app.models import Account, Execution, Trade, TradeFill, TradeMistake, utcnow
 from app.timeutil import ET, et_date, local_to_utc_naive
 from app.trade_builder import BuilderExec, build_trades
 
@@ -565,11 +565,11 @@ def rebuild_trades(db: Session, account_ids: list[int] | None = None) -> int:
     return total
 
 
-JOURNAL_FIELDS = ("notes", "setup", "rating", "initial_stop", "risk_amount", "profit_target")
+JOURNAL_FIELDS = ("notes", "setup", "rating", "initial_stop", "risk_amount", "profit_target", "stop_auto", "exec_grade", "journal")
 
 
 def _has_journal(tr: Trade) -> bool:
-    return any(getattr(tr, f) for f in JOURNAL_FIELDS) or bool(tr.tags)
+    return any(getattr(tr, f) for f in JOURNAL_FIELDS) or bool(tr.tags) or bool(tr.mistake_rows)
 
 
 def _journal_exec_sets(db: Session, trades) -> dict[int, set[int]]:
@@ -605,6 +605,10 @@ def _carry_journal(old: Trade, old_execs: set[int], candidates: list[tuple[Trade
     for tag in old.tags:
         if tag not in best.tags:
             best.tags.append(tag)
+    have = {m.name for m in best.mistake_rows}
+    for m in list(old.mistake_rows):
+        if m.name not in have:
+            best.mistake_rows.append(TradeMistake(trade_id=best.id, name=m.name))
 
 
 def prune_unused_tags(db: Session) -> None:

@@ -14,7 +14,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import get_settings
 from app import db as dbmod, keepawake, passwords
-from app.routes import auth, backup as backup_routes, dashboard, email_sync, imports, pwa, reports, security, settings as settings_routes, trades
+from app.routes import auth, backup as backup_routes, dashboard, journal as journal_routes, ai_review as ai_review_routes, email_sync, imports, pwa, reports, security, settings as settings_routes, trades
 
 logging.basicConfig(level=logging.INFO)
 PUBLIC_PREFIXES = ("/login", "/healthz", "/static", "/api/ingest/", "/api/backup/")  # /api/ingest, /api/backup: token auth
@@ -54,6 +54,9 @@ async def lifespan(app: FastAPI):
     if ka.enabled and ka.url:
         task = asyncio.create_task(ka.run())
         logging.getLogger(__name__).info("keep-awake: %d min after each visit, ping every %d s", ka.minutes, ka.interval)
+    import threading
+    from app import stops
+    threading.Thread(target=stops.startup_backfill, name="stops-backfill", daemon=True).start()
     yield
     if task:
         task.cancel()
@@ -69,7 +72,7 @@ def create_app() -> FastAPI:
     app.add_middleware(SessionMiddleware, secret_key=s.secret_key, session_cookie="tj_session",
                        max_age=60 * 60 * 24 * 14, same_site="lax", https_only=s.cookie_secure)
     app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
-    for r in (auth.router, dashboard.router, trades.router, imports.router, settings_routes.router, email_sync.router, reports.router, security.router, pwa.router, backup_routes.router):
+    for r in (auth.router, dashboard.router, trades.router, imports.router, settings_routes.router, email_sync.router, reports.router, security.router, pwa.router, backup_routes.router, journal_routes.router, ai_review_routes.router):
         app.include_router(r)
 
     @app.get("/healthz")

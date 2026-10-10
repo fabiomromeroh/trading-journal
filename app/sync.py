@@ -134,6 +134,12 @@ def execute_run(run_id: int, sources=None, send_reminders: bool = False) -> Sync
                     run.message = ((run.message or "") + "\nReminders: " + "; ".join(sent)).strip()
             except Exception as exc:  # pragma: no cover
                 log.warning("reminder failed: %s", exc)
+        try:  # new trades get the default stop (low of the entry day); price trouble never fails a sync
+            from app import stops
+            stops.backfill(db, limit=40)
+        except Exception as exc:  # pragma: no cover
+            db.rollback()
+            log.warning("default-stop backfill failed: %s", exc)
         run.finished_at = utcnow()
         db.commit()
         return run

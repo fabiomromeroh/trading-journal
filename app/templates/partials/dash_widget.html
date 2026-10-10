@@ -131,6 +131,8 @@
 {% elif wid == 'tbl_asset' %}{{ btable('Stocks vs options', st.by_asset) }}
 {% elif wid == 'tbl_setup' %}{{ btable('By setup', st.by_setup) }}
 {% elif wid == 'tbl_tag' %}{{ btable('By tag', st.by_tag) }}
+{% elif wid == 'tbl_mistake' %}{{ btable('By mistake', st.by_mistake) }}
+{% elif wid == 'coach' %}{% include 'partials/coach.html' %}
 {% elif wid == 'calendar' %}
 <div class="card p-4" id="pnl-calendar">
   <div class="flex flex-wrap items-center gap-2 mb-3">
