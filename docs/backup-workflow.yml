@@ -1,0 +1,86 @@
+name: backup
+
+# Daily encrypted backup of the Trading Journal. Private repo; nothing here is readable without the passphrase.
+on:
+  schedule:
+    - cron: "17 3 * * *"        # 03:17 UTC every day (04:17 Irish summer time)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      BACKUP_URL: ${{ vars.BACKUP_URL }}
+      BACKUP_TOKEN: ${{ secrets.BACKUP_TOKEN }}
+      BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+      KEEP_DAILY: "30"
+      KEEP_MONTHLY: "12"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download the export (the free service may be asleep: first answer can take ~1 minute)
+        run: |
+          set -uo pipefail
+          for i in $(seq 1 10); do
+            code=$(curl -sS --max-time 240 -D headers.txt -o export.json.gz \
+                   -H "Authorization: Bearer ${BACKUP_TOKEN}" -w '%{http_code}' "${BACKUP_URL}") || code=000
+            echo "attempt $i: HTTP $code"
+            case "$code" in
+              200) break ;;
+              401) echo "::error::backup token rejected (regenerated or revoked in Settings? update the BACKUP_TOKEN secret)"; exit 1 ;;
+              429) wait=$(grep -i '^retry-after:' headers.txt | tr -dc '0-9'); sleep "$(( ${wait:-60} + 5 ))" ;;
+              *)   sleep 30 ;;
+            esac
+            [ "$i" = 10 ] && { echo "::error::no successful export after 10 attempts"; exit 1; }
+          done
+          want=$(grep -i '^x-backup-sha256:' headers.txt | tr -d '\r' | awk '{print $2}')
+          got=$(sha256sum export.json.gz | cut -d' ' -f1)
+          [ -n "$want" ] && [ "$want" = "$got" ] || { echo "::error::checksum mismatch"; exit 1; }
+          echo "$got" > export.sha256
+
+      - name: Validate
+        run: |
+          gzip -t export.json.gz
+          python3 - <<'PY'
+          import gzip, json
+          d = json.load(gzip.open("export.json.gz"))
+          t = d["tables"]
+          trades, execs = len(t["trades"]), len(t["executions"])
+          print(f"trades={trades} executions={execs} fills={len(t['trade_fills'])} exported_at={d['exported_at']}")
+          assert trades > 0 and execs > 0, "export looks empty: refusing to store it"
+          open("meta.txt", "w").write(f"{d['exported_at']} trades={trades} executions={execs}\n")
+          PY
+
+      - name: Encrypt and store (30 daily + 12 monthly)
+        run: |
+          set -euo pipefail
+          day=$(date -u +%F); month=$(date -u +%Y-%m)
+          mkdir -p backups/daily backups/monthly
+          printf '%s' "$BACKUP_PASSPHRASE" | gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 \
+            --symmetric --cipher-algo AES256 --s2k-mode 3 --s2k-digest-algo SHA512 --s2k-count 65011712 \
+            -o "backups/daily/$day.json.gz.gpg" export.json.gz
+          # first backup of each month is kept as the monthly copy
+          [ -e "backups/monthly/$month.json.gz.gpg" ] || cp "backups/daily/$day.json.gz.gpg" "backups/monthly/$month.json.gz.gpg"
+          ls -1 backups/daily/*.gpg | sort | head -n -"$KEEP_DAILY" | xargs -r rm -f --
+          ls -1 backups/monthly/*.gpg | sort | head -n -"$KEEP_MONTHLY" | xargs -r rm -f --
+          { echo "last backup: $(cat meta.txt)"; echo "stored: $(date -u +%FT%TZ)"; echo "files: daily=$(ls backups/daily | wc -l) monthly=$(ls backups/monthly | wc -l)"; } > STATUS.txt
+          git config user.name "journal-backup"; git config user.email "journal-backup@users.noreply.github.com"
+          git add -A backups STATUS.txt
+          git commit -m "backup $day: $(cat meta.txt)"
+          git push
+
+      - name: Tell the journal the backup is stored (shows in Settings)
+        run: |
+          code=$(curl -sS --max-time 120 -o /dev/null -w '%{http_code}' -X POST \
+                 -H "Authorization: Bearer ${BACKUP_TOKEN}" -H 'Content-Type: application/json' \
+                 -d "{\"sha256\":\"$(cat export.sha256)\"}" "${BACKUP_URL%/export}/confirm")
+          echo "confirm: HTTP $code"
+          [ "$code" = 200 ] || echo "::warning::could not confirm to the journal (backup itself is stored)"

@@ -23,7 +23,7 @@ from typing import Awaitable, Callable
 
 log = logging.getLogger(__name__)
 FALLBACK_URL = "https://trading-journal-fra.onrender.com"
-IGNORED_PREFIXES = ("/static", "/healthz", "/api/ingest/", "/robots.txt", "/favicon", "/apple-touch-icon",
+IGNORED_PREFIXES = ("/static", "/healthz", "/api/ingest/", "/api/backup/", "/robots.txt", "/favicon", "/apple-touch-icon",
                     "/manifest.webmanifest", "/sw.js", "/offline")
 
 

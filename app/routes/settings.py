@@ -72,9 +72,10 @@ def _settings_ctx(request, db, **kw):
     s = get_settings()
     from app.routes.email_sync import settings_ctx as _tos_email_ctx
     from app.routes.security import security_ctx as _security_ctx
+    from app.routes.backup import settings_ctx as _backup_ctx
     return base_context(request, db, nav="settings", sources=sources, runs=runs, acct_rows=acct_rows,
                         active_run=running_sync(db), s=s, snaptrade=_snaptrade_ctx(db), **_alias_ctx(db),
-                        tos_email=_tos_email_ctx(request, db), **_security_ctx(db), keepawake=keepawake_ctx(), **kw)
+                        tos_email=_tos_email_ctx(request, db), **_security_ctx(db), keepawake=keepawake_ctx(), backups=_backup_ctx(request, db), **kw)
 
 
 @router.get("/settings")
@@ -87,25 +88,11 @@ def settings_page(request: Request, db: Session = Depends(get_db)):
 @router.get("/settings/backup.json")
 def backup(db: Session = Depends(get_db)):
     """Full JSON export of every table (journal, fills, trades, imports, settings). Secrets such as
-    stored OAuth tokens are left out."""
+    stored OAuth tokens and password hashes are left out."""
     import json
     from fastapi.responses import Response
-    from app.db import Base
-    out: dict = {"exported_at": utcnow().isoformat(), "tables": {}}
-    for table in Base.metadata.sorted_tables:
-        if table.name == OAuthToken.__tablename__:
-            out["tables"][table.name] = {"omitted": "credentials", "rows": db.scalar(
-                select(func.count()).select_from(table))}
-            continue
-        rows = [dict(r._mapping) for r in db.execute(table.select())]
-        if table.name == "app_state":  # password hashes / pending codes stay out of backups
-            rows = [r for r in rows if not str(r.get("key", "")).startswith("auth:")]
-        for r in rows:
-            for k in list(r):
-                if "token" in k.lower() or "secret" in k.lower():
-                    r[k] = None
-        out["tables"][table.name] = rows
-    body = json.dumps(out, default=str)
+    from app import backup as backup_mod
+    body = json.dumps(backup_mod.build(db), default=str)
     fname = f"trading-journal-backup-{utcnow():%Y%m%d-%H%M%S}.json"
     return Response(body, media_type="application/json",
                     headers={"Content-Disposition": f'attachment; filename="{fname}"'})

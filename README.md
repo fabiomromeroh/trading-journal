@@ -84,6 +84,36 @@ uvicorn app.main:app --reload   # http://127.0.0.1:8000
 pytest -q                       # tests
 ```
 
+## Backups and restore
+Neon's free plan only keeps about 6 hours of restore history, so the journal is backed up daily outside Neon.
+- **How:** a GitHub Actions workflow in the **private** repo `fabiomromeroh/trading-journal-backups` (source: `docs/backup-workflow.yml`)
+  runs daily at 03:17 UTC. It calls `GET /api/backup/export` with a dedicated **backup token** (Settings > Backups; stored only
+  as a SHA-256 hash, read-only export, rate limited to one export per 10 minutes, 5 failed tries per 15 minutes per IP).
+  The call wakes the sleeping free service (about a minute) and is **not a keep-awake visit**. The export is encrypted with
+  `gpg` (AES-256) and committed to the private repo: `backups/daily/YYYY-MM-DD.json.gz.gpg` (last 30) and
+  `backups/monthly/YYYY-MM.json.gz.gpg` (last 12). Afterwards it calls `POST /api/backup/confirm` so Settings shows the result.
+- **Setup of the repo** (once): variable `BACKUP_URL` = `https://<service>.onrender.com/api/backup/export`; secrets `BACKUP_TOKEN`
+  (shown once when you press *Create backup token*) and `BACKUP_PASSPHRASE` = hex SHA-256 of `journal-backup-v1:` + your
+  `TOKEN_ENCRYPTION_KEY` (`python -c "from app.backup import passphrase_from_key as p; print(p('<key>'))"`).
+  Because the passphrase derives from the key you already keep in Render, nothing extra can get lost.
+- **What is in a backup:** every table (trades, fills, journal notes/tags/ratings, imports, settings such as widget layouts,
+  break-even range, the encrypted ingest token). **Not** in it: broker OAuth credentials, price cache, password hashes and
+  pending login codes. After a restore the login password is `APP_PASSWORD` again (or use "forgot password"), and Schwab (if used)
+  must be reconnected; SnapTrade is unaffected.
+- **Restore** (any machine with Python and `gpg` that can reach the database; Neon: use the *direct* host, `sslmode=require`):
+  ```bash
+  git clone https://github.com/fabiomromeroh/trading-journal && cd trading-journal && pip install -r requirements.txt
+  gh repo clone fabiomromeroh/trading-journal-backups /tmp/tjb      # or download one file from GitHub
+  export TOKEN_ENCRYPTION_KEY='<the key from Render>'
+  python -m scripts.restore_backup /tmp/tjb/backups/daily/2026-10-11.json.gz.gpg \
+      --key-env TOKEN_ENCRYPTION_KEY --database-url 'postgresql://USER:PASS@HOST/neondb?sslmode=require' --dry-run   # check first
+  python -m scripts.restore_backup <same file and options without --dry-run>
+  ```
+  The script runs `alembic upgrade head`, then loads everything in one transaction. It **refuses a database that already has
+  data** unless you add `--force` (which wipes it first). Plain `.json` / `.json.gz` files (Settings > Download backup) restore the same way.
+  Then point the Render service's `DATABASE_URL` at that database and redeploy.
+- Reminder: a Neon *branch restore* (Neon console > Restore) also works for the last 6 hours and is the fastest fix for a recent mistake.
+
 ## Deploy on Render
 `render.yaml` defines a free Python web service in Frankfurt. The database is a free Neon Postgres project (AWS Frankfurt), not a Render database.
 - Start command: `alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT ...`

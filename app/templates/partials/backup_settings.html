@@ -1,0 +1,37 @@
+{# Scheduled backups card. ctx: backups (has_token, created, last, url, token_once) #}
+{% set b = backups %}
+<div class="card p-5 mb-4" id="backups">
+  <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
+    <div class="card-h">Backups</div>
+    <div class="flex gap-2">
+      <form method="post" action="/settings/backup/token"
+            {% if b.has_token %}onsubmit="return confirm('Create a new backup token? The scheduled job stops working until its GitHub secret BACKUP_TOKEN is updated.')"{% endif %}>
+        <button class="btn {{ 'btn-s' if b.has_token else 'btn-p' }} text-xs">{{ 'Regenerate backup token' if b.has_token else 'Create backup token' }}</button>
+      </form>
+      {% if b.has_token %}<form method="post" action="/settings/backup/revoke" onsubmit="return confirm('Revoke the backup token?')"><button class="btn btn-d text-xs">Revoke</button></form>{% endif %}
+    </div>
+  </div>
+  <p class="text-sm text-slate-400 mb-3">The free Neon database only keeps about 6 hours of restore history, so a scheduled job (GitHub Actions in your private
+    <code>trading-journal-backups</code> repo, daily) downloads a full export, encrypts it and stores it: last 30 daily and 12 monthly copies.
+    It never counts as a visit, so it doesn't keep the app awake. Exports leave out broker credentials and password hashes.</p>
+  <div class="text-sm mb-3" data-testid="backup-status">
+    {% if b.last %}
+      <span class="h-2 w-2 inline-block rounded-full {{ 'bg-emerald-400' if b.last.result == 'stored' else 'bg-amber-400' }} mr-1"></span>
+      Last export <span class="text-slate-200">{{ b.last.exported_at_dt|irish_time }}</span>
+      · {{ '%.0f'|format(b.last.size / 1024) }} KB · {{ b.last.rows }} rows · {{ b.last.counts.get('trades', 0) }} trades
+      ·
+      {% if b.last.result == 'stored' %}<span class="text-emerald-300">stored {{ b.last.confirmed_at_dt|irish_time }}</span>
+      {% else %}<span class="text-amber-300">exported but not confirmed as stored</span>{% endif %}
+    {% else %}
+      <span class="h-2 w-2 inline-block rounded-full bg-slate-600 mr-1"></span>No scheduled backup has run yet.
+    {% endif %}
+  </div>
+  {% if b.token_once %}
+  <div class="card border-emerald-500/40 bg-emerald-500/10 p-3 mb-3 text-sm" data-testid="backup-token-once">
+    New backup token (shown once; only its hash is stored). Save it as the GitHub secret <code>BACKUP_TOKEN</code> in the backups repo:
+    <div class="mt-1"><code class="break-all select-all">{{ b.token_once }}</code></div>
+  </div>
+  {% endif %}
+  <div class="text-xs text-slate-500">Endpoint: <code>{{ b.url }}</code> · {% if b.has_token %}token set{% if b.created %} ({{ b.created[:10] }}){% endif %}{% else %}no token yet{% endif %}
+    · manual copy: <a class="underline" href="/settings/backup.json">download JSON</a></div>
+</div>
