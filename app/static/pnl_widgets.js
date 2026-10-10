@@ -7,7 +7,7 @@
   const parse = s => { const [y, m, d] = s.split('-').map(Number); return new Date(Date.UTC(y, m - 1, d)); };
   const addDays = (dt, n) => new Date(dt.getTime() + n * 86400000);
   const money = (v, dec) => { const a = Math.abs(v); const d = dec ?? (a < 10 ? 2 : 0);
-    return (v < 0 ? '-$' : '$') + a.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d }); };
+    return (v < 0 ? '-' : '') + (window.CUR || '$') + a.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d }); };
   const sgn = v => (v > 0 ? '+' : '') + money(v);
   const cls = v => v > 0 ? 'text-emerald-400' : v < 0 ? 'text-rose-400' : 'text-slate-400';
   // outcome of a day's net vs the break-even range [lo, hi] (Settings): 1 win, -1 loss, 0 BE

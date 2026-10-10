@@ -8,10 +8,7 @@
   <input type="date" name="start" value="{{ f.start or '' }}" class="inp text-xs">
   <span class="text-slate-500 text-xs">to</span>
   <input type="date" name="end" value="{{ f.end or '' }}" class="inp text-xs">
-  <select name="account" class="inp text-xs">
-    <option value="">All accounts</option>
-    {% for a in accounts %}<option value="{{ a.id }}" {{ 'selected' if f.account_id == a.id }}>{{ a.name }}</option>{% endfor %}
-  </select>
+  {% if f.account_id %}<input type="hidden" name="account" value="{{ f.account_id }}">{% endif %}
   {% block extra_fields %}{% endblock %}
   <button class="btn btn-s text-xs nojs-only">Apply</button>
 </form>

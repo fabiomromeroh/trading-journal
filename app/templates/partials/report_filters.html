@@ -10,10 +10,7 @@
   {% if f.preset != 'custom' %}<input type="hidden" name="preset" value="{{ f.preset }}">{% endif %}
   <input type="date" name="start" value="{{ f.start if f.preset == 'custom' and f.start else '' }}" class="inp text-xs" aria-label="From">
   <input type="date" name="end" value="{{ f.end if f.preset == 'custom' and f.end else '' }}" class="inp text-xs" aria-label="To">
-  <select name="account" class="inp text-xs" aria-label="Account">
-    <option value="">All accounts</option>
-    {% for a in accounts %}<option value="{{ a.id }}" {{ 'selected' if f.account_id == a.id }}>{{ a.name }}</option>{% endfor %}
-  </select>
+  {% if f.account_id %}<input type="hidden" name="account" value="{{ f.account_id }}">{% endif %}
   <input name="symbol" value="{{ q.get('symbol', '') }}" placeholder="Symbol" class="inp text-xs w-24" autocomplete="off">
   <select name="direction" class="inp text-xs" aria-label="Side">
     <option value="">Long & short</option>

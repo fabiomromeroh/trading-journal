@@ -516,7 +516,7 @@
     build();
     renderChips();
     if (data.mfe !== null && data.mfe !== undefined && $('mfe')) {
-      const f = (v) => (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      const f = (v) => (v < 0 ? '-' : '') + (window.CUR || '$') + Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
       $('mfe').textContent = f(data.mfe) + ' / ' + f(data.mae);
     }
     if ($('mferid') && data.mfe_r !== null && data.mfe_r !== undefined && data.mae_r !== null && data.mae_r !== undefined) {
@@ -547,7 +547,7 @@
       try {
         const j = await (await fetch(`/trades/${C.tradeId}/r.json`)).json();
         if ($('unrl') && j.open_pnl !== null && j.open_pnl !== undefined) {
-          const u = j.open_pnl, money = (v) => (v < 0 ? '-' : '+') + '$' + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+          const u = j.open_pnl, money = (v) => (v < 0 ? '-' : '+') + (window.CUR || '$') + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
           $('unrl').textContent = money(u) + ' · ' + (j.open_pnl_pct === null || j.open_pnl_pct === undefined ? '—' : (j.open_pnl_pct >= 0 ? '+' : '') + j.open_pnl_pct.toFixed(1) + '%');
           $('unrl').className = 'text-sm font-semibold truncate ' + (u > 0 ? 'text-emerald-400' : u < 0 ? 'text-rose-400' : 'text-white');
         }

@@ -25,7 +25,8 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
     f = parse_filters(request)
     tz = get_settings().display_tz
     stmt = apply_trade_filters(select(Trade), f)
-    trades = list(db.scalars(stmt))
+    from app import currency
+    trades = currency.view(db, list(db.scalars(stmt)))
     open_count = sum(1 for t in trades if t.status == "OPEN")
     from app import realized as rz
     evs, all_evs, _ = realized_scope(db, f)
@@ -68,13 +69,16 @@ def _anchor(db: Session, f, trades, st):
     and the account check (value - net deposits vs journal realized + unrealized, unfiltered view only).
     Open positions are "now": the date filter is ignored, the account filter applies."""
     from dataclasses import replace
+    from datetime import datetime
     from app.models import Account
     from app.sources.snaptrade import portfolio_summary
     from app.stats import open_lots
     from app.symbols import canonical_symbol, load_aliases
     from app import quotes as qmod
-    open_trades = list(db.scalars(apply_trade_filters(select(Trade).where(Trade.status == "OPEN"),
-                                                      replace(f, start=None, end=None))))
+    from app import currency
+    open_trades = currency.view(db, list(db.scalars(apply_trade_filters(select(Trade).where(Trade.status == "OPEN"),
+                                                                        replace(f, start=None, end=None)))))
+    usd_fx = currency.RateBook(db).rate("USD", currency.get_display(db), datetime.now().date()) or 1.0
     accts = [a.id for a in db.scalars(select(Account).where(Account.is_demo.is_(False)))
              if not f.account_id or a.id == f.account_id]
     port = portfolio_summary(db, accts) if accts else None
@@ -94,9 +98,12 @@ def _anchor(db: Session, f, trades, st):
         sp = snap.get(t.symbol)
         seen.add(t.symbol)
         q = live.get(t.symbol)
+        fx = getattr(t, "fx_rate", 1.0)  # native price -> display currency (1.0 when already in it)
+        if sp and sp.get("price"):
+            sp = {**sp, "price": sp["price"] * fx, "cost_basis": (sp.get("cost_basis") or 0) * fx or sp.get("cost_basis")}
         if q:
             sess = {"pre": " (pre-market)", "post": " (after-hours)", "closed": " (last close)"}.get(q.session, "")
-            px, at, src = q.price, q.at, "Yahoo" + sess
+            px, at, src = q.price * fx, q.at, "Yahoo" + sess
         elif sp and sp.get("price"):
             px, at, src = sp["price"], snap_as_of, "SnapTrade (last sync)"
         else:
@@ -139,10 +146,11 @@ def _anchor(db: Session, f, trades, st):
            "snap_as_of": snap_as_of, "account_check": False, "open_count": len(open_trades)}
     if port and not (f.start or f.end):
         journal_snap = st.realized + total_snap  # same prices as the account value -> apples to apples
-        out.update({"value": port["value"], "cash": port["cash"], "net_deposits": port["net_deposits"],
-                    "total_pnl": port["total_pnl"], "as_of": port["as_of"], "account_check": True,
-                    "journal_total": st.realized + total, "diff": journal_snap - port["total_pnl"],
-                    "securities_transfers": port["securities_transfers"]})
+        out.update({"value": port["value"] * usd_fx, "cash": (port["cash"] or 0) * usd_fx,
+                    "net_deposits": (port["net_deposits"] or 0) * usd_fx,
+                    "total_pnl": (port["total_pnl"] or 0) * usd_fx, "as_of": port["as_of"], "account_check": True,
+                    "journal_total": st.realized + total, "diff": journal_snap - (port["total_pnl"] or 0) * usd_fx,
+                    "securities_transfers": (port["securities_transfers"] or 0) * usd_fx})
     return out
 
 

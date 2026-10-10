@@ -26,8 +26,8 @@ TOKEN_HASH_STATE = "backup:token_sha256"
 TOKEN_CREATED_STATE = "backup:token_created_at"
 LAST_STATE = "backup:last"           # json: exported_at, size, sha256, rows, tables, confirmed_at, result
 OMIT_TABLES = {"oauth_tokens": "credentials"}
-CACHE_TABLES = {"price_cache"}       # re-fetchable market data: left out of scheduled exports
-EXCLUDED_STATE_PREFIXES = ("auth:", "backup:")
+CACHE_TABLES = {"price_cache", "fx_rates"}       # re-fetchable market data: left out of scheduled exports
+EXCLUDED_STATE_PREFIXES = ("auth:", "backup:", "cred:")  # cred:* = broker API keys (encrypted), re-enter after a restore
 MIN_INTERVAL = 600                   # seconds between successful exports (rate limit)
 _last_export_at = 0.0
 

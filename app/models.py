@@ -25,6 +25,38 @@ class Account(Base):
     external_ref: Mapped[str | None] = mapped_column(String(200))  # e.g. Schwab hashValue
     is_demo: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    # Multi-broker: defaults mean "a US/USD Schwab-style account", i.e. exactly the pre-multi-broker behaviour.
+    currency: Mapped[str] = mapped_column(String(3), default="USD", server_default="USD")
+    timezone: Mapped[str] = mapped_column(String(40), default="America/New_York", server_default="America/New_York")
+    market: Mapped[str] = mapped_column(String(8), default="US", server_default="US")
+    kind: Mapped[str | None] = mapped_column(String(16))        # invest | isa | margin | cash
+    source_key: Mapped[str | None] = mapped_column(String(30))  # adapter that owns it: t212 | ibkr_flex | ...
+
+
+class Instrument(Base):
+    """Broker instrument -> market symbol mapping (ISIN, exchange, Yahoo price symbol, pence scaling)."""
+    __tablename__ = "instruments"
+    __table_args__ = (UniqueConstraint("source_key", "broker_symbol", name="uq_instrument_broker"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_key: Mapped[str] = mapped_column(String(30))
+    broker_symbol: Mapped[str] = mapped_column(String(64))      # e.g. Trading 212 "VUSAl_EQ"
+    isin: Mapped[str | None] = mapped_column(String(12), index=True)
+    symbol: Mapped[str] = mapped_column(String(32))             # display ticker, e.g. "VUSA"
+    name: Mapped[str | None] = mapped_column(String(120))
+    exchange: Mapped[str | None] = mapped_column(String(12))    # US | LSE | XETRA | AMS | PAR | ...
+    currency: Mapped[str | None] = mapped_column(String(3))     # trading currency of the instrument
+    asset_type: Mapped[str] = mapped_column(String(16), default="STOCK")
+    price_symbol: Mapped[str | None] = mapped_column(String(32))  # Yahoo symbol, e.g. "VUSA.L"
+    price_scale: Mapped[float] = mapped_column(Float, default=1.0)  # 0.01 when the price feed quotes pence (GBX)
+    user_override: Mapped[bool] = mapped_column(Boolean, default=False)  # symbol/price_symbol typed by the user
+
+
+class FxRate(Base):
+    """Daily ECB reference rate cache: 1 EUR = rate x quote (Frankfurter API). Weekends use the previous business day."""
+    __tablename__ = "fx_rates"
+    day: Mapped[date] = mapped_column(Date, primary_key=True)
+    quote: Mapped[str] = mapped_column(String(3), primary_key=True)
+    rate: Mapped[float] = mapped_column(Float)
 
 
 class ImportBatch(Base):
@@ -76,6 +108,10 @@ class Execution(Base):
     fees: Mapped[float] = mapped_column(Float, default=0.0)
     executed_at: Mapped[datetime] = mapped_column(DateTime)  # naive UTC
     time_known: Mapped[bool] = mapped_column(Boolean, default=True)
+    currency: Mapped[str | None] = mapped_column(String(3))      # instrument currency (None = the account's)
+    fx_to_account: Mapped[float | None] = mapped_column(Float)   # instrument ccy -> account ccy at the fill (None = 1)
+    instrument_id: Mapped[int | None] = mapped_column(ForeignKey("instruments.id", ondelete="SET NULL"))
+    settle_date: Mapped[date | None] = mapped_column(Date)
     seq: Mapped[int] = mapped_column(Integer, default=0)
     position_effect: Mapped[str | None] = mapped_column(String(8))  # OPEN | CLOSE
     kind: Mapped[str] = mapped_column(String(16), default="TRADE")  # TRADE|EXPIRATION|ASSIGNMENT|EXERCISE
@@ -127,6 +163,8 @@ class Trade(Base):
     return_pct: Mapped[float | None] = mapped_column(Float)
     close_reason: Mapped[str | None] = mapped_column(String(16))  # TRADE|EXPIRATION|ASSIGNMENT|EXERCISE
     is_demo: Mapped[bool] = mapped_column(Boolean, default=False)
+    currency: Mapped[str | None] = mapped_column(String(3))      # instrument currency (None = the account's)
+    instrument_id: Mapped[int | None] = mapped_column(ForeignKey("instruments.id", ondelete="SET NULL"))
     # Journal fields (preserved across rebuilds)
     notes: Mapped[str | None] = mapped_column(Text)
     setup: Mapped[str | None] = mapped_column(String(80))

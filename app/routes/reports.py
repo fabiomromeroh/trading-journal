@@ -62,7 +62,8 @@ def apply_extra_filters(stmt, q):
 def filtered_trades(request: Request, db: Session):
     f = parse_filters(request)
     stmt = apply_extra_filters(apply_trade_filters(select(Trade), f), request.query_params)
-    return f, list(db.scalars(stmt))
+    from app import currency
+    return f, currency.view(db, list(db.scalars(stmt)))
 
 
 def _series(rows, key="net"):

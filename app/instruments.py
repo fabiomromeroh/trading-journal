@@ -55,6 +55,11 @@ class ExecRecord:
     description: str | None = None
     raw: dict | None = field(default=None, repr=False)
     trade_date: date | None = None  # exchange-local (ET) trade date, used for cross-source matching
+    # multi-broker (all optional; None keeps the pre-multi-broker behaviour byte-for-byte)
+    currency: str | None = None        # instrument currency, when it differs from the account's
+    fx_to_account: float | None = None  # instrument ccy -> account ccy at the fill
+    settle_date: date | None = None
+    instrument_id: int | None = None
 
     def match_key(self) -> str:
         """Key used to recognise the same fill coming from different sources/files."""

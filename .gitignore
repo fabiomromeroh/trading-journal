@@ -12,3 +12,5 @@ backups/
 # real-data screenshots from the live site
 screenshots/live-*.png
 screenshots/v3-*.png
+screenshots/v4-*.png
+screenshots/v5-*.png

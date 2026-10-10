@@ -75,21 +75,28 @@
   </div>
 </div>
 
-<div class="card p-5 mb-4 overflow-x-auto">
+{% include "partials/brokers_settings.html" %}
+
+<div class="card p-5 mb-4 overflow-x-auto" id="accounts">
   <div class="card-h mb-3">Accounts</div>
   <table class="w-full text-sm tbl">
-    <thead><tr><th>Name</th><th>Broker</th><th>Account</th><th class="text-right">Fills</th><th class="text-right">Trades</th><th>Unmatched closes</th><th></th></tr></thead>
+    <thead><tr><th>Name</th><th>Broker</th><th>Account</th><th title="Account currency, time zone and home market. Existing Schwab accounts are USD / New York / US.">Currency · time zone · market</th><th class="text-right">Fills</th><th class="text-right">Trades</th><th>Unmatched closes</th><th></th></tr></thead>
     <tbody>
     {% for row in acct_rows %}{% set a = row.a %}
     <tr>
       <td><form method="post" action="/settings/accounts/{{ a.id }}" class="flex gap-2"><input name="name" value="{{ a.name }}" class="inp text-xs w-56"><button class="text-xs text-indigo-300">Rename</button></form></td>
       <td class="text-slate-400">{{ a.broker }}{% if a.is_demo %} <span class="pill bg-amber-500/20 text-amber-300">sample</span>{% endif %}</td>
       <td class="text-slate-400">{{ a.account_number_masked or '—' }}</td>
+      <td><form method="post" action="/settings/accounts/{{ a.id }}/meta" class="flex flex-wrap gap-1 items-center">
+        <select name="currency" class="inp text-xs">{% for c in ['USD','EUR','GBP'] %}<option {{ 'selected' if a.currency == c }}>{{ c }}</option>{% endfor %}</select>
+        <input name="timezone" value="{{ a.timezone }}" class="inp text-xs w-36" aria-label="Time zone">
+        <select name="market" class="inp text-xs">{% for m in ['US','UK','DE','EU'] %}<option {{ 'selected' if a.market == m }}>{{ m }}</option>{% endfor %}</select>
+        <button class="text-xs text-indigo-300">Save</button></form></td>
       <td class="text-right">{{ row.executions }}</td><td class="text-right">{{ row.trades }}</td>
       <td class="text-slate-400 text-xs whitespace-normal max-w-[320px]">{% if row.orphans %}<span class="text-amber-300">{{ row.orphans|length }}</span> fills closed positions opened before your imported history{% for o in row.orphans[:4] %} · {{ o.symbol }} {{ o.quantity|qty }}{% endfor %}{% if row.orphans|length > 4 %} …{% endif %}. Import older history to match them.{% else %}—{% endif %}</td>
       <td>{% if not a.is_demo %}<form method="post" action="/settings/accounts/{{ a.id }}/delete" class="flex gap-1" onsubmit="return confirm('Delete this account and ALL its fills and trades?')"><input name="confirm" class="inp text-xs w-28" placeholder="type name"><button class="text-xs text-rose-300">Delete</button></form>{% endif %}</td>
     </tr>
-    {% else %}<tr><td colspan="7" class="text-slate-500">No accounts yet — they're created on first import.</td></tr>{% endfor %}
+    {% else %}<tr><td colspan="8" class="text-slate-500">No accounts yet — they're created on first import.</td></tr>{% endfor %}
     </tbody>
   </table>
 </div>

@@ -80,7 +80,8 @@ def _settings_ctx(request, db, **kw):
     from app.routes.email_sync import settings_ctx as _tos_email_ctx
     from app.routes.security import security_ctx as _security_ctx
     from app.routes.backup import settings_ctx as _backup_ctx
-    return base_context(request, db, nav="settings", sources=sources, runs=runs, acct_rows=acct_rows,
+    from app import brokers
+    return base_context(request, db, nav="settings", broker_cards=brokers.cards(db), sources=sources, runs=runs, acct_rows=acct_rows,
                         active_run=running_sync(db), s=s, snaptrade=_snaptrade_ctx(db), **_alias_ctx(db),
                         tos_email=_tos_email_ctx(request, db), **_security_ctx(db), keepawake=keepawake_ctx(), backups=_backup_ctx(request, db), journal_cfg=_journal_ctx(db), **kw)
 
@@ -247,6 +248,28 @@ def rename_account(account_id: int, request: Request, name: str = Form(...), db:
         a.name = name.strip()[:120]
         db.commit()
     return RedirectResponse("/settings", status_code=303)
+
+
+@router.post("/settings/accounts/{account_id}/meta")
+def account_meta(account_id: int, request: Request, currency: str = Form("USD"), timezone: str = Form(""),
+                 market: str = Form("US"), db: Session = Depends(get_db)):
+    """Account currency / time zone / market (defaults USD, America/New_York, US = the original Schwab behaviour)."""
+    from zoneinfo import ZoneInfo
+    a = db.get(Account, account_id)
+    if a is None:
+        return RedirectResponse("/settings", status_code=303)
+    tz = timezone.strip() or a.timezone
+    try:
+        ZoneInfo(tz)
+    except Exception:  # noqa: BLE001
+        request.session["flash"] = f"Unknown time zone “{tz}” (use e.g. Europe/Dublin)."
+        return RedirectResponse("/settings#accounts", status_code=303)
+    if currency.upper() in ("USD", "EUR", "GBP"):
+        a.currency = currency.upper()
+    a.timezone, a.market = tz, market.upper()[:8]
+    db.commit()
+    request.session["flash"] = f"{a.name}: {a.currency}, {a.timezone}, market {a.market}. Existing trades keep their stored currency."
+    return RedirectResponse("/settings#accounts", status_code=303)
 
 
 @router.post("/settings/accounts/{account_id}/delete")

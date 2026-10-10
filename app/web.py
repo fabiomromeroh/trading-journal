@@ -7,6 +7,7 @@ from pathlib import Path
 
 from fastapi import Request
 from fastapi.templating import Jinja2Templates
+from jinja2 import pass_context
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
@@ -18,15 +19,21 @@ from app.timeutil import local_to_utc_naive, utc_naive_to_tz
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
 
-def money(v, signed: bool = False, decimals: int = 2) -> str:
+def _fmt_money(v, signed: bool = False, decimals: int = 2, sym: str = "$") -> str:
     if v is None:
         return "—"
     if v == float("inf"):
         return "∞"
     s = f"{abs(v):,.{decimals}f}"
     if v < 0:
-        return f"-${s}"
-    return f"+${s}" if signed and v > 0 else f"${s}"
+        return f"-{sym}{s}"
+    return f"+{sym}{s}" if signed and v > 0 else f"{sym}{s}"
+
+
+@pass_context
+def money(ctx, v, signed: bool = False, decimals: int = 2, sym: str | None = None) -> str:
+    """Amount with the page's currency symbol (``display_symbol`` in the template context, '$' by default)."""
+    return _fmt_money(v, signed, decimals, sym or ctx.get("display_symbol") or "$")
 
 
 def num(v, decimals: int = 2) -> str:
@@ -90,14 +97,17 @@ class Filters:
         return urlencode({k: v for k, v in d.items() if v not in ("", None)})
 
 
+ACCOUNT_COOKIE = "acct"
 PRESETS = [("7d", "7D"), ("30d", "30D"), ("90d", "90D"), ("ytd", "YTD"), ("1y", "1Y"), ("all", "All")]
 
 
 def parse_filters(request: Request) -> Filters:
     q = request.query_params
     f = Filters(preset=q.get("preset", "all"))
+    # the header switcher keeps the chosen account in a cookie; an explicit ?account= (links, bookmarks) wins
+    raw = q["account"] if "account" in q else request.cookies.get(ACCOUNT_COOKIE, "")
     try:
-        f.account_id = int(q["account"]) if q.get("account") else None
+        f.account_id = int(raw) if raw else None
     except ValueError:
         f.account_id = None
     today = datetime.now().date()
@@ -131,7 +141,8 @@ def realized_scope(db: Session, f: Filters, extra=None):
     stmt = apply_trade_filters(select(Trade), replace(f, start=None, end=None))
     if extra:
         stmt = extra(stmt)
-    trades = list(db.scalars(stmt))
+    from app import currency
+    trades = currency.view(db, list(db.scalars(stmt)))  # display-currency view (no-op for same-currency data)
     evs = rz.events(trades)
     return rz.clip(evs, get_settings().display_tz, f.start, f.end), evs, trades
 
@@ -177,7 +188,20 @@ def base_context(request: Request, db: Session, **kw) -> dict:
                                 "" if st.expires_in_seconds <= 0 else
                                 f" Login expires in {fmt_td(timedelta(seconds=st.expires_in_seconds))}."),
                             "link": "/settings", "link_text": "Reconnect"})
-    ctx = {"request": request, "accounts": accounts, "has_demo": has_demo, "banners": banners,
+    from app import currency
+    display = currency.get_display(db)
+    fx_problem = currency.problem(db, display)
+    if fx_problem:
+        banners.append({"level": "warning", "text": fx_problem, "link": "/settings#brokers", "link_text": "Details"})
+    cur_f = parse_filters(request)
+    fx_note = None
+    if currency.needs_conversion(db, display):
+        fx_note = (f"Amounts are shown in {display}. Each closed trade is converted at the ECB reference rate of its close date, "
+                   f"open positions at the latest rate (ECB via Frankfurter; weekends use Friday's rate). "
+                   f"R multiples and percentages are unaffected.")
+    ctx = {"display_currency": display, "display_symbol": currency.symbol(display), "active_account": cur_f.account_id, "fx_note": fx_note,
+           "currency_choices": currency.CHOICES,
+           "request": request, "accounts": accounts, "has_demo": has_demo, "banners": banners,
            "nav": kw.pop("nav", ""), "presets": PRESETS, "provisional_trades": provisional_trade_ids(db)}
     ctx.update(kw)
     return ctx

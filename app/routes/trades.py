@@ -37,7 +37,8 @@ def realized_on_day(db: Session, f, day) -> dict:
     from app import realized as rz
     from app.config import get_settings
     tz = get_settings().display_tz
-    trades = list(db.scalars(apply_trade_filters(select(Trade), replace(f, start=None, end=None))))
+    from app import currency
+    trades = currency.view(db, list(db.scalars(apply_trade_filters(select(Trade), replace(f, start=None, end=None)))))
     per: dict[int, dict] = {}
     for e in rz.clip(rz.events(trades), tz, day, day):
         if not e.is_close and abs(e.fees) < 0.004:
@@ -117,11 +118,19 @@ def trades_list(request: Request, db: Session = Depends(get_db)):
         page = max(1, int(q.get("page", 1) or 1))
     except ValueError:
         page = 1
+    from app import currency
     rows = list(db.scalars(stmt.offset((page - 1) * PAGE).limit(PAGE)))
-    sub = stmt.order_by(None).subquery()
-    agg = db.execute(select(sub.c.status, func.coalesce(func.sum(sub.c.net_pnl), 0.0), func.count(sub.c.id))
-                     .group_by(sub.c.status)).all()
-    by_status = {st: (float(pnl or 0.0), int(n)) for st, pnl, n in agg}
+    if currency.needs_conversion(db):  # mixed currencies: convert each trade, then total in Python
+        rows = currency.view(db, rows)
+        by_status: dict[str, tuple[float, int]] = {}
+        for t in currency.view(db, list(db.scalars(stmt.order_by(None)))):
+            p_, n_ = by_status.get(t.status, (0.0, 0))
+            by_status[t.status] = (p_ + (t.net_pnl or 0.0), n_ + 1)
+    else:
+        sub = stmt.order_by(None).subquery()
+        agg = db.execute(select(sub.c.status, func.coalesce(func.sum(sub.c.net_pnl), 0.0), func.count(sub.c.id))
+                         .group_by(sub.c.status)).all()
+        by_status = {st: (float(pnl or 0.0), int(n)) for st, pnl, n in agg}
     closed_pnl, n_closed = by_status.get("CLOSED", (0.0, 0))
     open_pnl, n_open = by_status.get("OPEN", (0.0, 0))
     setups, tags, mistakes = filter_options(db)
@@ -161,7 +170,11 @@ def trade_detail(trade_id: int, request: Request, db: Session = Depends(get_db))
     stmt, f, q, sort, desc, list_qs = filtered_trades(request, db)
     cols = stmt.with_only_columns(Trade.id, Trade.symbol, Trade.opened_at, Trade.closed_at, Trade.direction,
                                   Trade.status, Trade.net_pnl, Trade.time_known, Trade.is_demo)
-    nav_rows = db.execute(cols.limit(SIDEBAR_LIMIT)).all()
+    from app import currency
+    if currency.needs_conversion(db):  # list amounts in the display currency (the page itself stays native)
+        nav_rows = currency.view(db, list(db.scalars(stmt.limit(SIDEBAR_LIMIT))))
+    else:
+        nav_rows = db.execute(cols.limit(SIDEBAR_LIMIT)).all()
     ids = [r.id for r in nav_rows]
     in_list = t.id in ids
     if in_list:
@@ -173,7 +186,9 @@ def trade_detail(trade_id: int, request: Request, db: Session = Depends(get_db))
         next_id = db.scalar(select(Trade.id).where(Trade.opened_at < t.opened_at).order_by(Trade.opened_at.desc()))
     filtered = any(k in q for k in LIST_KEYS if k not in ("sort", "dir"))
     return templates.TemplateResponse(request, "trade_detail.html", base_context(
-        request, db, nav="trades", t=t, prev_id=prev_id, next_id=next_id,
+        request, db, nav="trades", t=t, native_symbol=currency.symbol(currency.trade_ccy(t)),
+        native_ccy=currency.trade_ccy(t), display_symbol=currency.symbol(currency.trade_ccy(t)),
+        list_symbol=currency.symbol(currency.get_display(db)), prev_id=prev_id, next_id=next_id,
         saved=False, fullscreen=True, **journal_ctx(db, t), stop_rule=stops.get_rule(db), opened_ts=int(t.opened_at.replace(tzinfo=timezone.utc).timestamp()), mfe_note=excursion_note(excursion_basis(t)), nav_rows=nav_rows,
         list_qs=list_qs, in_list=in_list, list_filtered=filtered, list_truncated=len(nav_rows) >= SIDEBAR_LIMIT,
         **trade_extras(db, t, live_price(t))))

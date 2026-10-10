@@ -16,6 +16,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
   <link rel="stylesheet" href="/static/app.css?v=7">
   <script defer src="/static/app.js?v=3"></script>
+  <script>window.CUR = {{ (display_symbol or '$')|tojson }};</script>
   {% block head %}{% endblock %}
 </head>
 <body class="bg-[#0b0f17] text-slate-200 font-sans antialiased{{ ' side-collapsed' if fullscreen else '' }}"
@@ -27,7 +28,8 @@
     <svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" d="M4 6h16M4 12h16M4 18h16"/></svg>
   </button>
   <a href="/" class="flex items-center gap-2 min-w-0"><span class="h-7 w-7 rounded-lg bg-gradient-to-br from-indigo-500 to-cyan-400 grid place-items-center font-bold text-slate-900 text-xs">TJ</span><span class="font-semibold text-white truncate">{% block mobile_title %}Trading Journal{% endblock %}</span></a>
-  <button hx-post="/sync" hx-target="#sync-toast" hx-swap="innerHTML" @click="mnav = true" class="ml-auto h-10 px-3 rounded-lg bg-indigo-600 text-white text-sm font-medium" aria-label="Sync now">Sync</button>
+  <button type="button" @click="mnav = true" class="ml-auto text-[11px] rounded-md border border-slate-700 px-2 py-1 text-slate-300" id="mobile-chip">{{ (accounts|selectattr('id','equalto',active_account)|first).name if active_account else 'All' }} · {{ display_symbol|trim }}</button>
+  <button hx-post="/sync" hx-target="#sync-toast" hx-swap="innerHTML" @click="mnav = true" class="h-10 px-3 rounded-lg bg-indigo-600 text-white text-sm font-medium" aria-label="Sync now">Sync</button>
 </header>
 <div id="nav-backdrop" class="md:hidden" @click="mnav = false"></div>
 <div class="flex min-h-screen">
@@ -36,9 +38,27 @@
       <div class="h-8 w-8 rounded-lg bg-gradient-to-br from-indigo-500 to-cyan-400 grid place-items-center font-bold text-slate-900">TJ</div>
       <div>
         <div class="font-semibold text-white leading-tight">Trading Journal</div>
-        <div class="text-[11px] text-slate-500">Schwab edition</div>
+        <div class="text-[11px] text-slate-500">Multi-broker journal</div>
       </div>
     </div>
+    <form method="post" action="/prefs" id="prefs-form" class="px-4 pb-3 space-y-2" aria-label="Account and currency">
+      <input type="hidden" name="next" value="{{ request.url.path }}{{ '?' ~ request.url.query if request.url.query else '' }}">
+      <label class="block text-[10px] uppercase tracking-wide text-slate-500">Account
+        <select name="account" id="acct-switch" class="inp text-xs w-full mt-0.5" onchange="this.form.submit()">
+          <option value="">All accounts</option>
+          {% for a in accounts if not a.is_demo or has_demo %}<option value="{{ a.id }}" {{ 'selected' if active_account == a.id }}>{{ a.name }} · {{ a.currency }}</option>{% endfor %}
+        </select>
+      </label>
+      <div class="flex items-center gap-2">
+        <span class="text-[10px] uppercase tracking-wide text-slate-500">Show in</span>
+        <div class="inline-flex rounded-lg overflow-hidden border border-slate-700" role="group" aria-label="Display currency" id="cur-switch">
+          {% for c in currency_choices %}
+          <button name="currency" value="{{ c }}" title="Show every total in {{ c }} (ECB daily rates; each trade at its close-date rate, open positions at the latest rate)"
+                  class="px-2.5 py-1 text-xs {{ 'bg-indigo-600 text-white' if display_currency == c else 'text-slate-400 hover:text-white hover:bg-slate-800' }}">{{ c }}</button>
+          {% endfor %}
+        </div>
+      </div>
+    </form>
     <nav class="px-3 space-y-1 text-sm">
       {% set items = [('dashboard','/','Dashboard','M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z'),
                       ('trades','/trades','Trades','M4 6h16M4 12h16M4 18h10'),
@@ -70,6 +90,7 @@
       <form method="post" action="/settings/demo/clear" class="ml-auto"><button class="underline hover:text-white">Clear sample data</button></form>
     </div>
     {% endif %}
+    {% if fx_note and not fullscreen %}<div class="border-b border-slate-800/80 bg-slate-900/40 text-[11px] text-slate-400 px-4 md:px-6 py-1" title="{{ fx_note }}">Showing {{ display_currency }} · converted with ECB daily rates <span class="text-slate-500">(hover for method)</span></div>{% endif %}
     {% for b in banners %}
     <div class="{{ 'bg-rose-500/15 border-rose-500/30 text-rose-200' if b.level == 'error' else 'bg-amber-500/10 border-amber-500/30 text-amber-200' }} border-b text-sm px-4 md:px-6 py-2 flex flex-wrap gap-x-3 gap-y-1">
       <span>{{ b.text }}</span><a class="ml-auto underline" href="{{ b.link }}">{{ b.link_text }}</a>

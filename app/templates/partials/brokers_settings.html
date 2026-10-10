@@ -1,0 +1,20 @@
+<div class="card p-5 mb-4" id="brokers">
+  <div class="flex items-center justify-between mb-3"><div class="card-h">Brokers</div>
+    <span class="text-xs text-slate-500">One journal for every account · switch account and currency in the header</span></div>
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-3">
+    {% for b in broker_cards %}
+    <div class="rounded-lg border border-slate-700/70 p-4" data-broker="{{ b.key }}">
+      <div class="flex items-center gap-2">
+        <span class="h-2.5 w-2.5 rounded-full {{ 'bg-emerald-400' if b.state == 'connected' else 'bg-amber-400' if b.state == 'needs_login' else 'bg-slate-600' }}"></span>
+        <span class="text-white font-medium">{{ b.name }}</span>
+        <span class="pill {{ 'bg-emerald-500/15 text-emerald-300' if b.state == 'connected' else 'bg-amber-500/15 text-amber-300' if b.state == 'needs_login' else 'bg-slate-700 text-slate-300' }}">{{ {'connected': 'connected', 'needs_login': 'needs login', 'not_connected': 'not connected', 'unavailable': 'coming soon'}[b.state] }}</span>
+        <span class="ml-auto text-[11px] text-slate-500">{{ b.currency }}</span>
+      </div>
+      <div class="text-xs text-slate-500 mt-1">{{ b.how }}</div>
+      <div class="text-sm text-slate-300 mt-2">{{ b.detail }}</div>
+      {% if b.last_sync %}<div class="text-xs text-slate-500 mt-1">Last sync: {{ b.last_sync }}</div>{% endif %}
+      {% if b.form %}{% include "partials/" ~ b.form %}{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</div>

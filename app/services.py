@@ -44,6 +44,8 @@ def _record_to_row(rec: ExecRecord, account_id: int, source: str, batch_id: int 
         side=rec.side, quantity=rec.quantity, price=rec.price, fees=rec.fees, executed_at=rec.executed_at,
         time_known=rec.time_known, seq=rec.seq, position_effect=rec.position_effect, kind=rec.kind,
         description=rec.description, raw=json.dumps(rec.raw, default=str) if rec.raw is not None else None,
+        currency=rec.currency, fx_to_account=rec.fx_to_account, settle_date=rec.settle_date,
+        instrument_id=rec.instrument_id,
     )
 
 
@@ -548,6 +550,7 @@ def rebuild_trades(db: Session, account_ids: list[int] | None = None) -> int:
             tr.entry_price, tr.exit_price, tr.cost_basis = bt.entry_price, bt.exit_price, bt.cost_basis
             tr.gross_pnl, tr.fees, tr.net_pnl = round(bt.gross_pnl, 6), round(bt.fees, 6), round(bt.net_pnl, 6)
             tr.return_pct, tr.close_reason, tr.is_demo = bt.return_pct, bt.close_reason, acct.is_demo
+            tr.currency, tr.instrument_id = first.currency, first.instrument_id  # None for Schwab-style rows
             tr.fills = [TradeFill(
                 execution_id=f.execution_id, position=i, side=f.side, role=f.role, quantity=f.quantity,
                 price=f.price, fees=f.fees, executed_at=f.executed_at) for i, f in enumerate(bt.fills)]
