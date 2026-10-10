@@ -81,6 +81,10 @@
           <button id="ind-btn" type="button" class="btn btn-s !py-1 text-xs flex items-center gap-1"><span class="italic font-serif">ƒx</span> Indicators</button>
           <div id="ind-menu" class="hidden absolute left-0 top-full mt-1 z-30 w-[min(340px,calc(100vw-1.5rem))] max-h-[70vh] overflow-auto rounded-xl border border-slate-700 bg-[#0f1520] p-3 shadow-2xl"></div>
         </div>
+        <div class="flex rounded-lg border border-slate-700 overflow-hidden text-xs" role="group" aria-label="Chart view">
+          <button id="chart-fit" type="button" class="px-2 py-1 text-slate-300 hover:bg-slate-800" title="Frame the trade (entry to exit)">Fit trade</button>
+          <button id="chart-latest" type="button" class="px-2 py-1 text-slate-300 hover:bg-slate-800 border-l border-slate-700" title="Jump to the latest candle">Latest ⇥</button>
+        </div>
         <div class="relative">
           <button id="fills-btn" type="button" class="btn btn-s !py-1 text-xs flex items-center gap-1" aria-haspopup="true" aria-controls="fills-menu"><span aria-hidden="true">⇥</span> Fills</button>
           <div id="fills-menu" class="hidden absolute left-0 top-full mt-1 z-30 w-[min(300px,calc(100vw-1.5rem))] rounded-xl border border-slate-700 bg-[#0f1520] p-3 shadow-2xl text-xs text-slate-300"></div>
@@ -138,7 +142,7 @@
 window.TJ_CHART = { tradeId: {{ t.id }}, symbol: {{ t.underlying|tojson }}, tz: {{ settings().display_tz|tojson }},
   isStock: {{ 'true' if t.asset_type == 'STOCK' else 'false' }}, entry: {{ t.entry_price|tojson }}, exit: {{ t.exit_price|tojson }} };
 </script>
-<script src="/static/trade_chart.js?v=5"></script>
+<script src="/static/trade_chart.js?v=6"></script>
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js"></script>
 <script src="/static/widgets.js?v=1"></script>
 <script>WidgetEditor({ grid: '#trade-stats', toolbar: '#trade-page' });</script>

@@ -89,7 +89,7 @@ def test_timeframe_availability_and_windows(db):
                     _rec("ONEM", "SELL", 10, 51, _et(2026, 10, 2, 15, 0))])
     start, end, notes = prices.tf_window(r, "1m", NOW)
     assert start >= NOW - timedelta(days=29) and end - start <= timedelta(days=7)
-    assert any("older" in n for n in notes) or any("first days" in n for n in notes)
+    assert any("older" in n for n in notes) or any("provider limit" in n for n in notes)
     # daily: plenty of history before entry for 200-period indicators, capped at now
     start, end, _ = prices.tf_window(r, "1D", NOW)
     assert start <= r.opened_at - timedelta(days=400) and end <= NOW
@@ -305,3 +305,56 @@ def test_alab_like_date_only_exit_ignores_moves_after_the_sale(db, monkeypatch):
     assert res["tf"] == "1m" and res["estimated"] == 1
     assert res["mfe"] == round((388.64 - 370.17) * 4, 2)
     assert res["mae"] == round((366.0 - 370.17) * 4, 2)
+
+
+# ---------------------------------------------------------------- charts run to the present
+def test_windows_always_end_at_now_for_closed_trades(db):
+    """NVDA-style: closed on Oct 2, viewed days later -> every timeframe loads through the latest bar."""
+    t = _trade(db, [_rec("NVX", "BUY", 10, 50, _et(2026, 10, 2, 9, 39)), _rec("NVX", "SELL", 10, 51, _et(2026, 10, 2, 11, 21))])
+    for tf in ("5m", "15m", "30m", "1h", "4h", "1D", "1W"):
+        start, end, _ = prices.tf_window(t, tf, NOW)
+        assert end == NOW, tf
+    s, e, notes = prices.tf_window(t, "1m", NOW)
+    assert e == NOW and s <= t.opened_at  # recent enough: 1m also reaches the present
+
+
+def test_yahoo_keeps_latest_bar_with_empty_close(monkeypatch):
+    """Yahoo leaves the newest daily bar's close null; use the last traded price instead of dropping the bar."""
+    payload = {"chart": {"result": [{"meta": {"regularMarketPrice": 229.28},
+        "timestamp": [1791466200, 1791552600],
+        "indicators": {"quote": [{"open": [234.92, 233.875], "high": [237.07, 233.89], "low": [229.85, 229.11],
+                                   "close": [230.48, None], "volume": [118697400, 84307452]}]}}]}}
+
+    class R:
+        def raise_for_status(self): pass
+        def json(self): return payload
+    monkeypatch.setattr(prices.httpx, "get", lambda *a, **k: R())
+    out = prices._yahoo("NVDA", "1d", datetime(2026, 9, 1), datetime(2026, 10, 10))
+    assert len(out) == 2 and out[-1]["close"] == 229.28 and out[-1]["high"] == 233.89 and out[-1]["low"] == 229.11
+    payload["chart"]["result"][0]["indicators"]["quote"][0]["close"][0] = None   # an old bar with no close stays dropped
+    assert len(prices._yahoo("NVDA", "1d", datetime(2026, 9, 1), datetime(2026, 10, 10))) == 1
+
+
+def test_stale_results_are_not_memoised(db, monkeypatch):
+    t = _trade(db, [_rec("STL", "BUY", 10, 50, _et(2026, 10, 6, 10, 0)), _rec("STL", "SELL", 10, 51, _et(2026, 10, 6, 11, 0))])
+    now = _et(2026, 10, 8, 12, 0)                      # Thursday midday: latest session = Oct 8
+    assert prices.last_session_date(_et(2026, 10, 10, 12, 0)).isoformat() == "2026-10-09"   # Saturday -> Friday
+    assert prices.last_session_date(_et(2026, 10, 12, 8, 0)).isoformat() == "2026-10-09"    # Monday pre-open -> Friday
+    old = _bars(_et(2026, 10, 5, 9, 30), _et(2026, 10, 7, 16, 0), 5)      # ends Oct 7: a session behind
+    fresh = _bars(_et(2026, 10, 5, 9, 30), _et(2026, 10, 8, 11, 0), 5)
+    assert prices._stale(old, "5m", now) and not prices._stale(fresh, "5m", now) and prices._stale([], "5m", now)
+    calls = []
+    seq = [old, fresh]
+    monkeypatch.setattr(prices, "_yahoo", lambda *a: (calls.append(1), seq[min(len(calls) - 1, 1)])[1])
+    prices._MEM.clear()
+    s, e = now - timedelta(days=5), now
+    assert prices._fetch(db, "yahoo", t, "5m", s, e, now) is old
+    assert prices._fetch(db, "yahoo", t, "5m", s, e, now) is fresh     # stale result wasn't cached -> refetched
+    assert prices._fetch(db, "yahoo", t, "5m", s, e, now) is fresh and len(calls) == 2   # now cached
+    assert prices._MEM_TTL <= 180
+
+
+def test_chart_ui_has_latest_and_fit_trade():
+    js = open("app/static/trade_chart.js").read()
+    html = open("app/templates/trade_detail.html").read()
+    assert 'id="chart-latest"' in html and 'id="chart-fit"' in html and "scrollToRealTime" in js

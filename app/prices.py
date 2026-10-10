@@ -114,7 +114,10 @@ def tf_window(trade: Trade, tf: str, now: datetime | None = None,
     spec = TIMEFRAMES[tf]
     now = _now(now)
     o, c = trade.opened_at, trade.closed_at or now
-    start, end = o - spec.before, min(c + spec.after, now)
+    # Always load through the latest bar (now): the initial view is framed on the trade (focus), but the
+    # chart must stay scrollable to the present. (Previously end = exit + `after`, so e.g. a 5m chart of a
+    # trade closed 8 days ago stopped 2 days after the exit.)
+    start, end = o - spec.before, now
     notes: list[str] = []
     if limited and spec.lookback_days:
         earliest = now - timedelta(days=spec.lookback_days)
@@ -127,8 +130,9 @@ def tf_window(trade: Trade, tf: str, now: datetime | None = None,
     if spec.max_span and end - start > spec.max_span:
         start = max(start, min(o, end) - timedelta(hours=18))
         end = min(end, start + spec.max_span)
-        if end < c:
-            notes.append(f"{spec.label} chart covers only the first days of this trade.")
+        if end < min(c, now) - timedelta(days=1):
+            notes.append(f"{spec.label} chart covers only {spec.max_span.days} days from the entry "
+                         "(provider limit per request); use a coarser timeframe to see up to today.")
     if end <= start:
         raise Unavailable("no market data for this period")
     return start, end, notes
@@ -303,9 +307,16 @@ def _yahoo(symbol: str, interval: str, start: datetime, end: datetime) -> list[d
         return []
     q = res["indicators"]["quote"][0]
     vols = q.get("volume") or [0] * len(res["timestamp"])
+    meta = res.get("meta") or {}
     out = []
+    n = len(res["timestamp"])
     for i, ts in enumerate(res["timestamp"]):
         o, h, l, c = q["open"][i], q["high"][i], q["low"][i], q["close"][i]
+        if c is None and i == n - 1 and None not in (o, h, l) and meta.get("regularMarketPrice") is not None:
+            # Yahoo often leaves the newest bar's close empty (daily: today's / the just-ended session):
+            # use the last traded price so the latest candle isn't silently dropped.
+            c = meta["regularMarketPrice"]
+            h, l = max(h, c), min(l, c)
         if None in (o, h, l, c):
             continue
         out.append({"time": ts, "open": round(o, 4), "high": round(h, 4), "low": round(l, 4),
@@ -316,7 +327,27 @@ def _yahoo(symbol: str, interval: str, start: datetime, end: datetime) -> list[d
 PROVIDER_LABEL = {"demo": "Synthetic sample prices (not real market data)", "schwab": "Schwab market data",
                   "polygon": "Polygon.io", "yahoo": "Yahoo Finance (unofficial)"}
 _MEM: dict[str, tuple[float, list[dict]]] = {}  # short-lived cache for windows that end "now"
-_MEM_TTL = 600
+_MEM_TTL = 120  # seconds; windows end at "now", so keep them fresh
+
+
+def last_session_date(now: datetime):
+    """NY date of the most recent regular session that has started (weekends skipped; holidays unknown)."""
+    lt = utc_naive_to_tz(now, ET)
+    d = lt.date()
+    if lt.time() < time(9, 30):
+        d -= timedelta(days=1)
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+    return d
+
+
+def _stale(candles: list[dict], interval: str, now: datetime) -> bool:
+    """True when the newest bar is older than the latest session (provider lag / failure) - refetch next time."""
+    if not candles:
+        return True
+    last = candles[-1]["time"]
+    d = _et_date_of_sec(int(last))
+    return d < last_session_date(now) - timedelta(days=6 if interval == "1wk" else 0)
 
 
 def _provider_order(trade: Trade) -> list[str]:
@@ -343,7 +374,7 @@ def _fetch(db: Session, prov: str, trade: Trade, interval: str, start: datetime,
             return json.loads(cached.payload)
     mem_key = f"{CACHE_VERSION}|{prov}|{symbol}|{interval}|{start:%Y%m%d%H}|{end:%Y%m%d%H}"
     hit = _MEM.get(mem_key)
-    if hit and _time.monotonic() - hit[0] < _MEM_TTL:
+    if hit and _time.monotonic() - hit[0] < _MEM_TTL and not _stale(hit[1], interval, now):
         return hit[1]
     candles = (_schwab(db, symbol, interval, start, end) if prov == "schwab" else
                _polygon(symbol, interval, start, end) if prov == "polygon" else
@@ -352,7 +383,7 @@ def _fetch(db: Session, prov: str, trade: Trade, interval: str, start: datetime,
         if persistent:
             db.add(PriceCache(cache_key=key, provider=prov, payload=json.dumps(candles)))
             db.commit()
-        else:
+        elif not _stale(candles, interval, now):  # never memoise a result that misses the latest session
             if len(_MEM) > 200:
                 _MEM.clear()
             _MEM[mem_key] = (_time.monotonic(), candles)

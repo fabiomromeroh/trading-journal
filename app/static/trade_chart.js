@@ -287,18 +287,32 @@
     panes.forEach((p, i) => p.setStretchFactor(i === 0 ? (panes.length > 3 ? 3 : 4) : 1));
 
     // visible range: keep the user's zoom on indicator changes, otherwise frame entry -> exit
+    // (the data itself runs to the latest bar; "Latest" jumps there, "Fit trade" comes back)
     const ts = chart.timeScale();
     if (keepRange) ts.setVisibleLogicalRange(keepRange);
-    else if (data.focus) {
-      const times = k.map((b) => b.time);
-      const a = times.indexOf(data.focus.from), b = times.indexOf(data.focus.to);
-      const [fb, fa] = data.focus_bars || [50, 25];
-      if (a >= 0 && b >= 0) ts.setVisibleLogicalRange({ from: Math.max(0, a - fb), to: Math.min(times.length - 1 + 6, b + fa) });
-      else ts.fitContent();
-    } else ts.fitContent();
+    else fitTrade();
     chart.subscribeCrosshairMove(legend);
     legend(null);
   }
+
+  function fitTrade() {
+    if (!chart || !data) return;
+    const ts = chart.timeScale(), k = data.candles;
+    if (data.focus) {
+      const times = k.map((b) => b.time);
+      const a = times.indexOf(data.focus.from), b = times.indexOf(data.focus.to);
+      const [fb, fa] = data.focus_bars || [50, 25];
+      if (a >= 0 && b >= 0) { ts.setVisibleLogicalRange({ from: Math.max(0, a - fb), to: Math.min(times.length - 1 + 6, b + fa) }); return; }
+    }
+    ts.fitContent();
+  }
+  function showLatest() {
+    if (!chart) return;
+    const ts = chart.timeScale(), r = ts.getVisibleLogicalRange(), n = data.candles.length;
+    const width = r ? Math.max(30, Math.round(r.to - r.from)) : 80;   // keep the current zoom level
+    ts.setVisibleLogicalRange({ from: n - width + 6, to: n - 1 + 6 });
+  }
+  if ($('chart-fit')) { $('chart-fit').addEventListener('click', fitTrade); $('chart-latest').addEventListener('click', () => { chart && chart.timeScale().scrollToRealTime(); showLatest(); }); }
 
   function legend(param) {
     const box = $('chart-legend'); if (!box || !data) return;
@@ -468,5 +482,5 @@
   load(localStorage.getItem(LS_TF) || null);
   window.TJ_CHART_API = { load, get data() { return data; }, get indicators() { return inds; },
     get fills() { return { ...fillOpts }; }, setFills(o) { fillOpts = { ...fillOpts, ...o }; saveFills(); if (fillsPrim) fillsPrim.setFills(data.markers); },
-    get chart() { return chart; } };
+    get chart() { return chart; }, fitTrade, showLatest };
 })();
