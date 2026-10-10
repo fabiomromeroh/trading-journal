@@ -26,7 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download the export (the free service may be asleep: first answer can take ~1 minute)
+      - name: Download the export (the free service may be asleep, so the first answer can take about a minute)
         run: |
           set -uo pipefail
           for i in $(seq 1 10); do
