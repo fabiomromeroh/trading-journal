@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from typing import Awaitable, Callable
 
 log = logging.getLogger(__name__)
-FALLBACK_URL = "https://trading-journal-xjf0.onrender.com"
+FALLBACK_URL = "https://trading-journal-fra.onrender.com"
 IGNORED_PREFIXES = ("/static", "/healthz", "/api/ingest/", "/robots.txt", "/favicon", "/apple-touch-icon",
                     "/manifest.webmanifest", "/sw.js", "/offline")
 

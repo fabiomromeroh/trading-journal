@@ -1,18 +1,11 @@
-# Render Blueprint: web service + Postgres (both free plan).
+# Render Blueprint: web service (free plan, Frankfurt). The database is a free Neon Postgres project (AWS Frankfurt, not on Render).
 # Secrets marked `sync: false` must be entered in the Render dashboard.
-databases:
-  - name: trading-journal-db
-    databaseName: trading_journal
-    user: trading_journal
-    plan: free            # NOTE: Render free Postgres expires 30 days after creation; upgrade to keep data.
-    region: oregon
-
 services:
   - type: web
     name: trading-journal
     runtime: python
     plan: free            # free instances sleep after ~15 min idle (first request then takes ~1 min)
-    region: oregon
+    region: frankfurt
     branch: main
     buildCommand: pip install -r requirements.txt
     # Migrations run on every start (pre-deploy commands aren't available on the free plan).
@@ -22,10 +15,8 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.7
-      - key: DATABASE_URL
-        fromDatabase:
-          name: trading-journal-db
-          property: connectionString
+      - key: DATABASE_URL          # Neon direct (non-pooled) connection string, sslmode=require
+        sync: false
       - key: APP_PASSWORD          # your login password
         sync: false
       - key: SECRET_KEY            # signs the session cookie

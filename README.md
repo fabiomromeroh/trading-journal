@@ -85,18 +85,22 @@ pytest -q                       # tests
 ```
 
 ## Deploy on Render
-`render.yaml` defines a free Python web service and a free Postgres database.
+`render.yaml` defines a free Python web service in Frankfurt. The database is a free Neon Postgres project (AWS Frankfurt), not a Render database.
 - Start command: `alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT ...`
 - Health check: `/healthz`
 - Required env vars:
   - `APP_PASSWORD`: your login.
   - `SECRET_KEY`: random value.
-  - `DATABASE_URL`: the Postgres internal URL. `postgres://` URLs are converted automatically.
+  - `DATABASE_URL`: the Neon **direct** (non-pooled) connection string with `sslmode=require`. `postgres://` and
+    `postgresql://` URLs are converted automatically.
   - `COOKIE_SECURE=true`.
 - Optional env vars: `SNAPTRADE_CLIENT_ID`, `SNAPTRADE_CONSUMER_KEY`, `TOKEN_ENCRYPTION_KEY`,
   `DISPLAY_TZ`, `PRICE_PROVIDER`, `POLYGON_API_KEY`, `SCHWAB_*`, `SMTP_*`.
-- **Render free Postgres expires 30 days after creation.** Upgrade the database (or export your data)
-  before then.
+- **Neon free Postgres** does not expire, but suspends idle compute after 5 minutes (the first query after that waits a
+  second or two; the app recycles connections and retries). Free plan = 100 compute-hours a month and only a short
+  point-in-time restore window, so keep exporting backups (Settings > Backup).
+- Moving databases: `python -m scripts.copy_db` copies a Postgres database into `DATABASE_URL` (set `COPY_FROM_URL`), verifies
+  per-table counts and md5 checksums, and refuses to run into a non-empty database.
 - Free web instances sleep after about 15 minutes idle, so the first request after that is slow.
 - There is intentionally no cron job: sync runs only when you click "Sync now".
 
