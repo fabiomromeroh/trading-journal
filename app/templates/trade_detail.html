@@ -149,7 +149,7 @@ window.TJ_CHART = { tradeId: {{ t.id }}, symbol: {{ t.underlying|tojson }}, tz: 
   rLevels: {{ r_cfg.levels|tojson }}, showR: {{ r_cfg.show|tojson }}, stopAuto: {{ (t.stop_auto or false)|tojson }}, open: {{ 'true' if t.status == 'OPEN' else 'false' }} };
 </script>
 <script src="/static/journal.js?v=2"></script>
-<script src="/static/trade_chart.js?v=10"></script>
+<script src="/static/trade_chart.js?v=11"></script>
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js"></script>
 <script src="/static/widgets.js?v=1"></script>
 <script>WidgetEditor({ grid: '#trade-stats', toolbar: '#trade-page' });</script>

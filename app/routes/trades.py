@@ -284,7 +284,8 @@ def trade_r(trade_id: int, db: Session = Depends(get_db)):
     from app.routes.reports import default_risk
     t = _get_trade(db, trade_id)
     m = trade_metrics(t, default_risk(db), live_price(t))
-    return {"current_r": m["current_r"], "price": m["price"], "open_pnl": m["open_pnl"], "r_multiple": m["r_multiple"],
+    return {"current_r": m["current_r"], "price": m["price"], "open_pnl": m["open_pnl"], "r_multiple": m["r_multiple"], "open_pnl_pct": m["open_pnl_pct"], "open_r": m["open_r"],
+            "realized": t.net_pnl,
             "total_r": m["total_r"], "position": m["position"]["text"], "open_value": m["open_value"]}
 
 

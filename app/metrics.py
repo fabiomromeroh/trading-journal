@@ -267,6 +267,8 @@ def trade_metrics(t, default_risk: float | None = None, price: float | None = No
     rps = rd["rps"]
     if t.status == "OPEN" and price is not None and rps and fp:
         current_r = sign * (price - fp) / rps           # first-entry lot: price move in units of 1R/share
+    open_pct = (open_pnl / pos["cost"] * 100) if (open_pnl is not None and pos["cost"]) else None
+    open_r = (open_pnl / risk) if (open_pnl is not None and risk) else None
     pnl_all = (t.net_pnl or 0.0) + (open_pnl or 0.0) if (t.status == "CLOSED" or open_pnl is not None) else None
     if risk and pnl_all is not None:
         total_r = pnl_all / risk
@@ -275,7 +277,7 @@ def trade_metrics(t, default_risk: float | None = None, price: float | None = No
         "risk": risk, "risk_source": src, "r_multiple": r_multiple(t, default_risk), "planned_rr": planned_rr,
         "initial_risk": risk, "total_risk": total, "init_qty": rd["init_qty"], "add_qty": rd["add_qty"],
         "first_price": fp, "stop_label": stop_label(t), "stop_bar_at": _bar_dt(t),
-        "risk_per_share": rps, "open_pnl": open_pnl, "current_r": current_r, "price": price,
+        "risk_per_share": rps, "open_pnl": open_pnl, "open_pnl_pct": open_pct, "open_r": open_r, "current_r": current_r, "price": price,
         "total_r": total_r, "r_on_total": r_on_total,
         "r_now": current_r if t.status == "OPEN" else r_multiple(t, default_risk),
         "position": pos, "open_value": (abs(pos["qty"]) * price * (t.multiplier or 1)) if (price is not None and pos["qty"]) else (pos["cost"] or None),

@@ -102,6 +102,7 @@ I = {
     "t_mfe_mae": ("MFE / MAE", "Best and worst running P&L while the trade was open.", "realized so far + open qty marked at each bar's high/low; finest bars available."),
     "t_r_multiple": ("R-multiple", "Result in units of initial risk.", "net ÷ initial risk $ (first entry only)."),
     "t_r_now": ("R (current / final)", "Result in units of INITIAL risk (first entry only). Closed: net P&L ÷ initial risk $ (reward:risk achieved = 1 : R). Open: Current R at the latest price, for the first-entry lot.", "Open: (price − first entry price) ÷ (first entry price − stop). Closed: net P&L ÷ initial risk $."),
+    "t_unrealized": ("Unrealized P&L (open)", "Open P&L of the shares still held, at the latest price; partial exits are already in Realized so far (Net).", "(latest price − FIFO avg cost of the remaining lots) × remaining qty × multiplier (shorts reversed). % = ÷ remaining cost."),
     "t_total_risk": ("Total risk $", "Open risk at maximum exposure: first entry plus every add, all measured against the same stop.", "initial risk + Σ over adds of (add price − stop) × add size × multiplier (never negative; shorts mirror)."),
     "t_total_r": ("Total R", "All P&L (realized, plus open P&L for an open trade) in units of initial risk.", "(net P&L [+ open P&L]) ÷ initial risk $."),
     "t_r_on_total": ("R on total risk", "All P&L in units of total risk (first entry + adds).", "(net P&L [+ open P&L]) ÷ total risk $."),

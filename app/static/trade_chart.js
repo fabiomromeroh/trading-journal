@@ -541,12 +541,17 @@
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape') rmenu.classList.add('hidden'); });
   }
   // open trade: keep Current R live (latest quote every minute, only while the tab is visible)
-  if (C.open && $('rnow')) {
+  if (C.open && ($('rnow') || $('unrl'))) {
     const tick = async () => {
       if (document.hidden) return;
       try {
         const j = await (await fetch(`/trades/${C.tradeId}/r.json`)).json();
-        if (j.current_r !== null && j.current_r !== undefined) {
+        if ($('unrl') && j.open_pnl !== null && j.open_pnl !== undefined) {
+          const u = j.open_pnl, money = (v) => (v < 0 ? '-' : '+') + '$' + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+          $('unrl').textContent = money(u) + ' · ' + (j.open_pnl_pct === null || j.open_pnl_pct === undefined ? '—' : (j.open_pnl_pct >= 0 ? '+' : '') + j.open_pnl_pct.toFixed(1) + '%');
+          $('unrl').className = 'text-sm font-semibold truncate ' + (u > 0 ? 'text-emerald-400' : u < 0 ? 'text-rose-400' : 'text-white');
+        }
+        if ($('rnow') && j.current_r !== null && j.current_r !== undefined) {
           $('rnow').textContent = (j.current_r >= 0 ? '+' : '') + j.current_r.toFixed(2) + 'R';
           $('rnow').className = 'text-sm font-semibold truncate ' + (j.current_r > 0 ? 'text-emerald-400' : j.current_r < 0 ? 'text-rose-400' : 'text-white');
         }

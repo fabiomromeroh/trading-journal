@@ -79,7 +79,7 @@ TRADE = [
     ("net", "Net P&L", True), ("gross", "Gross P&L", True), ("fees", "Fees", True), ("return", "Return %", True),
     ("entry_exit", "Entry / exit", True), ("position", "Position", True), ("max_size", "Max size", True), ("hold", "Hold time", True),
     ("mfe_mae", "MFE / MAE", True),
-    ("r_now", "R (current / final)", True), ("stop", "Initial stop", True), ("risk", "Initial risk $", True), ("total_risk", "Total risk $", True),
+    ("r_now", "R (current / final)", True), ("unrealized", "Unrealized P&L (open)", True), ("stop", "Initial stop", True), ("risk", "Initial risk $", True), ("total_risk", "Total risk $", True),
     ("mfe_mae_r", "MFE / MAE in R", True),
     ("entry", "Avg entry", False), ("exit", "Avg exit", False), ("mfe", "MFE", False), ("mae", "MAE", False),
     ("mfe_eff", "MFE efficiency", False), ("mae_eff", "MAE efficiency", False),
@@ -96,7 +96,7 @@ TRADE = [
 TRADE_GROUPS = {**dict.fromkeys(("net", "gross", "fees", "return", "return_per_share", "position_value"), "P&L"),
                 **dict.fromkeys(("entry_exit", "entry", "exit", "max_size", "hold", "fills", "opened", "closed", "position", "avg_cost", "open_value", "init_size", "add_size"), "Execution"),
                 **dict.fromkeys(("mfe_mae", "mfe", "mae", "mfe_eff", "mae_eff", "best_exit", "left_on_table"), "MFE / MAE"),
-                **dict.fromkeys(("r_now", "r_multiple", "risk", "total_risk", "total_r", "r_on_total", "stop", "target", "planned_rr", "target_pnl", "mfe_mae_r"), "Risk & R"),
+                **dict.fromkeys(("r_now", "unrealized", "r_multiple", "risk", "total_risk", "total_r", "r_on_total", "stop", "target", "planned_rr", "target_pnl", "mfe_mae_r"), "Risk & R"),
                 **dict.fromkeys(("exec_grade", "mistakes"), "Journal"),
                 **dict.fromkeys(("account", "setup", "rating"), "Journal")}
 
@@ -164,7 +164,7 @@ def _key(page: str) -> str:
 # unless the layout was saved when the widget already existed (then the user chose to hide it).
 INTRODUCED = {"dashboard": {"positions": "total_pnl", "coach": "recent"},
               "trade": {"r_now": "mfe_mae", "stop": "r_now", "risk": "stop", "mfe_mae_r": "risk",
-                        "position": "entry_exit", "total_risk": "risk"}}
+                        "position": "entry_exit", "total_risk": "risk", "unrealized": "r_now"}}
 
 
 def get_layout(db: Session, page: str) -> list[str]:

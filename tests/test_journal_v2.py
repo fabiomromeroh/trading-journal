@@ -553,3 +553,25 @@ def test_trade_page_position_initial_total_risk_and_settings(client, db):
     assert client.get("/settings/stops/preview").status_code == 200
     r = client.post("/settings/journal/save", data={"buf_value": "0.2", "buf_mode": "usd"}, follow_redirects=False)
     assert r.status_code == 303 and stops.get_buffer(db) == {"mode": "usd", "value": 0.2}
+
+
+def test_unrealized_remaining_position_only_and_live_json(client, db):
+    t = trade_with_adds(net=198.0)
+    m = metrics.trade_metrics(t, None, price=104.0)
+    # sold 100 (the whole 100 @ 100 lot, realized separately); left 50 @ 101 + 100 @ 103 = cost 15,350, worth 15,600
+    assert m["open_pnl"] == 250.0 and round(m["open_pnl_pct"], 2) == 1.63
+    assert round(m["open_r"], 3) == 0.714               # 250 / initial risk 350
+    assert metrics.trade_metrics(t, None)["open_pnl"] is None       # no live price: unknown, not 0
+    s = trade_with_adds(stop=106.0)
+    s.direction = "SHORT"
+    assert round(metrics.trade_metrics(s, None, price=100.0)["open_pnl"], 2) == 350.0     # 150 x (102.3333 - 100)
+    # page: widget is in the default bar next to Current R, and r.json carries it for the minute refresh
+    tr = mk(db, entry=100.0, qty=100, status="OPEN", stop=98.0, opened=datetime(2026, 3, 10, 13, 32))
+    tr.closed_at = None
+    db.add(TradeFill(trade_id=tr.id, execution_id=None, position=0, side="BUY", role="OPEN", quantity=100, price=100.0, fees=0.0,
+                     executed_at=datetime(2026, 3, 10, 13, 32)))
+    db.commit()
+    page = client.get(f"/trades/{tr.id}").text
+    assert 'id="unrl"' in page and "Unrealized P&amp;L" in page and page.index('id="rnow"') < page.index('id="unrl"')
+    j = client.get(f"/trades/{tr.id}/r.json").json()
+    assert set(j) >= {"open_pnl", "open_pnl_pct", "open_r", "realized"}
