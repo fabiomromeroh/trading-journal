@@ -14,23 +14,24 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import get_settings
 from app import db as dbmod, keepawake, passwords
-from app.routes import auth, dashboard, email_sync, imports, reports, security, settings as settings_routes, trades
+from app.routes import auth, dashboard, email_sync, imports, pwa, reports, security, settings as settings_routes, trades
 
 logging.basicConfig(level=logging.INFO)
 PUBLIC_PREFIXES = ("/login", "/healthz", "/static", "/api/ingest/")  # /api/ingest: token auth
+PUBLIC_EXACT = pwa.PUBLIC_PATHS  # manifest, service worker, offline page, favicon: must load before login
 
 
 class RequireLogin(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
-        if request.session.get("auth") and not path.startswith(("/static", "/healthz")):
+        if request.session.get("auth") and not path.startswith(("/static", "/healthz")) and path not in PUBLIC_EXACT:
             db = dbmod.SessionLocal()
             try:
                 if not passwords.session_valid(db, request.session.get("av")):
                     request.session.clear()  # password changed elsewhere: sign this session out
             finally:
                 db.close()
-        if not path.startswith(PUBLIC_PREFIXES) and not request.session.get("auth"):
+        if not path.startswith(PUBLIC_PREFIXES) and path not in PUBLIC_EXACT and not request.session.get("auth"):
             if request.headers.get("HX-Request"):
                 return JSONResponse({"detail": "login required"}, status_code=401,
                                     headers={"HX-Redirect": "/login"})
@@ -68,7 +69,7 @@ def create_app() -> FastAPI:
     app.add_middleware(SessionMiddleware, secret_key=s.secret_key, session_cookie="tj_session",
                        max_age=60 * 60 * 24 * 14, same_site="lax", https_only=s.cookie_secure)
     app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
-    for r in (auth.router, dashboard.router, trades.router, imports.router, settings_routes.router, email_sync.router, reports.router, security.router):
+    for r in (auth.router, dashboard.router, trades.router, imports.router, settings_routes.router, email_sync.router, reports.router, security.router, pwa.router):
         app.include_router(r)
 
     @app.get("/healthz")

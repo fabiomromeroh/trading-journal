@@ -1,0 +1,25 @@
+<div id="install-app" class="card p-5 mb-4">
+  <div class="flex flex-wrap items-center gap-3 mb-2">
+    <img src="/static/icons/icon-192.png" alt="" class="h-10 w-10 rounded-xl">
+    <div class="mr-auto"><div class="card-h">Install as an app (free)</div>
+      <div class="text-sm text-slate-400">Opens full-screen from your home screen / dock, with its own icon. No app store, nothing to pay.</div></div>
+    <button type="button" id="install-btn" class="btn btn-p text-xs" hidden>Install app</button>
+    <span id="install-state" class="text-xs text-emerald-300" hidden>Installed ✓ (you're running the app)</span>
+  </div>
+  <div class="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm text-slate-400">
+    <div><div class="text-slate-200 font-medium">iPhone / iPad (Safari)</div>Open this site in <b>Safari</b> → <b>Share</b> (square with arrow) → <b>Add to Home Screen</b> → Add.</div>
+    <div><div class="text-slate-200 font-medium">Android (Chrome)</div>Menu <b>⋮</b> → <b>Install app</b> (or “Add to Home screen”) → Install. Or tap the button above if it appears.</div>
+    <div><div class="text-slate-200 font-medium">Desktop (Chrome / Edge)</div>Click the <b>install icon</b> at the right end of the address bar (or menu → <i>Cast, save and share</i> / <i>Apps</i> → <b>Install Trading Journal</b>).</div>
+  </div>
+  <div class="text-xs text-slate-500 mt-2">You still sign in as usual; the app only caches its icons and styles, never your trades, so it needs a connection to show data.</div>
+</div>
+<script>
+(function () {
+  const btn = document.getElementById('install-btn'), done = document.getElementById('install-state');
+  if (window.matchMedia('(display-mode: standalone)').matches || navigator.standalone) { done.hidden = false; return; }
+  function show() { if (window.tjInstallPrompt) btn.hidden = false; }
+  show(); document.addEventListener('tj:installable', show);
+  btn.onclick = async () => { const p = window.tjInstallPrompt; if (!p) return; p.prompt(); await p.userChoice; window.tjInstallPrompt = null; btn.hidden = true; };
+  window.addEventListener('appinstalled', () => { btn.hidden = true; done.hidden = false; });
+})();
+</script>

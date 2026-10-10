@@ -8,7 +8,7 @@ passes the pings stop and Render puts the service to sleep ~15 min after the las
 
 Not counted as visits: the pings themselves (/healthz), static files, /api/ingest/* (Gmail Apps
 Script fill posts: they wake the service and run, but don't extend the window), robots.txt,
-favicon, and the htmx background polls of a running sync. State is in memory (a restart/deploy
+favicon/app icons, manifest, service worker, offline page, and the htmx background polls of a running sync. State is in memory (a restart/deploy
 simply starts with no window; the next visit opens one).
 """
 from __future__ import annotations
@@ -23,7 +23,8 @@ from typing import Awaitable, Callable
 
 log = logging.getLogger(__name__)
 FALLBACK_URL = "https://trading-journal-xjf0.onrender.com"
-IGNORED_PREFIXES = ("/static", "/healthz", "/api/ingest/", "/robots.txt", "/favicon")
+IGNORED_PREFIXES = ("/static", "/healthz", "/api/ingest/", "/robots.txt", "/favicon", "/apple-touch-icon",
+                    "/manifest.webmanifest", "/sw.js", "/offline")
 
 
 def _int_env(name: str, default: int) -> int:
