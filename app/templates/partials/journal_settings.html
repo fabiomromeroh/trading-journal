@@ -7,7 +7,7 @@
       <select id="stop_rule" name="stop_rule" class="inp w-full mt-1">
         {% for k, v in journal_cfg.rules.items() %}<option value="{{ k }}" {{ 'selected' if journal_cfg.stop_rule == k }}>{{ v }}</option>{% endfor %}
       </select>
-      <p class="text-[11px] text-slate-500 mt-1">Stocks only: the stop is the day's low (shorts: high) of the New York entry date, from the daily bar, marked “auto”. Risk $ = (avg entry − stop) × max position size. Options have no default stop.</p>
+      <p class="text-[11px] text-slate-500 mt-1">Stocks only. Long stop = lowest low of the regular-session 5-minute bars from 09:30 NY up to and including the bar of your FIRST entry fill, minus the buffer (shorts: highest high plus buffer). No 5-minute data (older than ~58 days, or no fill time): the daily low of the entry day is used and flagged “approx”. Initial risk $ = (first entry − stop) × first entry size. Options have no default stop.</p>
     </div>
     <div>
       <label class="text-sm text-slate-300" for="r_levels">Chart R targets</label>
@@ -15,11 +15,20 @@
       <input type="hidden" name="r_form" value="1">
       <label class="flex items-center gap-2 text-sm text-slate-300 mt-2"><input type="checkbox" name="r_show" {{ 'checked' if journal_cfg.r.show }}> Show stop and R lines on the chart</label>
     </div>
+    <div>
+      <label class="text-sm text-slate-300" for="buf_value">Stop buffer</label>
+      <div class="flex gap-2 mt-1">
+        <input id="buf_value" name="buf_value" inputmode="decimal" class="inp w-28" value="{{ journal_cfg.buffer.value }}">
+        <select name="buf_mode" class="inp"><option value="usd" {{ 'selected' if journal_cfg.buffer.mode == 'usd' }}>$ below the low</option><option value="pct" {{ 'selected' if journal_cfg.buffer.mode == 'pct' }}>% of the low</option></select>
+      </div>
+      <label class="flex items-center gap-2 text-sm text-slate-300 mt-2"><input type="checkbox" name="premarket" {{ 'checked' if journal_cfg.premarket }}> Include premarket bars (default: regular session only)</label>
+      <p class="text-[11px] text-slate-500 mt-1">Changing the buffer or premarket recomputes all auto stops; manual stops are never touched.</p>
+    </div>
     <div class="md:col-span-2 flex flex-wrap gap-2"><button class="btn btn-p text-xs">Save</button></div>
   </form>
-  <form method="post" action="/settings/journal/backfill-stops" class="mb-5 flex flex-wrap items-center gap-3">
-    <button class="btn btn-s text-xs" {{ 'disabled' if journal_cfg.stop_rule == 'manual' }}>Apply default stop to all trades without one</button>
-    <span class="text-xs text-slate-500">Fetches the entry-day bar per stock trade (cached). Manual stops and Risk $ are never touched. Also runs once automatically after this update.</span>
+  <form method="get" action="/settings/stops/preview" class="mb-5 flex flex-wrap items-center gap-3">
+    <button class="btn btn-s text-xs" {{ 'disabled' if journal_cfg.stop_rule == 'manual' }}>Recompute stops…</button>
+    <span class="text-xs text-slate-500">Shows old → new for every auto stop first (dry run), then you apply. Stops computed from 5-minute bars are stored with the trade and survive the provider's ~60-day window. Manual stops and Risk $ are never touched. Runs automatically for new trades after syncs.</span>
   </form>
   <div x-data='tjQuestions({{ {"rows": journal_cfg.questions}|tojson|forceescape }})' data-testid="question-editor">
     <div class="card-h mb-1">Note questions</div>

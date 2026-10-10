@@ -113,7 +113,7 @@
   const saveFills = () => localStorage.setItem(LS_FILLS, JSON.stringify(fillOpts));
   const isBuy = (m) => (m.side ? m.side === 'BUY' : m.shape === 'arrowUp');
   const fillColor = (m) => (m.kind === 'partial' ? FILL_COLOR.partial : isBuy(m) ? FILL_COLOR.buy : FILL_COLOR.sell);
-  const shortLabel = (m) => `${isBuy(m) ? '+' : '−'}${Number(m.qty).toLocaleString('en-US', { maximumFractionDigits: 2 })} @${Number(m.price).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`;
+  const shortLabel = (m) => `${m.kind === 'add' ? 'add ' : ''}${isBuy(m) ? '+' : '−'}${Number(m.qty).toLocaleString('en-US', { maximumFractionDigits: 2 })} @${Number(m.price).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`;
 
   class FillsPrimitive {
     constructor() { this.fills = []; this.view = { zOrder: () => 'top', renderer: () => ({ draw: (t) => this.draw(t) }) }; }
@@ -192,28 +192,29 @@
     lab.addEventListener('change', () => { fillOpts.labels = lab.checked; saveFills(); if (fillsPrim) fillsPrim.setFills(data.markers); });
   }
   // ------------------------------------------------------------------ stop + R levels
-  // Stop = red solid line. R targets = entry +/- n x (entry - stop) as dashed green lines labelled "3R 215.30";
+  // Stop = red solid line. R targets = FIRST entry price +/- n x (first entry price - stop) as dashed green lines labelled "3R 215.30";
   // a level the price reached after entry (from the entry bar on, bar precision) is brighter, thicker, with a check.
   // The autoscale includes the stop, every reached level and the next one still to go (so 10R can't squash the candles).
   const rCfg = { show: C.showR !== false, levels: (C.rLevels || [3, 8, 10]).slice() };
   const fmtP = (v) => Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   function rPlan() {
-    if (!C.isStock || !C.stop || !C.entry || !data || !data.candles) return null;
-    const sign = C.direction === 'SHORT' ? -1 : 1, rps = Math.abs(C.entry - C.stop);
-    if (!rps || (sign > 0 ? C.stop >= C.entry : C.stop <= C.entry)) return null;
+    const E = C.firstEntry || C.entry;   // R is anchored at the first entry (adds don't move it)
+    if (!C.isStock || !C.stop || !E || !data || !data.candles) return null;
+    const sign = C.direction === 'SHORT' ? -1 : 1, rps = Math.abs(E - C.stop);
+    if (!rps || (sign > 0 ? C.stop >= E : C.stop <= E)) return null;
     const k = data.candles; let i0 = 0;
     for (let i = 0; i < k.length; i++) { if (k[i].time <= C.opened) i0 = i; else break; }
     const levels = rCfg.levels.map((n) => {
-      const price = C.entry + sign * n * rps;
+      const price = E + sign * n * rps;
       const reached = k.slice(i0).some((b) => (sign > 0 ? b.high >= price : b.low <= price));
       return { n, price, reached };
     });
-    return { sign, rps, levels, stop: C.stop };
+    return { sign, rps, levels, stop: C.stop, E };
   }
   function drawR(series) {
     const p = rPlan(); if (!p || !rCfg.show) return;
     series.createPriceLine({ price: p.stop, color: '#ef4444', lineWidth: 2, lineStyle: 0,
-      title: 'stop ' + fmtP(p.stop) + (C.stopAuto ? ' (auto)' : '') });
+      title: 'stop ' + fmtP(p.stop) + (C.stopAuto ? (C.stopSrc === 'daily' ? ' (auto, daily approx)' : ' (auto 5m LOD)') : '') });
     for (const l of p.levels) {
       series.createPriceLine({ price: l.price, color: l.reached ? '#34d399' : 'rgba(52,211,153,.6)', lineWidth: l.reached ? 2 : 1, lineStyle: 2,
         title: (l.reached ? '✓ ' : '') + l.n + 'R ' + fmtP(l.price) });
@@ -234,7 +235,7 @@
       <label class="block mt-3">Targets (R multiples, comma separated)
         <input id="r-levels" class="inp w-full mt-1" value="${rCfg.levels.join(', ')}" inputmode="decimal" placeholder="3, 8, 10"></label>
       <div class="mt-2 flex gap-2"><button type="button" id="r-save" class="btn btn-p text-xs">Save</button><button type="button" id="r-123" class="btn btn-s text-xs" title="1R, 2R, 3R, 8R, 10R">+1R 2R</button></div>
-      <p class="text-[11px] text-slate-500 mt-2">${p ? `1R = ${fmtP(p.rps)} per share (entry ${fmtP(C.entry)} to stop ${fmtP(C.stop)}). ✓ = price got there after entry.` :
+      <p class="text-[11px] text-slate-500 mt-2">${p ? `1R = ${fmtP(p.rps)} per share (first entry ${fmtP(p.E)} to stop ${fmtP(C.stop)}; adds don't move it). ✓ = price got there after entry.` :
         'No valid stop for this trade yet (options have none; set a stop or Risk $ in the Journal panel).'} Saved on the server for phone and desktop.</p>`;
     const apply = async (levels) => {
       const raw = levels.split(',').map((s) => parseFloat(s)).filter((x) => x > 0 && x <= 100);

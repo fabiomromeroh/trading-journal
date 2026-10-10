@@ -87,43 +87,133 @@ def position_value(t) -> float:
     return t.cost_basis if getattr(t, "cost_basis", None) else (t.entry_price or 0) * (t.quantity or 0) * (t.multiplier or 1)
 
 
+CLUSTER_MINUTES = 5
+
+
+def _fill_known(f) -> bool:
+    ex = getattr(f, "execution", None)
+    return bool(ex.time_known) if ex is not None else bool(getattr(f, "time_known", True))
+
+
+def _same_cluster(first, f) -> bool:
+    if _fill_known(first) and _fill_known(f):
+        return abs((f.executed_at - first.executed_at).total_seconds()) <= CLUSTER_MINUTES * 60
+    return first.executed_at.date() == f.executed_at.date()  # no time of day: same date counts as one entry
+
+
+def entry_split(t) -> dict | None:
+    """First entry vs adds. The first entry = the first opening fill plus any further opening fills within
+    5 minutes of it, as long as nothing has been sold yet (fills without a time of day: same date). Every other
+    opening fill is an add. None for a trade without fills."""
+    fills = sorted(getattr(t, "fills", None) or [], key=lambda f: f.position)
+    opens = [f for f in fills if f.role == "OPEN"]
+    if not opens:
+        return None
+    first_close = next((f.position for f in fills if f.role == "CLOSE"), None)
+    first, init, adds = opens[0], [opens[0]], []
+    for f in opens[1:]:
+        if (first_close is None or f.position < first_close) and _same_cluster(first, f):
+            init.append(f)
+        else:
+            adds.append(f)
+    q = sum(f.quantity for f in init)
+    return {"init": init, "adds": adds, "init_qty": q, "init_price": sum(f.price * f.quantity for f in init) / q,
+            "add_qty": sum(f.quantity for f in adds), "first_at": getattr(first, "executed_at", None), "time_known": _fill_known(first)}
+
+
+def first_entry(t) -> tuple[float | None, float]:
+    """(first-entry average price, first-entry size); falls back to the trade's average entry / max size."""
+    sp = entry_split(t)
+    return (sp["init_price"], sp["init_qty"]) if sp else (t.entry_price, t.quantity or 0.0)
+
+
 def stop_side_ok(t) -> bool:
-    """A stop must be below the entry for longs and above it for shorts."""
+    """A stop must be below the first entry for longs and above it for shorts."""
     stop = getattr(t, "initial_stop", None)
-    if stop is None or not t.entry_price:
+    px = first_entry(t)[0]
+    if stop is None or not px:
         return False
-    return stop < t.entry_price if t.direction == "LONG" else stop > t.entry_price
+    return stop < px if t.direction == "LONG" else stop > px
 
 
 def risk_per_share(t) -> float | None:
-    """|avg entry - initial stop| (valid stops only)."""
-    return abs(t.entry_price - t.initial_stop) if stop_side_ok(t) else None
+    """1R per share = |first entry price - stop| (valid stops only)."""
+    return abs(first_entry(t)[0] - t.initial_stop) if stop_side_ok(t) else None
+
+
+STOP_SOURCES = {"5m": "auto: 5m low of day before entry", "daily": "auto: daily low (approx)"}
+
+
+def stop_label(t) -> str | None:
+    """How the stop got there: manual, or which auto rule / data (None without a stop)."""
+    if getattr(t, "initial_stop", None) is None:
+        return None
+    if not getattr(t, "stop_auto", None):
+        return "manual"
+    src = STOP_SOURCES.get(getattr(t, "stop_src", None) or "", "auto")
+    if getattr(t, "direction", "LONG") == "SHORT":
+        src = src.replace("low of day", "high of day").replace("daily low", "daily high")
+    return src
+
+
+def risk_detail(t, default_risk: float | None = None) -> dict:
+    """Initial risk $ = (first entry price - stop) x first entry size x multiplier (a typed Risk $ replaces it).
+    Total risk $ = initial risk + every add measured against the SAME stop: sum of (add price - stop) x size
+    (never negative), i.e. the open risk at maximum exposure. Longs; shorts mirror it."""
+    price, qty = first_entry(t)
+    mult = getattr(t, "multiplier", 1) or 1
+    sp = entry_split(t)
+    manual = getattr(t, "risk_amount", None)
+    out = {"initial": None, "total": None, "source": None, "rps": None, "first_price": price, "init_qty": qty,
+           "add_qty": sp["add_qty"] if sp else 0.0}
+    if manual and manual > 0:
+        total_qty = qty + out["add_qty"]
+        out.update(initial=float(manual), source="risk $", total=float(manual) * (total_qty / qty) if qty else float(manual))
+        out["rps"] = risk_per_share(t)
+        return out
+    rps = risk_per_share(t)
+    if rps:
+        sign = 1 if t.direction == "LONG" else -1
+        initial = rps * qty * mult
+        adds = sum(max(0.0, sign * (f.price - t.initial_stop)) * f.quantity * mult for f in (sp["adds"] if sp else []))
+        out.update(initial=initial, total=initial + adds, rps=rps, source="auto stop" if getattr(t, "stop_auto", None) else "stop")
+    elif default_risk and default_risk > 0:
+        out.update(initial=float(default_risk), total=float(default_risk), source="default")
+    return out
 
 
 def risk_of(t, default_risk: float | None = None) -> tuple[float | None, str | None]:
-    """Planned risk in $ for R-multiples: the trade's own Risk $, else (avg entry - initial stop) x max position
-    size x multiplier (an auto "low of the day" stop counts like a manual one), else the default risk per trade
-    (Reports > default risk). A stop on the wrong side of the entry is ignored. Returns (risk, source)."""
-    r = getattr(t, "risk_amount", None)
-    if r and r > 0:
-        return float(r), "risk $"
-    per = risk_per_share(t)
-    if per:
-        return per * (t.quantity or 0) * (t.multiplier or 1), ("auto stop" if getattr(t, "stop_auto", None) else "stop")
-    if default_risk and default_risk > 0:
-        return float(default_risk), "default"
-    return None, None
+    """INITIAL risk in $ (first entry only) for R-multiples, and where it came from."""
+    d = risk_detail(t, default_risk)
+    return d["initial"], d["source"]
+
+
+def position_of(t) -> dict:
+    """Current open position: signed quantity (long +, short -), average cost of what's left, text."""
+    unit = "contracts" if getattr(t, "asset_type", "STOCK") == "OPTION" else "sh"
+    if t.status != "OPEN":
+        return {"qty": 0.0, "avg_cost": None, "text": "0 (closed)", "cost": 0.0}
+    from app.stats import open_lots
+    lots = open_lots(t)
+    q = sum(x for x, _ in lots)
+    if not q:
+        return {"qty": 0.0, "avg_cost": None, "text": "0 (flat)", "cost": 0.0}
+    cost = sum(x * p for x, p in lots)
+    sign = 1 if t.direction == "LONG" else -1
+    return {"qty": sign * q, "avg_cost": cost / q, "cost": cost * (getattr(t, "multiplier", 1) or 1),
+            "text": f"{'+' if sign > 0 else '−'}{q:,.10g} {unit} {t.direction.lower()}"}
 
 
 def risk_warnings(t) -> list[str]:
     out = []
     stop = getattr(t, "initial_stop", None)
-    if stop is not None and t.entry_price:
+    px = first_entry(t)[0]
+    if stop is not None and px:
         if not stop_side_ok(t):
-            out.append(f"Stop {stop:,.2f} is {'above' if t.direction == 'LONG' else 'below'} the entry "
-                       f"{t.entry_price:,.2f}: invalid for a {t.direction.lower()}, so it isn't used.")
+            out.append(f"Stop {stop:,.2f} is {'above' if t.direction == 'LONG' else 'below'} the first entry "
+                       f"{px:,.2f}: invalid for a {t.direction.lower()}, so it isn't used.")
         else:
-            pct = abs(t.entry_price - stop) / t.entry_price * 100
+            pct = abs(px - stop) / px * 100
             if pct < 0.15:
                 out.append(f"Risk is tiny ({pct:.2f}% of the entry): R-multiples will look huge.")
             elif pct > 20:
@@ -152,29 +242,43 @@ def mae_efficiency(t) -> float | None:
     return t.net_pnl / abs(t.mae) * 100
 
 
+def _bar_dt(t):
+    """Naive-UTC datetime of the 5-minute bar that printed the stored low/high (None for daily / manual stops)."""
+    from datetime import datetime
+    b = getattr(t, "stop_bar", None)
+    return datetime.utcfromtimestamp(b) if b and getattr(t, "stop_src", None) == "5m" else None
+
+
 def trade_metrics(t, default_risk: float | None = None, price: float | None = None) -> dict:
     """Per-trade stats for the trade page's stat bar. ``price`` = latest price (open trades: current R)."""
-    risk, src = risk_of(t, default_risk)
+    rd = risk_detail(t, default_risk)
+    risk, src, total = rd["initial"], rd["source"], rd["total"]
     stop, target = getattr(t, "initial_stop", None), getattr(t, "profit_target", None)
+    fp = rd["first_price"]
     planned_rr = None
-    if stop and target and t.entry_price and abs(t.entry_price - stop) > 0:
-        planned_rr = abs(target - t.entry_price) / abs(t.entry_price - stop)
+    if stop and target and fp and abs(fp - stop) > 0:
+        planned_rr = abs(target - fp) / abs(fp - stop)
     qty = (t.quantity or 0) * (t.multiplier or 1)
-    open_pnl = current_r = None
-    if t.status == "OPEN" and price is not None:
-        from app.stats import open_lots
-        lots = open_lots(t)
-        q = sum(x for x, _ in lots)
-        if q:
-            sign = 1 if t.direction == "LONG" else -1
-            open_pnl = sign * (price * q - sum(x * p for x, p in lots)) * (t.multiplier or 1)
-            if risk:
-                current_r = ((t.net_pnl or 0.0) + open_pnl) / risk
-    rps = risk_per_share(t)
+    pos = position_of(t)
+    open_pnl = current_r = total_r = None
+    sign = 1 if t.direction == "LONG" else -1
+    if t.status == "OPEN" and price is not None and pos["qty"]:
+        open_pnl = sign * (price * abs(pos["qty"]) - pos["cost"] / (t.multiplier or 1)) * (t.multiplier or 1)
+    rps = rd["rps"]
+    if t.status == "OPEN" and price is not None and rps and fp:
+        current_r = sign * (price - fp) / rps           # first-entry lot: price move in units of 1R/share
+    pnl_all = (t.net_pnl or 0.0) + (open_pnl or 0.0) if (t.status == "CLOSED" or open_pnl is not None) else None
+    if risk and pnl_all is not None:
+        total_r = pnl_all / risk
+    r_on_total = (pnl_all / total) if (total and pnl_all is not None) else None
     return {
         "risk": risk, "risk_source": src, "r_multiple": r_multiple(t, default_risk), "planned_rr": planned_rr,
+        "initial_risk": risk, "total_risk": total, "init_qty": rd["init_qty"], "add_qty": rd["add_qty"],
+        "first_price": fp, "stop_label": stop_label(t), "stop_bar_at": _bar_dt(t),
         "risk_per_share": rps, "open_pnl": open_pnl, "current_r": current_r, "price": price,
+        "total_r": total_r, "r_on_total": r_on_total,
         "r_now": current_r if t.status == "OPEN" else r_multiple(t, default_risk),
+        "position": pos, "open_value": (abs(pos["qty"]) * price * (t.multiplier or 1)) if (price is not None and pos["qty"]) else (pos["cost"] or None),
         "mfe_r": (t.mfe / risk) if (risk and t.mfe is not None) else None,
         "mae_r": (t.mae / risk) if (risk and t.mae is not None) else None,
         "warnings": risk_warnings(t),
@@ -184,22 +288,19 @@ def trade_metrics(t, default_risk: float | None = None, price: float | None = No
         "position_value": position_value(t), "hold": hold_of(t),
         "return_per_share": (t.net_pnl / qty) if qty and t.status == "CLOSED" else None,
         "fills": len(getattr(t, "fills", []) or []),
-        "target_pnl": ((target - t.entry_price) * qty * (1 if t.direction == "LONG" else -1))
-        if target and t.entry_price else None,
+        "target_pnl": ((target - fp) * qty * sign) if target and fp else None,
     }
 
 
 def r_levels(t, multiples) -> list[dict]:
-    """Price of each R multiple (entry + n x risk/share for longs, minus for shorts) and whether price got there
-    after entry, judged from MFE when known (best running P&L / risk reaches n R)."""
+    """Price of each R multiple, anchored at the FIRST entry: first entry price +/- n x (first entry price - stop)
+    (minus for shorts). Adds don't move the levels."""
     rps = risk_per_share(t)
     if not rps:
         return []
     sign = 1 if t.direction == "LONG" else -1
-    out = []
-    for n in multiples:
-        out.append({"r": n, "price": round(t.entry_price + sign * n * rps, 4)})
-    return out
+    fp = first_entry(t)[0]
+    return [{"r": n, "price": round(fp + sign * n * rps, 4)} for n in multiples]
 
 
 # ----------------------------------------------------------------------------- summary

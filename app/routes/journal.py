@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app import options, stops
 from app.db import get_db
 from app.services import get_state, set_state
+from app.web import base_context, templates
 
 router = APIRouter()
 R_STATE = "chart:r_levels"
@@ -92,6 +93,18 @@ async def save_journal_settings(request: Request, db: Session = Depends(get_db))
     if "stop_rule" in form:
         rule = stops.set_rule(db, str(form["stop_rule"]))
         request.session["flash"] = f"Default stop rule: {stops.RULES[rule]}."
+    if "buf_value" in form:
+        try:
+            val = float(str(form["buf_value"]).replace(",", "."))
+        except ValueError:
+            val = 0.05
+        old = (stops.get_buffer(db), stops.premarket_on(db))
+        cfg = stops.set_buffer(db, str(form.get("buf_mode", "usd")), val)
+        stops.set_premarket(db, "premarket" in form)
+        if old != (cfg, stops.premarket_on(db)):
+            res = stops.backfill(db, force=True)
+            request.session["flash"] = (f"Stop buffer {cfg['value']:g}{'%' if cfg['mode'] == 'pct' else ' $'}"
+                                        f"{', premarket included' if 'premarket' in form else ''}: {res['refreshed'] + res['set']} auto stops recomputed.")
     if "r_levels" in form or "r_show" in form or "r_form" in form:
         cfg = {"show": "r_show" in form, "levels": _levels(str(form.get("r_levels", ""))) or DEFAULT_R["levels"]}
         set_state(db, R_STATE, json.dumps(cfg))
@@ -100,11 +113,21 @@ async def save_journal_settings(request: Request, db: Session = Depends(get_db))
     return RedirectResponse("/settings#journal-settings", status_code=303)
 
 
+@router.get("/settings/stops/preview")
+def stops_preview(request: Request, db: Session = Depends(get_db)):
+    rows = stops.preview(db)
+    ch = [r for r in rows if r["result"] != "unchanged"]
+    return templates.TemplateResponse(request, "stops_preview.html", base_context(
+        request, db, nav="settings", rows=rows, changes=ch, buffer=stops.get_buffer(db),
+        premarket=stops.premarket_on(db), counts=stops.source_counts(db)))
+
+
 @router.post("/settings/journal/backfill-stops")
 def backfill_stops(request: Request, db: Session = Depends(get_db)):
-    res = stops.backfill(db)
-    request.session["flash"] = (f"Default stops: {res['set']} set, {res['refreshed']} refreshed, {res['no-data']} without price data, "
-                                f"{res['option']} options skipped; manual stops untouched.")
+    res = stops.backfill(db, force=True)
+    request.session["flash"] = (f"Auto stops recomputed: {res['set']} set, {res['refreshed']} refreshed, {res['no-data']} without price data, "
+                                f"{res['option']} options skipped; manual stops untouched. Stocks now: "
+                                + ", ".join(f"{k} {v}" for k, v in res["by_src"].items()) + ".")
     return RedirectResponse("/settings#journal-settings", status_code=303)
 
 

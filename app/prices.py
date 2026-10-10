@@ -297,10 +297,10 @@ def _polygon(symbol: str, interval: str, start: datetime, end: datetime) -> list
              "volume": x.get("v") or 0} for x in r.json().get("results", [])]
 
 
-def _yahoo(symbol: str, interval: str, start: datetime, end: datetime) -> list[dict]:
+def _yahoo(symbol: str, interval: str, start: datetime, end: datetime, prepost: bool = False) -> list[dict]:
     r = httpx.get(f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}", params={
         "period1": _sec(start), "period2": _sec(end), "interval": interval,
-        "includePrePost": "false"}, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+        "includePrePost": "true" if prepost else "false"}, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
     r.raise_for_status()
     res = (r.json().get("chart", {}).get("result") or [None])[0]
     if not res or not res.get("timestamp"):
@@ -498,11 +498,12 @@ def fill_kinds(trade: Trade) -> list[str]:
     """Per fill (trade order): entry | add | partial | exit (the last closing fill of a closed trade)."""
     fills = list(trade.fills)
     last_close = max((i for i, f in enumerate(fills) if f.role == "CLOSE"), default=None)
-    out, seen_open = [], False
+    out = []
+    from app.metrics import entry_split
+    sp = entry_split(trade)
     for i, f in enumerate(fills):
         if f.role == "OPEN":
-            out.append("add" if seen_open else "entry")
-            seen_open = True
+            out.append("entry" if (sp is None or f in sp["init"]) else "add")
         elif trade.status == "CLOSED" and i == last_close:
             out.append("exit")
         else:

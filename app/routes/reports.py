@@ -164,9 +164,11 @@ def save_trade_risk(trade_id: int, request: Request, initial_stop: str = Form(""
         raise HTTPException(404, "Trade not found")
     new_stop = _num(initial_stop)
     if reset_auto or new_stop is None:
-        t.initial_stop, t.stop_auto = None, None
+        t.initial_stop = None
+        stops.clear_auto(t)
     elif new_stop != t.initial_stop or not t.stop_auto:
-        t.initial_stop, t.stop_auto = new_stop, None
+        t.initial_stop = new_stop
+        stops.clear_auto(t)
     t.risk_amount, t.profit_target = _num(risk_amount), _num(profit_target)
     if t.initial_stop is None:
         stops._MISS.pop(t.key, None)

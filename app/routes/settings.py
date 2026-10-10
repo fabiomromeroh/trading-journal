@@ -56,7 +56,7 @@ def keepawake_ctx() -> dict:
 def _journal_ctx(db):
     from app import options, stops
     from app.routes.journal import chart_r_config
-    return {"stop_rule": stops.get_rule(db), "rules": stops.RULES, "r": chart_r_config(db),
+    return {"stop_rule": stops.get_rule(db), "rules": stops.RULES, "buffer": stops.get_buffer(db), "premarket": stops.premarket_on(db), "r": chart_r_config(db),
             "questions": options.get_questions(db)}
 
 

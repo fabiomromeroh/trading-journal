@@ -33,7 +33,7 @@
   <table class="w-full text-sm tbl tbl-num table-auto">
     <thead>
       <tr class="text-[10px]"><th colspan="6" class="!border-b-0 !pb-0"></th><th colspan="4" class="text-center !border-b-0 !pb-0 text-slate-500">SnapTrade (last sync)</th><th class="!border-b-0"></th></tr>
-      <tr><th class="text-left">Symbol</th><th class="text-right">Qty</th><th class="text-right">Avg cost</th><th class="text-right">Last</th>
+      <tr><th class="text-left">Symbol</th><th class="text-right" title="Shares / contracts open now (− = short)">Position</th><th class="text-right">Avg cost</th><th class="text-right">Last</th>
       <th class="text-right">Open P/L</th><th class="text-right">Realized so far</th>
       <th class="text-right">Qty</th><th class="text-right">Price</th><th class="text-right">Avg cost</th><th class="text-right">Open P/L</th>
       <th class="text-left">Price time · source</th></tr>
@@ -43,7 +43,7 @@
       <tr{% if r.trade_id %} class="cursor-pointer" onclick="location='/trades/{{ r.trade_id }}'"{% endif %}>
         <td class="text-left text-white align-top">{{ r.symbol }}{% if r.direction == 'SHORT' %} <span class="text-[10px] text-amber-300">short</span>{% endif %}
           {% for fl in r.flags %}<div class="text-[10px] text-amber-300 whitespace-normal">⚠ {{ fl }}</div>{% endfor %}</td>
-        <td class="text-right align-top">{{ r.qty|qty if r.qty else '—' }}</td>
+        <td class="text-right align-top">{{ ('−' if r.direction == 'SHORT' else '+') ~ (r.qty|qty) if r.qty else '—' }}</td>
         <td class="text-right align-top">{{ r.avg|num(2) if r.avg is not none else '—' }}</td>
         <td class="text-right align-top text-white">{{ r.price|num(2) if r.price is not none else '—' }}</td>
         <td class="text-right align-top font-semibold {{ r.pnl|pnl_class }}">{{ r.pnl|money(true) if r.pnl is not none else '—' }}</td>

@@ -39,30 +39,108 @@ def client(db):
     return c
 
 
-# ----------------------------------------------------------------------------- default stop
-def test_low_of_day_stop_long_and_r(db, monkeypatch):
-    monkeypatch.setattr(stops, "day_bar", lambda db_, t, now=None: {"low": 98.0, "high": 104.0})
-    t = mk(db, entry=100, qty=100, net=600)
-    assert stops.apply_default(db, t) == "set"
-    assert (t.initial_stop, t.stop_auto) == (98.0, True)
-    # risk/share 2 x 100 sh = $200; 600 / 200 = 3.0R
-    assert metrics.risk_per_share(t) == 2.0
-    assert metrics.risk_of(t) == (200.0, "auto stop")
-    assert metrics.r_multiple(t) == 3.0
+# ----------------------------------------------------------------------------- default stop (5-minute rule)
+def ts_utc(h, m, d=10):
+    from datetime import timezone
+    return int(datetime(2026, 3, d, h, m, tzinfo=timezone.utc).timestamp())
 
 
-def test_high_of_day_stop_short(db, monkeypatch):
-    monkeypatch.setattr(stops, "day_bar", lambda db_, t, now=None: {"low": 98.0, "high": 104.0})
-    t = mk(db, direction="SHORT", entry=100, qty=50, net=-100)
-    stops.apply_default(db, t)
-    # short: stop = high 104; risk/share 4 x 50 = 200; -100 / 200 = -0.5R
-    assert t.initial_stop == 104.0 and metrics.risk_of(t)[0] == 200.0 and metrics.r_multiple(t) == -0.5
+def bar(h, m, low, high, d=10):          # 5-minute bar starting at h:m UTC (09:30 EDT = 13:30 UTC)
+    return {"time": ts_utc(h, m, d), "open": low, "high": high, "low": low, "close": high, "volume": 1}
+
+
+# Entry 2026-03-10 09:37:10 EDT = 13:37:10 UTC, i.e. inside the 09:35 bar.
+ENTRY = datetime(2026, 3, 10, 13, 37, 10)
+BARS = [bar(13, 30, 100.40, 101.00),     # 09:30
+        bar(13, 35, 100.10, 101.20),     # 09:35  <- contains the entry: LOD before/at entry = 100.10
+        bar(13, 40, 99.50, 101.50),      # 09:40  low AFTER the entry: must be ignored
+        bar(13, 45, 99.00, 100.00)]
+NOW = datetime(2026, 3, 10, 20, 0)       # after the close
+
+
+def patch_data(monkeypatch, bars=BARS, daily=None):
+    monkeypatch.setattr(stops, "intraday_bars", lambda db_, t, now: list(bars))
+    monkeypatch.setattr(stops, "day_bar", lambda db_, t, now=None: daily)
+
+
+def test_5m_lod_before_entry_minus_buffer_and_persisted(db, monkeypatch):
+    patch_data(monkeypatch, daily={"low": 99.0, "high": 102.0, "time": ts_utc(4, 0)})
+    t = mk(db, entry=101.0, opened=ENTRY, net=0)
+    assert stops.apply_default(db, t, NOW) == "set"
+    # min low of bars 09:30 + 09:35 = 100.10 (the 09:40 low 99.50 is after entry); minus default $0.05 buffer
+    assert t.initial_stop == 100.05 and t.stop_auto and t.stop_src == "5m"
+    assert (t.stop_raw, t.stop_bar, t.stop_at) == (100.10, ts_utc(13, 35), NOW)   # persisted: raw low, its bar, when
+    assert metrics.stop_label(t) == "auto: 5m low of day before entry"
+
+
+def test_5m_hod_before_entry_plus_buffer_short(db, monkeypatch):
+    patch_data(monkeypatch)
+    t = mk(db, direction="SHORT", entry=100.5, opened=ENTRY)
+    stops.apply_default(db, t, NOW)
+    # max high of 09:30 + 09:35 = 101.20 (09:40's 101.50 is later), plus 0.05
+    assert t.initial_stop == 101.25 and t.stop_raw == 101.20 and metrics.stop_label(t) == "auto: 5m high of day before entry"
+
+
+def test_buffer_percent_and_usd(db, monkeypatch):
+    patch_data(monkeypatch)
+    stops.set_buffer(db, "pct", 0.02)
+    t = mk(db, entry=101.0, opened=ENTRY)
+    stops.apply_default(db, t, NOW)
+    assert t.initial_stop == 100.08            # 100.10 - 0.02% x 100.10 = 100.07998 -> 100.08
+    stops.set_buffer(db, "usd", 0.10)
+    assert stops.apply_default(db, t, NOW, force=True) == "refreshed" and t.initial_stop == 100.00 and t.stop_prev == 100.08
+
+
+def test_fallback_to_daily_when_no_5m_flagged_approx(db, monkeypatch):
+    patch_data(monkeypatch, bars=[], daily={"low": 99.0, "high": 102.0, "time": ts_utc(4, 0)})
+    t = mk(db, entry=101.0, opened=ENTRY)
+    assert stops.apply_default(db, t, NOW) == "set"
+    assert (t.initial_stop, t.stop_src) == (98.95, "daily") and metrics.stop_label(t) == "auto: daily low (approx)"
+    # fill without a time of day -> straight to daily even if 5m bars exist
+    patch_data(monkeypatch, daily={"low": 99.0, "high": 102.0, "time": ts_utc(4, 0)})
+    t2 = mk(db, symbol="BBB", entry=101.0, opened=ENTRY, time_known=False)
+    stops.apply_default(db, t2, NOW)
+    assert t2.stop_src == "daily" and t2.initial_stop == 98.95
+    # entry older than the ~58-day 5-minute window -> daily
+    t3 = mk(db, symbol="CCC", entry=101.0, opened=ENTRY)
+    stops.apply_default(db, t3, ENTRY + timedelta(days=80))
+    assert t3.stop_src == "daily"
+
+
+def test_daily_stop_upgrades_when_5m_arrives_but_5m_never_downgrades(db, monkeypatch):
+    patch_data(monkeypatch, bars=[], daily={"low": 99.0, "high": 102.0, "time": ts_utc(4, 0)})
+    t = mk(db, entry=101.0, opened=ENTRY)
+    stops.apply_default(db, t, NOW)
+    assert t.stop_src == "daily"
+    stops._MISS.clear()
+    patch_data(monkeypatch)                                   # 5-minute bars become available
+    assert stops.apply_default(db, t, NOW) == "refreshed"
+    assert (t.initial_stop, t.stop_src, t.stop_prev) == (100.05, "5m", 98.95)
+    # the 5m window is gone later: neither a normal pass nor a forced recompute may fall back to daily data
+    patch_data(monkeypatch, bars=[], daily={"low": 90.0, "high": 120.0, "time": ts_utc(4, 0)})
+    later = NOW + timedelta(days=90)
+    assert stops.apply_default(db, t, later) == "kept" and t.initial_stop == 100.05
+    res = stops.apply_default(db, t, later, force=True)
+    assert res == "unchanged" and (t.initial_stop, t.stop_src) == (100.05, "5m")
+    stops.set_buffer(db, "usd", 0.20)                         # new buffer re-applies to the STORED raw low
+    assert stops.apply_default(db, t, later, force=True) == "refreshed" and t.initial_stop == 99.90 and t.stop_src == "5m"
+
+
+def test_stop_is_final_once_entry_bar_closed_and_moves_before(db, monkeypatch):
+    patch_data(monkeypatch)
+    t = mk(db, entry=101.0, opened=ENTRY)
+    during = datetime(2026, 3, 10, 13, 38)                    # entry bar (09:35-09:40) still forming
+    assert stops.apply_default(db, t, during) == "set" and t.initial_stop == 100.05
+    patch_data(monkeypatch, bars=[bar(13, 30, 100.40, 101.0), bar(13, 35, 100.00, 101.2)])   # bar printed a lower low
+    assert stops.apply_default(db, t, during) == "refreshed" and t.initial_stop == 99.95
+    patch_data(monkeypatch, bars=[bar(13, 30, 90.0, 101.0)])
+    assert stops.apply_default(db, t, NOW) == "kept" and t.initial_stop == 99.95      # bar closed: final
 
 
 def test_manual_stop_wins_and_rules(db, monkeypatch):
-    monkeypatch.setattr(stops, "day_bar", lambda db_, t, now=None: {"low": 98.0, "high": 104.0})
+    patch_data(monkeypatch, daily={"low": 98.0, "high": 104.0, "time": ts_utc(4, 0)})
     t = mk(db, entry=100, stop=97.0)
-    assert stops.apply_default(db, t) == "kept" and t.initial_stop == 97.0 and not t.stop_auto
+    assert stops.apply_default(db, t, NOW, force=True) == "kept" and t.initial_stop == 97.0 and not t.stop_auto
     t2 = mk(db, symbol="BBB", entry=50)
     stops.set_rule(db, "manual")
     assert stops.apply_default(db, t2) == "off" and t2.initial_stop is None
@@ -73,36 +151,21 @@ def test_manual_stop_wins_and_rules(db, monkeypatch):
     assert stops.apply_default(db, rk) == "has-risk" and rk.initial_stop is None
 
 
-def test_auto_stop_refreshes_only_while_day_is_young(db, monkeypatch):
-    bars = iter([{"low": 98.0, "high": 104.0}, {"low": 97.0, "high": 104.0}])
-    monkeypatch.setattr(stops, "day_bar", lambda db_, t, now=None: next(bars))
-    t = mk(db, opened=D0)
-    now = D0 + timedelta(hours=1)           # entry day still running: the day's low can still fall
-    assert stops.apply_default(db, t, now) == "set" and t.initial_stop == 98.0
-    assert stops.apply_default(db, t, now) == "refreshed" and t.initial_stop == 97.0
-    later = D0 + timedelta(days=5)          # long after the day closed: final
-    assert stops.apply_default(db, t, later) == "kept"
-
-
-def test_entry_day_uses_new_york_date_and_daily_bar(db, monkeypatch):
-    from app import prices
-    t = mk(db, opened=datetime(2026, 3, 11, 1, 30))   # 21:30 EDT on Mar 10 = New York date Mar 10
-    assert str(stops.entry_day(t)) == "2026-03-10"
-    day9 = int(datetime(2026, 3, 9, 14, 30).timestamp())   # naive local ts is fine: normalize re-keys by ET date
-    from datetime import timezone
-    ts = lambda d, h, m: int(datetime(2026, 3, d, h, m, tzinfo=timezone.utc).timestamp())  # noqa: E731
-    _ = day9
-    candles = [{"time": ts(9, 13, 30), "open": 1, "high": 5, "low": 0.5, "close": 2, "volume": 1},
-               {"time": ts(10, 13, 30), "open": 100, "high": 104, "low": 98, "close": 101, "volume": 1},
-               {"time": ts(11, 13, 30), "open": 100, "high": 110, "low": 90, "close": 101, "volume": 1}]
-    monkeypatch.setattr(prices, "_provider_order", lambda trade: ["yahoo"])
-    monkeypatch.setattr(prices, "_fetch", lambda *a, **k: candles)
-    bar = stops.day_bar(db, t, now=datetime(2026, 3, 20))
-    assert (bar["low"], bar["high"]) == (98, 104)
+def test_old_auto_stop_replaced_and_preview_is_dry_run(db, monkeypatch):
+    patch_data(monkeypatch)
+    old = mk(db, symbol="OLD", entry=101.0, opened=ENTRY, stop=99.0, stop_auto=True)   # v1 daily-low auto stop
+    man = mk(db, symbol="MAN", entry=101.0, opened=ENTRY + timedelta(minutes=1), stop=95.0)
+    rows = stops.preview(db, NOW)
+    assert [(r["symbol"], r["old"], r["new"], r["new_src"]) for r in rows] == [("OLD", 99.0, 100.05, "5m")]
+    assert old.initial_stop == 99.0 and old.stop_src is None            # preview changed nothing
+    res = stops.backfill(db, now=NOW, force=True)
+    assert old.initial_stop == 100.05 and old.stop_prev == 99.0 and man.initial_stop == 95.0 and not man.stop_auto
+    assert res["by_src"] == {"5m": 1, "manual": 1}
 
 
 def test_backfill_counts(db, monkeypatch):
-    monkeypatch.setattr(stops, "day_bar", lambda db_, t, now=None: {"low": 90.0, "high": 120.0} if t.symbol != "NOD" else None)
+    monkeypatch.setattr(stops, "intraday_bars", lambda db_, t, now: [])
+    monkeypatch.setattr(stops, "day_bar", lambda db_, t, now=None: {"low": 90.0, "high": 120.0, "time": 1} if t.symbol != "NOD" else None)
     mk(db, symbol="AAA")
     mk(db, symbol="NOD")
     mk(db, symbol="MAN", stop=95.0)
@@ -110,6 +173,79 @@ def test_backfill_counts(db, monkeypatch):
     res = stops.backfill(db, now=datetime(2026, 4, 1))
     assert res["set"] == 1 and res["no-data"] == 1 and res["option"] == 1
     assert db.scalar(select(Trade).where(Trade.symbol == "MAN")).initial_stop == 95.0
+
+
+def test_persisted_stop_fields_in_backup_export(db, monkeypatch):
+    from app import backup
+    patch_data(monkeypatch)
+    t = mk(db, entry=101.0, opened=ENTRY)
+    stops.apply_default(db, t, NOW)
+    db.commit()
+    data = backup.build(db)
+    assert backup.encode(data)                       # serialisable
+    row = data["tables"]["trades"][0]
+    assert (row["initial_stop"], row["stop_src"], row["stop_raw"], row["stop_bar"]) == (100.05, "5m", 100.10, ts_utc(13, 35))
+    assert row["stop_at"] and row["stop_auto"] in (True, 1)
+
+
+# ----------------------------------------------------------------------------- first entry vs adds, risk, position
+def fill(pos, role, qty, price, hh, mm):
+    return NS(position=pos, role=role, quantity=qty, price=price, executed_at=datetime(2026, 3, 10, hh, mm), time_known=True)
+
+
+def trade_with_adds(status="OPEN", stop=98.0, net=0.0):
+    # first entry: 100 @ 100.00 (13:32) + 50 @ 101.00 (13:34, within 5 min, nothing sold) = 150 @ 100.3333
+    # add: 100 @ 103.00 (14:15). Partial sell 100 @ 105 (14:40).
+    fills = [fill(0, "OPEN", 100.0, 100.0, 13, 32), fill(1, "OPEN", 50.0, 101.0, 13, 34),
+             fill(2, "OPEN", 100.0, 103.0, 14, 15), fill(3, "CLOSE", 100.0, 105.0, 14, 40)]
+    return NS(status=status, direction="LONG", entry_price=101.9, quantity=250.0, multiplier=1.0, net_pnl=net, gross_pnl=net,
+              initial_stop=stop, stop_auto=None, risk_amount=None, profit_target=None, mfe=None, mae=None, fills=fills,
+              cost_basis=0, fees=0.0, closed_at=None, opened_at=D0, exit_price=None, asset_type="STOCK")
+
+
+def test_first_entry_cluster_and_adds():
+    sp = metrics.entry_split(trade_with_adds())
+    assert sp["init_qty"] == 150 and round(sp["init_price"], 4) == 100.3333 and sp["add_qty"] == 100
+    # a buy 6 minutes after the first fill is an add; so is any buy after a sell
+    t = trade_with_adds()
+    t.fills[1] = fill(1, "OPEN", 50.0, 101.0, 13, 38)
+    assert metrics.entry_split(t)["init_qty"] == 100
+    t2 = trade_with_adds()
+    t2.fills = [fill(0, "OPEN", 100.0, 100.0, 13, 32), fill(1, "CLOSE", 40.0, 101.0, 13, 33), fill(2, "OPEN", 50.0, 101.0, 13, 34)]
+    assert metrics.entry_split(t2)["init_qty"] == 100 and metrics.entry_split(t2)["add_qty"] == 50
+
+
+def test_initial_vs_total_risk_adds_do_not_change_initial():
+    t = trade_with_adds(net=500.0)
+    d = metrics.risk_detail(t)
+    # 1R/share = 100.3333 - 98 = 2.3333; initial risk = 2.3333 x 150 = 350
+    # total risk = 350 + (103 - 98) x 100 = 850
+    assert round(d["rps"], 4) == 2.3333 and round(d["initial"], 2) == 350.0 and round(d["total"], 2) == 850.0
+    assert (d["init_qty"], d["add_qty"]) == (150, 100)
+    no_adds = trade_with_adds()
+    no_adds.fills = no_adds.fills[:2]
+    assert round(metrics.risk_detail(no_adds)["initial"], 2) == 350.0      # adds on/off: initial risk identical
+    # R levels hang off the first entry: 100.3333 + 3 x 2.3333 = 107.3333, never the average of all buys
+    assert [x["price"] for x in metrics.r_levels(t, [3])] == [107.3333]
+    # R-multiple = net / initial risk (500 / 350), R on total risk = 500 / 850
+    m = metrics.trade_metrics(NS(**{**t.__dict__, "status": "CLOSED"}), None)
+    assert round(m["r_multiple"], 3) == 1.429 and round(m["r_on_total"], 3) == 0.588
+
+
+def test_position_for_partially_closed_trade():
+    t = trade_with_adds()
+    # bought 250, sold 100 FIFO (all of the 100 @ 100 lot): left 50 @ 101 + 100 @ 103 = 150 sh, cost 15350 -> avg 102.3333
+    p = metrics.position_of(t)
+    assert p["text"] == "+150 sh long" and round(p["avg_cost"], 4) == 102.3333
+    m = metrics.trade_metrics(t, None, price=104.0)
+    assert m["open_value"] == 15600.0                                      # 150 x 104
+    # current R (first-entry lot) = (104 - 100.3333) / 2.3333 = 1.5714
+    assert round(m["current_r"], 4) == 1.5714
+    short = trade_with_adds(stop=106.0)
+    short.direction = "SHORT"
+    assert metrics.position_of(short)["text"] == "−150 sh short"
+    closed = trade_with_adds(status="CLOSED")
+    assert metrics.position_of(closed)["text"] == "0 (closed)"
 
 
 # ----------------------------------------------------------------------------- R maths
@@ -121,8 +257,8 @@ def test_current_r_open_trade_with_partial_exit():
            initial_stop=98.0, stop_auto=True, risk_amount=None, profit_target=None, mfe=500.0, mae=-100.0, fills=fills,
            cost_basis=0, fees=2.0, closed_at=None, opened_at=D0, exit_price=None)
     m = metrics.trade_metrics(t, None, price=103.0)
-    # open pnl = 60 x 3 = 180; (198 + 180) / 200 = 1.89R
-    assert m["open_pnl"] == 180.0 and round(m["current_r"], 2) == 1.89 and m["r_now"] == m["current_r"]
+    # open pnl = 60 x 3 = 180; first-entry lot R = (103 - 100) / 2 = 1.5R; all P&L / initial risk = (198 + 180) / 200 = 1.89R
+    assert m["open_pnl"] == 180.0 and m["current_r"] == 1.5 and m["r_now"] == 1.5 and round(m["total_r"], 2) == 1.89
     assert m["mfe_r"] == 2.5 and m["mae_r"] == -0.5          # 500/200, -100/200
     assert metrics.trade_metrics(t, None)["current_r"] is None   # no live price -> unknown, never guessed
 
@@ -253,9 +389,9 @@ def test_risk_form_manual_stop_wins_and_reset(client, db, monkeypatch):
     db.commit()
     client.get(f"/trades/{t.id}")       # page load applies the default
     db.expire_all()
-    assert db.get(Trade, t.id).initial_stop == 98.0 and db.get(Trade, t.id).stop_auto
+    assert db.get(Trade, t.id).initial_stop == 97.95 and db.get(Trade, t.id).stop_auto     # daily low 98 - $0.05 buffer
     page = client.get(f"/trades/{t.id}").text
-    assert "auto: low of entry day" in page and "3.00R" in page
+    assert "auto: daily low (approx)" in page and "2.93R" in page                      # 600 / (2.05 x 100)
     client.post(f"/trades/{t.id}/risk", data={"initial_stop": "95", "risk_amount": "", "profit_target": ""})
     db.expire_all()
     assert db.get(Trade, t.id).initial_stop == 95.0 and not db.get(Trade, t.id).stop_auto
@@ -264,7 +400,7 @@ def test_risk_form_manual_stop_wins_and_reset(client, db, monkeypatch):
     assert db.get(Trade, t.id).initial_stop == 95.0                  # still manual
     client.post(f"/trades/{t.id}/risk", data={"initial_stop": "95", "reset_auto": "1"})
     db.expire_all()
-    assert db.get(Trade, t.id).initial_stop == 98.0 and db.get(Trade, t.id).stop_auto
+    assert db.get(Trade, t.id).initial_stop == 97.95 and db.get(Trade, t.id).stop_auto
 
 
 def test_chart_page_carries_stop_and_r_levels(client, db, monkeypatch):
@@ -272,7 +408,7 @@ def test_chart_page_carries_stop_and_r_levels(client, db, monkeypatch):
     t = mk(db, entry=100, qty=10, net=10, opened=datetime(2026, 1, 5, 15, 0))
     db.commit()
     page = client.get(f"/trades/{t.id}").text
-    assert "stop: 98.0" in page and "rLevels: [3, 8, 10]" in page and "showR: true" in page
+    assert "stop: 97.95" in page and "rLevels: [3, 8, 10]" in page and "showR: true" in page
     client.post("/settings/journal/save", data={"r_form": "1", "r_levels": "1, 2, 5", "r_show": "on"})
     assert "rLevels: [1, 2, 5]" in client.get(f"/trades/{t.id}").text
     assert client.post("/chart/r-levels", content=json.dumps({"show": False, "levels": [4]})).json()["levels"] == [4]
@@ -398,3 +534,22 @@ def test_migration_0004_keeps_old_notes(tmp_path):
 
 
 _ = (JournalOption, TradeFill)
+
+
+# ----------------------------------------------------------------------------- pages: position, initial/total risk, settings
+def test_trade_page_position_initial_total_risk_and_settings(client, db):
+    t = mk(db, entry=101.5, qty=200, status="OPEN", net=0.0, stop=98.0, opened=datetime(2026, 3, 10, 13, 32))
+    t.closed_at = None
+    for pos, role, side, q, px, hh, mm in [(0, "OPEN", "BUY", 100, 100.0, 13, 32), (1, "OPEN", "BUY", 100, 103.0, 14, 15),
+                                           (2, "CLOSE", "SELL", 50, 105.0, 14, 40)]:
+        db.add(TradeFill(trade_id=t.id, execution_id=None, position=pos, side=side, role=role, quantity=q, price=px, fees=0.0,
+                         executed_at=datetime(2026, 3, 10, hh, mm)))
+    db.commit()
+    page = client.get(f"/trades/{t.id}").text
+    # first entry 100 @ 100, stop 98 -> initial risk 200; the add 100 @ 103 -> total 200 + 500 = 700; 150 sh left
+    assert "+150 sh long" in page and "$200" in page and "$700" in page and "Initial risk" in page
+    assert "firstEntry: 100.0" in page
+    assert client.get("/settings").text.count("Stop buffer") >= 1
+    assert client.get("/settings/stops/preview").status_code == 200
+    r = client.post("/settings/journal/save", data={"buf_value": "0.2", "buf_mode": "usd"}, follow_redirects=False)
+    assert r.status_code == 303 and stops.get_buffer(db) == {"mode": "usd", "value": 0.2}

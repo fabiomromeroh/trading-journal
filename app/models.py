@@ -138,6 +138,11 @@ class Trade(Base):
     risk_amount: Mapped[float | None] = mapped_column(Float)   # $ risk; overrides the stop-based risk
     profit_target: Mapped[float | None] = mapped_column(Float)
     stop_auto: Mapped[bool | None] = mapped_column(Boolean)      # True: initial_stop was set by the default-stop rule
+    stop_src: Mapped[str | None] = mapped_column(String(8))      # how the auto stop was computed: '5m' | 'daily'
+    stop_raw: Mapped[float | None] = mapped_column(Float)        # the day's low/high before entry, without the buffer
+    stop_bar: Mapped[int | None] = mapped_column(Integer)        # epoch of the bar that printed it (UTC seconds; daily: NY date key)
+    stop_at: Mapped[datetime | None] = mapped_column(DateTime)   # when the auto stop was computed (UTC)
+    stop_prev: Mapped[float | None] = mapped_column(Float)       # the stop it replaced (kept for reference)
     exec_grade: Mapped[str | None] = mapped_column(String(2))    # optional execution grade A-F
     journal: Mapped[str | None] = mapped_column(Text)            # JSON {question id: answer} (notes stays "Other notes")
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)

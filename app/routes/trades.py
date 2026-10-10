@@ -284,7 +284,8 @@ def trade_r(trade_id: int, db: Session = Depends(get_db)):
     from app.routes.reports import default_risk
     t = _get_trade(db, trade_id)
     m = trade_metrics(t, default_risk(db), live_price(t))
-    return {"current_r": m["current_r"], "price": m["price"], "open_pnl": m["open_pnl"], "r_multiple": m["r_multiple"]}
+    return {"current_r": m["current_r"], "price": m["price"], "open_pnl": m["open_pnl"], "r_multiple": m["r_multiple"],
+            "total_r": m["total_r"], "position": m["position"]["text"], "open_value": m["open_value"]}
 
 
 @router.get("/trades/{trade_id}/chart.json")

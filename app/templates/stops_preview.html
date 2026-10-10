@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Recompute stops{% endblock %}
+{% block content %}
+<div class="mb-3">
+  <h1 class="text-2xl font-semibold text-white">Recompute stops: preview</h1>
+  <p class="text-sm text-slate-500">Nothing is changed yet. Buffer {{ buffer.value }}{{ '%' if buffer.mode == 'pct' else ' $' }}{{ ', premarket included' if premarket }}. Manual stops are never touched; a stored 5-minute stop is never replaced by daily data (the old value is kept as “previous”).</p>
+  <p class="text-xs text-slate-400 mt-1" data-testid="stop-counts">Stocks now: {% for k, v in counts.items() %}{{ k }} {{ v }}{{ ' · ' if not loop.last }}{% endfor %}</p>
+</div>
+<div class="card p-4 overflow-x-auto">
+  {% if changes %}
+  <table class="w-full text-sm tbl tbl-num" data-testid="stop-preview">
+    <thead><tr><th class="text-left">Trade</th><th class="text-left">Opened</th><th class="text-right">Old stop</th><th class="text-left">Old source</th><th class="text-right">New stop</th><th class="text-left">New source</th></tr></thead>
+    <tbody>{% for r in changes %}
+      <tr class="cursor-pointer" onclick="location='/trades/{{ r.id }}'"><td class="text-left text-white">#{{ r.id }} {{ r.symbol }}{% if r.direction == 'SHORT' %} <span class="text-[10px] text-amber-300">short</span>{% endif %}</td>
+        <td class="text-left text-slate-400">{{ r.opened|local_dt('%b %d, %Y') }}</td>
+        <td class="text-right">{{ r.old|num(2) if r.old is not none else '—' }}</td><td class="text-left text-slate-500">{{ r.old_src or ('old rule' if r.old is not none else '') }}</td>
+        <td class="text-right font-semibold text-white">{{ r.new|num(2) }}</td><td class="text-left {{ 'text-emerald-300' if r.new_src == '5m' else 'text-amber-300' }}">{{ '5m LOD' if r.new_src == '5m' else 'daily (approx)' }}</td></tr>
+    {% endfor %}</tbody>
+  </table>
+  {% else %}<p class="text-sm text-slate-400">No changes: all auto stops already match the current rule.</p>{% endif %}
+  <div class="mt-4 flex gap-2">
+    <form method="post" action="/settings/journal/backfill-stops"><button class="btn btn-p text-xs" {{ 'disabled' if not changes }}>Apply {{ changes|length }} change{{ '' if changes|length == 1 else 's' }}</button></form>
+    <a href="/settings#journal-settings" class="btn btn-s text-xs">Back</a>
+  </div>
+</div>
+{% endblock %}

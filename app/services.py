@@ -565,7 +565,7 @@ def rebuild_trades(db: Session, account_ids: list[int] | None = None) -> int:
     return total
 
 
-JOURNAL_FIELDS = ("notes", "setup", "rating", "initial_stop", "risk_amount", "profit_target", "stop_auto", "exec_grade", "journal")
+JOURNAL_FIELDS = ("notes", "setup", "rating", "initial_stop", "risk_amount", "profit_target", "stop_auto", "stop_src", "stop_raw", "stop_bar", "stop_at", "stop_prev", "exec_grade", "journal")
 
 
 def _has_journal(tr: Trade) -> bool:
