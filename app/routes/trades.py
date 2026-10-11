@@ -185,13 +185,18 @@ def trade_detail(trade_id: int, request: Request, db: Session = Depends(get_db))
         prev_id = db.scalar(select(Trade.id).where(Trade.opened_at > t.opened_at).order_by(Trade.opened_at.asc()))
         next_id = db.scalar(select(Trade.id).where(Trade.opened_at < t.opened_at).order_by(Trade.opened_at.desc()))
     filtered = any(k in q for k in LIST_KEYS if k not in ("sort", "dir"))
+    native = currency.trade_ccy(t)
+    extras = trade_extras(db, t, live_price(t))
+    fx = currency.presentation(db, t, extras["tm"])
+    # A missing rate must not stamp the selected symbol on instrument-currency amounts.
+    symbol_override = {} if fx.show or native == currency.get_display(db) else {"display_symbol": currency.symbol(native)}
     return templates.TemplateResponse(request, "trade_detail.html", base_context(
-        request, db, nav="trades", t=t, native_symbol=currency.symbol(currency.trade_ccy(t)),
-        native_ccy=currency.trade_ccy(t), display_symbol=currency.symbol(currency.trade_ccy(t)),
-        list_symbol=currency.symbol(currency.get_display(db)), prev_id=prev_id, next_id=next_id,
+        request, db, nav="trades", t=t, native_symbol=currency.symbol(native),
+        native_ccy=native, fx=fx, list_symbol=currency.symbol(currency.get_display(db)), prev_id=prev_id, next_id=next_id,
+        **symbol_override,
         saved=False, fullscreen=True, **journal_ctx(db, t), stop_rule=stops.get_rule(db), opened_ts=int(t.opened_at.replace(tzinfo=timezone.utc).timestamp()), mfe_note=excursion_note(excursion_basis(t)), nav_rows=nav_rows,
         list_qs=list_qs, in_list=in_list, list_filtered=filtered, list_truncated=len(nav_rows) >= SIDEBAR_LIMIT,
-        **trade_extras(db, t, live_price(t))))
+        **extras))
 
 
 def _auto_stop(db: Session, t: Trade) -> None:
@@ -299,9 +304,15 @@ def trade_r(trade_id: int, db: Session = Depends(get_db)):
     from app.routes.reports import default_risk
     t = _get_trade(db, trade_id)
     m = trade_metrics(t, default_risk(db), live_price(t))
-    return {"current_r": m["current_r"], "price": m["price"], "open_pnl": m["open_pnl"], "r_multiple": m["r_multiple"], "open_pnl_pct": m["open_pnl_pct"], "open_r": m["open_r"],
-            "realized": t.net_pnl,
-            "total_r": m["total_r"], "position": m["position"]["text"], "open_value": m["open_value"]}
+    from app import currency
+    fx = currency.presentation(db, t, m)
+    native = currency.symbol(currency.trade_ccy(t))
+    return {"current_r": m["current_r"], "price": m["price"], "open_pnl": fx.unrealized if fx.show else m["open_pnl"],
+            "open_pnl_native": m["open_pnl"] if fx.show else None, "native_symbol": native,
+            "r_multiple": m["r_multiple"], "open_pnl_pct": m["open_pnl_pct"], "open_r": m["open_r"],
+            "realized": fx.net if fx.show else t.net_pnl, "realized_native": t.net_pnl if fx.show else None,
+            "total_r": m["total_r"], "position": m["position"]["text"],
+            "open_value": fx.open_value if fx.show else m["open_value"]}
 
 
 @router.get("/trades/{trade_id}/chart.json")
@@ -311,10 +322,14 @@ def trade_chart(trade_id: int, tf: str | None = None, db: Session = Depends(get_
     data = get_chart(db, t, tf)
     exc = update_trade_excursions(db, t)
     db.commit()
-    data["mfe"], data["mae"] = t.mfe, t.mae
     from app.metrics import trade_metrics
     from app.routes.reports import default_risk
+    from app import currency
     m = trade_metrics(t, default_risk(db))
+    fx = currency.presentation(db, t, m)
+    data["mfe"], data["mae"] = (fx.mfe, fx.mae) if fx.show else (t.mfe, t.mae)
+    data["mfe_native"], data["mae_native"] = (t.mfe, t.mae) if fx.show else (None, None)
+    data["native_symbol"] = currency.symbol(currency.trade_ccy(t))
     data["mfe_r"], data["mae_r"] = m["mfe_r"], m["mae_r"]
     data["excursion"] = {**exc, "note": excursion_note(exc)}
     return JSONResponse(json.loads(json.dumps(data, default=str)))

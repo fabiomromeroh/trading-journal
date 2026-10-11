@@ -1,47 +1,50 @@
 {# One stat card in the trade page's top bar. Context: wid, t, tm #}
 {% from "partials/info.html" import info %}
-{% macro kv(label, value, cls='', id='', title='') %}<div class="tstat-card rounded-lg border border-slate-800 bg-[#111827] px-3 py-1.5 min-w-0"><div class="text-[10px] uppercase tracking-wide text-slate-500 font-semibold flex items-center min-w-0"><span class="truncate">{{ label }}</span>{{ info(wid, 'trade', title) }}</div><div {% if id %}id="{{ id }}" {% endif %}class="text-sm font-semibold truncate {{ cls or 'text-white' }}" title="{{ value }}">{{ value }}</div></div>{% endmacro %}
+{% macro kv(label, value, cls='', id='', title='', wrap=false) %}<div class="tstat-card rounded-lg border border-slate-800 bg-[#111827] px-3 py-1.5 min-w-0"><div class="text-[10px] uppercase tracking-wide text-slate-500 font-semibold flex items-center min-w-0"><span class="truncate">{{ label }}</span>{{ info(wid, 'trade', title) }}</div><div {% if id %}id="{{ id }}" {% endif %}class="text-sm font-semibold {{ 'leading-tight' if wrap else 'truncate' }} {{ cls or 'text-white' }}" title="{{ value|striptags }}">{{ value }}</div></div>{% endmacro %}
 {% macro pct(v, d=0) %}{{ (v|num(d) ~ '%') if v is not none else '—' }}{% endmacro %}
+{% macro px(v, d=2) %}{{ native_symbol }}{{ v|num(d) if v is not none else '—' }}{% endmacro %}
+{% macro duo(native, disp, signed=false, dec=2) %}{% if fx and fx.show and disp is not none %}{{ disp|money(signed, dec) }} <span class="text-[10px] text-slate-500 font-normal">({{ native|money(signed, dec, sym=native_symbol) }})</span>{% else %}{{ native|money(signed, dec) }}{% endif %}{% endmacro %}
 {% set closed = t.status == 'CLOSED' %}
-{% if wid == 'net' %}{{ kv('Net P&L' if closed else 'Realized so far', t.net_pnl|money(true), t.net_pnl|pnl_class) }}
-{% elif wid == 'gross' %}{{ kv('Gross P&L', t.gross_pnl|money(true), t.gross_pnl|pnl_class) }}
-{% elif wid == 'fees' %}{{ kv('Fees', t.fees|money) }}
+{% set both = fx and fx.show %}
+{% if wid == 'net' %}{{ kv('Net P&L' if closed else 'Realized so far', duo(t.net_pnl, fx.net if fx else none, true), t.net_pnl|pnl_class, wrap=both) }}
+{% elif wid == 'gross' %}{{ kv('Gross P&L', duo(t.gross_pnl, fx.gross if fx else none, true), t.gross_pnl|pnl_class, wrap=both) }}
+{% elif wid == 'fees' %}{{ kv('Fees', duo(t.fees, fx.fees if fx else none), wrap=both) }}
 {% elif wid == 'return' %}{{ kv('Return', (t.return_pct|num(2) ~ '%') if t.return_pct is not none else '—', t.return_pct|pnl_class) }}
-{% elif wid == 'entry_exit' %}{{ kv('Entry / exit', t.entry_price|num(2) ~ ' → ' ~ t.exit_price|num(2)) }}
-{% elif wid == 'entry' %}{{ kv('Avg entry', t.entry_price|num(2)) }}
-{% elif wid == 'exit' %}{{ kv('Avg exit', t.exit_price|num(2)) }}
+{% elif wid == 'entry_exit' %}{{ kv('Entry / exit', px(t.entry_price) ~ ' → ' ~ (px(t.exit_price) if t.exit_price is not none else '—'), title='Prices in ' ~ native_ccy) }}
+{% elif wid == 'entry' %}{{ kv('Avg entry', px(t.entry_price), title='Price in ' ~ native_ccy) }}
+{% elif wid == 'exit' %}{{ kv('Avg exit', px(t.exit_price) if t.exit_price is not none else '—', title='Price in ' ~ native_ccy) }}
 {% elif wid == 'max_size' %}{{ kv('Max size', t.quantity|qty ~ (' contracts' if t.asset_type == 'OPTION' else ' sh')) }}
 {% elif wid == 'hold' %}{{ kv('Hold time', ((t.closed_at - t.opened_at)|td if t.closed_at else 'open') ~ ('' if t.time_known else ' (date only)')) }}
-{% elif wid == 'mfe_mae' %}{{ kv('MFE / MAE', (t.mfe|money ~ ' / ' ~ t.mae|money) if t.mfe is not none else '—', '', 'mfe', mfe_note) }}
-{% elif wid == 'mfe' %}{{ kv('MFE', t.mfe|money, 'text-emerald-400', title=mfe_note or 'Most the position was up while open') }}
-{% elif wid == 'mae' %}{{ kv('MAE', t.mae|money, 'text-rose-400', title=mfe_note or 'Most the position was down while open') }}
+{% elif wid == 'mfe_mae' %}{{ kv('MFE / MAE', (duo(t.mfe, fx.mfe if fx else none) ~ ' / ' ~ duo(t.mae, fx.mae if fx else none)) if t.mfe is not none else '—', '', 'mfe', mfe_note, wrap=both) }}
+{% elif wid == 'mfe' %}{{ kv('MFE', duo(t.mfe, fx.mfe if fx else none), 'text-emerald-400', title=mfe_note or 'Most the position was up while open', wrap=both) }}
+{% elif wid == 'mae' %}{{ kv('MAE', duo(t.mae, fx.mae if fx else none), 'text-rose-400', title=mfe_note or 'Most the position was down while open', wrap=both) }}
 {% elif wid == 'mfe_eff' %}{{ kv('MFE efficiency', pct(tm.mfe_eff), '', title='Net P&L ÷ MFE: share of the best run you kept') }}
 {% elif wid == 'mae_eff' %}{{ kv('MAE efficiency', pct(tm.mae_eff), '', title='Net P&L ÷ |MAE|') }}
-{% elif wid == 'best_exit' %}{{ kv('Best exit possible', tm.best_exit|money(true), 'text-emerald-300', title='= MFE: P&L at the best price between entry and exit') }}
-{% elif wid == 'left_on_table' %}{{ kv('Left on the table', tm.left_on_table|money, '', title='MFE − gross P&L') }}
+{% elif wid == 'best_exit' %}{{ kv('Best exit possible', duo(tm.best_exit, fx.best if fx else none, true), 'text-emerald-300', title='= MFE: P&L at the best price between entry and exit', wrap=both) }}
+{% elif wid == 'left_on_table' %}{{ kv('Left on the table', duo(tm.left_on_table, fx.left if fx else none), '', title='MFE − gross P&L', wrap=both) }}
 {% elif wid == 'r_now' %}{% if t.status == 'OPEN' %}{{ kv('Current R', (tm.current_r|num(2) ~ 'R') if tm.current_r is not none else '—', tm.current_r|pnl_class, 'rnow', 'Open trade, first-entry lot: (price − first entry price) ÷ (first entry price − stop)' ~ ((' · price ' ~ tm.price|num(2)) if tm.price else ' · no live price') ~ ' · all P&L ÷ initial risk: ' ~ ((tm.total_r|num(2) ~ 'R') if tm.total_r is not none else '—')) }}
   {% else %}{{ kv('R-multiple', (tm.r_multiple|num(2) ~ 'R') if tm.r_multiple is not none else '—', tm.r_multiple|pnl_class, 'rnow', 'Net P&L ÷ INITIAL risk $ (first entry only; ' ~ (tm.risk_source or 'no risk: stop price or Risk $ needed') ~ ') · reward:risk achieved ' ~ (('1 : ' ~ tm.r_multiple|num(2)) if tm.r_multiple is not none else '—')) }}{% endif %}
-{% elif wid == 'unrealized' %}{% if t.status == 'OPEN' and tm.open_pnl is not none %}{{ kv('Unrealized P&L', tm.open_pnl|money(true) ~ ' · ' ~ ('%+.1f%%'|format(tm.open_pnl_pct) if tm.open_pnl_pct is not none else '—'), tm.open_pnl|pnl_class, 'unrl', 'Open shares only: (latest price ' ~ tm.price|num(2) ~ ' − avg cost ' ~ tm.position.avg_cost|num(2) ~ ') × ' ~ tm.position.qty|abs|qty ~ ' remaining' ~ (' (sign flipped for shorts)' if t.direction == 'SHORT' else '') ~ ' · % of the remaining cost · ' ~ ((tm.open_r|num(2) ~ 'R of initial risk') if tm.open_r is not none else 'no risk set') ~ ' · realized so far (partial exits, net) ' ~ t.net_pnl|money(true)) }}
+{% elif wid == 'unrealized' %}{% if t.status == 'OPEN' and tm.open_pnl is not none %}{{ kv('Unrealized P&L', duo(tm.open_pnl, fx.unrealized if fx else none, true) ~ ' · ' ~ ('%+.1f%%'|format(tm.open_pnl_pct) if tm.open_pnl_pct is not none else '—'), tm.open_pnl|pnl_class, 'unrl', 'Open shares only: (latest price ' ~ px(tm.price) ~ ' − avg cost ' ~ px(tm.position.avg_cost) ~ ') × ' ~ tm.position.qty|abs|qty ~ ' remaining' ~ (' (sign flipped for shorts)' if t.direction == 'SHORT' else '') ~ ' · % of the remaining cost · ' ~ ((tm.open_r|num(2) ~ 'R of initial risk') if tm.open_r is not none else 'no risk set') ~ ' · realized so far (partial exits, net) ' ~ duo(t.net_pnl, fx.net if fx else none, true) ~ '. Open positions at the latest rate.', wrap=both) }}
   {% else %}{{ kv('Unrealized P&L', '—', '', 'unrl', 'Open trades only: (latest price − avg cost of the remaining shares) × remaining qty' ~ (' · closed: see Net P&L' if t.status == 'CLOSED' else ' · no live price right now')) }}{% endif %}
 {% elif wid == 'total_r' %}{{ kv('Total R', (tm.total_r|num(2) ~ 'R') if tm.total_r is not none else '—', tm.total_r|pnl_class, title='All P&L (realized' ~ (' + open' if t.status == 'OPEN' else '') ~ ') ÷ initial risk $ (first entry)') }}
 {% elif wid == 'r_on_total' %}{{ kv('R on total risk', (tm.r_on_total|num(2) ~ 'R') if tm.r_on_total is not none else '—', tm.r_on_total|pnl_class, title='All P&L ÷ total risk $ (first entry + adds, each measured against the same stop)') }}
-{% elif wid == 'total_risk' %}{{ kv('Total risk $', tm.total_risk|money, '', title='Initial risk + Σ (add price − stop) × add size, all against the same stop: open risk at maximum exposure') }}
+{% elif wid == 'total_risk' %}{{ kv('Total risk $', duo(tm.total_risk, fx.total_risk if fx else none), '', title='Initial risk + Σ (add price − stop) × add size, all against the same stop: open risk at maximum exposure', wrap=both) }}
 {% elif wid == 'init_size' %}{{ kv('Initial size', tm.init_qty|qty, '', title='First entry: the first opening fill plus opening fills within 5 minutes of it, before any sell') }}
 {% elif wid == 'add_size' %}{{ kv('Add-on size', (tm.add_qty|qty) if tm.add_qty else '0', '', title='Opening fills after the first entry') }}
 {% elif wid == 'position' %}{{ kv('Position', tm.position.text, 'text-white' if t.status == 'OPEN' else 'text-slate-400', title='Shares / contracts open right now (direction shown); 0 when the trade is closed. Max size = largest position held.') }}
-{% elif wid == 'avg_cost' %}{{ kv('Avg cost', tm.position.avg_cost|num(2) if tm.position.avg_cost else '—', '', title='Average cost of the shares still open (FIFO lots)') }}
-{% elif wid == 'open_value' %}{{ kv('Open value', tm.open_value|money if tm.position.qty else '—', '', title='Open shares × ' ~ ('latest price' if tm.price else 'avg cost (no live price)')) }}
+{% elif wid == 'avg_cost' %}{{ kv('Avg cost', px(tm.position.avg_cost) if tm.position.avg_cost else '—', '', title='Average cost of the shares still open (FIFO lots), price in ' ~ native_ccy) }}
+{% elif wid == 'open_value' %}{{ kv('Open value', duo(tm.open_value, fx.open_value if fx else none) if tm.position.qty else '—', '', title='Open shares × ' ~ ('latest price' if tm.price else 'avg cost (no live price)') ~ '. Open positions at the latest rate.', wrap=both) }}
 {% elif wid == 'mfe_mae_r' %}{{ kv('MFE / MAE (R)', ((tm.mfe_r|num(1) ~ 'R / ' ~ tm.mae_r|num(1) ~ 'R') if tm.mfe_r is not none and tm.mae_r is not none else '—'), '', 'mferid', 'MFE and MAE in R: best / worst running P&L ÷ risk $') }}
 {% elif wid == 'mistakes' %}{{ kv('Mistakes', t.mistakes|join(', ') or 'none', 'text-rose-300' if t.mistakes else 'text-slate-400') }}
 {% elif wid == 'exec_grade' %}{{ kv('Execution grade', t.exec_grade or '—') }}
 {% elif wid == 'r_multiple' %}{{ kv('R-multiple', (tm.r_multiple|num(2) ~ 'R') if tm.r_multiple is not none else '—', tm.r_multiple|pnl_class, title='Net P&L ÷ risk (' ~ (tm.risk_source or 'no risk set') ~ ')') }}
-{% elif wid == 'risk' %}{{ kv('Initial risk $', tm.risk|money, '', title='Initial risk $ = (first entry price − stop) × first entry size · source: ' ~ (tm.risk_source or 'none (set a stop or Risk $)')) }}
-{% elif wid == 'stop' %}{{ kv('Initial stop', (t.initial_stop|num(2)) if t.initial_stop is not none else '—', '', title=(tm.stop_label ~ ' (type a stop to override)') if t.stop_auto else 'Your stop (manual)') }}
-{% elif wid == 'target' %}{{ kv('Profit target', t.profit_target|num(2)) }}
+{% elif wid == 'risk' %}{{ kv('Initial risk $', duo(tm.risk, fx.risk if fx else none), '', title='Initial risk $ = (first entry price − stop) × first entry size · source: ' ~ (tm.risk_source or 'none (set a stop or Risk $)'), wrap=both) }}
+{% elif wid == 'stop' %}{{ kv('Initial stop', px(t.initial_stop) if t.initial_stop is not none else '—', '', title=((tm.stop_label ~ ' (type a stop to override)') if t.stop_auto else 'Your stop (manual)') ~ ' · price in ' ~ native_ccy) }}
+{% elif wid == 'target' %}{{ kv('Profit target', px(t.profit_target) if t.profit_target is not none else '—', title='Price in ' ~ native_ccy) }}
 {% elif wid == 'planned_rr' %}{{ kv('Planned R:R', ('1 : ' ~ tm.planned_rr|num(2)) if tm.planned_rr is not none else '—', '', title='|target − entry| ÷ |entry − stop|') }}
-{% elif wid == 'target_pnl' %}{{ kv('Profit aim $', tm.target_pnl|money(true), '', title='P&L at the profit target') }}
-{% elif wid == 'position_value' %}{{ kv('Position value', tm.position_value|money) }}
-{% elif wid == 'return_per_share' %}{{ kv('Return / share', tm.return_per_share|money(true, 3), tm.return_per_share|pnl_class) }}
+{% elif wid == 'target_pnl' %}{{ kv('Profit aim $', duo(tm.target_pnl, fx.target if fx else none, true), '', title='P&L at the profit target', wrap=both) }}
+{% elif wid == 'position_value' %}{{ kv('Position value', duo(tm.position_value, fx.position_value if fx else none), wrap=both) }}
+{% elif wid == 'return_per_share' %}{{ kv('Return / share', duo(tm.return_per_share, fx.rps if fx else none, true, 3), tm.return_per_share|pnl_class, wrap=both) }}
 {% elif wid == 'fills' %}{{ kv('Executions', tm.fills) }}
 {% elif wid == 'opened' %}{{ kv('Opened', t.opened_at|local_dt('%b %d %H:%M' if t.time_known else '%b %d, %Y')) }}
 {% elif wid == 'closed' %}{{ kv('Closed', t.closed_at|local_dt('%b %d %H:%M' if t.time_known else '%b %d, %Y') if t.closed_at else 'open') }}

@@ -59,7 +59,7 @@ def _avg_r_by(closed, keyfn, risk):
 
 
 def build(trades, tz: str, risk: float | None, period: str = "all", symbols: bool = True, notes: bool = True,
-          now: datetime | None = None, max_notes: int = 12) -> dict:
+          now: datetime | None = None, max_notes: int = 12, ccy: str = "$") -> dict:
     closed = metrics.closed_sorted(trades)
     s = metrics.summarize(trades, tz, risk)
     b = metrics.breakdowns(trades, tz, risk)
@@ -127,19 +127,19 @@ def build(trades, tz: str, risk: float | None, period: str = "all", symbols: boo
         for t in reversed(closed):  # most recent first
             r = metrics.r_multiple(t, risk)
             tag = f"{utc_naive_to_tz(t.opened_at, tz):%Y-%m-%d} {t.direction.lower()} {sym(t.underlying)} " \
-                  f"{_usd(t.net_pnl)}{'' if r is None else f' {r:+.1f}R'}"
+                  f"{_money(t.net_pnl, ccy)}{'' if r is None else f' {r:+.1f}R'}"
             for qid, text in t.answers.items():
                 if qid in qlabel and text and len(snippets[qlabel[qid]]) < max_notes:
                     snippets[qlabel[qid]].append(f"[{tag}] {str(text)[:240]}")
             if t.notes and len(snippets["other_notes"]) < max_notes:
                 snippets["other_notes"].append(f"[{tag}] {t.notes[:240]}")
         data["notes"] = dict(snippets)
-    data["rule_based_insights"] = [f"{i['title']}: {i['text']}" for i in coach.insights(trades, tz, risk, limit=12)]
+    data["rule_based_insights"] = [f"{i['title']}: {i['text']}" for i in coach.insights(trades, tz, risk, limit=12, sym=ccy)]
     return data
 
 
-def _usd(v):
-    return f"-${abs(v):,.0f}" if v < 0 else f"${v:,.0f}"
+def _money(v, sym="$"):
+    return f"-{sym}{abs(v):,.0f}" if v < 0 else f"{sym}{v:,.0f}"
 
 
 def to_json(data: dict) -> str:

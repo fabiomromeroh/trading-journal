@@ -14,15 +14,15 @@ MIN_MISTAKE = 2        # trades with a mistake before its cost is reported
 WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
 
-def _usd(v: float) -> str:
-    return f"-${abs(v):,.0f}" if v < 0 else f"${v:,.0f}"
-
-
 def _r(t, risk):
     return metrics.r_multiple(t, risk)
 
 
-def insights(trades, tz: str = "America/New_York", default_risk: float | None = None, limit: int = 10) -> list[dict]:
+def insights(trades, tz: str = "America/New_York", default_risk: float | None = None, limit: int = 10,
+             sym: str = "$") -> list[dict]:
+    def _money(v: float) -> str:
+        return f"-{sym}{abs(v):,.0f}" if v < 0 else f"{sym}{v:,.0f}"
+
     closed = [t for t in trades if t.status == "CLOSED"]
     out: list[dict] = []
     if len(closed) < 5:
@@ -53,12 +53,12 @@ def insights(trades, tz: str = "America/New_York", default_risk: float | None = 
                 add("good", f"Best setup: {best[0]}", f"{best[0]} averages {best[2]:+.2f}R over {len(best[1])} trades vs "
                     f"{mean(rest_rs):+.2f}R for the others. Take more of these.")
             else:
-                add("good", f"Best setup: {best[0]}", f"{best[0]} averages {_usd(best[3])} per trade over {len(best[1])} trades vs "
-                    f"{_usd(mean(t.net_pnl for t in rest))} for the others.")
+                add("good", f"Best setup: {best[0]}", f"{best[0]} averages {_money(best[3])} per trade over {len(best[1])} trades vs "
+                    f"{_money(mean(t.net_pnl for t in rest))} for the others.")
         worst = min(scored, key=key)
         if worst[0] != best[0] and worst[3] < 0:
-            add("warn", f"Losing setup: {worst[0]}", f"{worst[0]} lost {_usd(sum(t.net_pnl for t in worst[1]))} over "
-                f"{len(worst[1])} trades ({_usd(worst[3])} average). Cut it or tighten the rules.")
+            add("warn", f"Losing setup: {worst[0]}", f"{worst[0]} lost {_money(sum(t.net_pnl for t in worst[1]))} over "
+                f"{len(worst[1])} trades ({_money(worst[3])} average). Cut it or tighten the rules.")
 
     # --- mistakes
     cost: dict[str, list] = defaultdict(list)
@@ -69,14 +69,14 @@ def insights(trades, tz: str = "America/New_York", default_risk: float | None = 
                     key=lambda x: x[2])
     for m, ts, total in ranked[:2]:
         if total < 0:
-            add("warn", f"Mistake: {m}", f"Tagged on {len(ts)} trades, costing {_usd(total)} in total ({_usd(total / len(ts))} each).")
+            add("warn", f"Mistake: {m}", f"Tagged on {len(ts)} trades, costing {_money(total)} in total ({_money(total / len(ts))} each).")
     tagged = sum(1 for t in closed if t.mistakes)
     if tagged and len(closed) >= 8:
         clean = [t for t in closed if not t.mistakes]
         bad = [t for t in closed if t.mistakes]
         if len(clean) >= MIN_GROUP and len(bad) >= MIN_GROUP and mean(t.net_pnl for t in clean) > mean(t.net_pnl for t in bad):
-            add("info", "Clean trades pay more", f"Trades without a tagged mistake average {_usd(mean(t.net_pnl for t in clean))} vs "
-                f"{_usd(mean(t.net_pnl for t in bad))} with one.")
+            add("info", "Clean trades pay more", f"Trades without a tagged mistake average {_money(mean(t.net_pnl for t in clean))} vs "
+                f"{_money(mean(t.net_pnl for t in bad))} with one.")
 
     # --- plan adherence (journal question "Did I follow my plan?")
     plan = defaultdict(list)
@@ -87,8 +87,8 @@ def insights(trades, tz: str = "America/New_York", default_risk: float | None = 
     if len(plan["yes"]) >= 3 and len(plan["no"]) + len(plan["partly"]) >= 3:
         off = plan["no"] + plan["partly"]
         add("good" if mean(plan["yes"]) > mean(off) else "info", "Following the plan",
-            f"Trades where you followed the plan average {_usd(mean(plan['yes']))} ({len(plan['yes'])}) vs "
-            f"{_usd(mean(off))} when you didn't fully ({len(off)}).")
+            f"Trades where you followed the plan average {_money(mean(plan['yes']))} ({len(plan['yes'])}) vs "
+            f"{_money(mean(off))} when you didn't fully ({len(off)}).")
 
     # --- payoff: loss size vs win size
     wins = [t.net_pnl for t in closed if outcome.is_win(t.net_pnl)]
@@ -98,10 +98,10 @@ def insights(trades, tz: str = "America/New_York", default_risk: float | None = 
         wr = len(wins) / (len(wins) + len(losses))
         need = al / (aw + al)
         if al > aw:
-            add("warn", "Losses bigger than wins", f"Average loss {_usd(-al)} vs average win {_usd(aw)} (payoff {aw / al:.2f}). "
+            add("warn", "Losses bigger than wins", f"Average loss {_money(-al)} vs average win {_money(aw)} (payoff {aw / al:.2f}). "
                 f"At that size you need a {need:.0%} win rate to break even; you're at {wr:.0%}.")
         else:
-            add("good", "Winners outsize losers", f"Average win {_usd(aw)} vs average loss {_usd(-al)} (payoff {aw / al:.2f}); "
+            add("good", "Winners outsize losers", f"Average win {_money(aw)} vs average loss {_money(-al)} (payoff {aw / al:.2f}); "
                 f"break-even win rate {need:.0%}, yours {wr:.0%}.")
 
     # --- cutting winners early (MFE capture)
@@ -111,7 +111,7 @@ def insights(trades, tz: str = "America/New_York", default_risk: float | None = 
         left = sum(p[1] - p[0] for p in pairs)
         if cap < 0.5:
             add("warn", "You cut winners early", f"On winners you keep {cap:.0%} of the best open profit (MFE capture); "
-                f"about {_usd(left)} left on the table over {len(pairs)} trades.")
+                f"about {_money(left)} left on the table over {len(pairs)} trades.")
         elif cap >= 0.7:
             add("good", "Good exits on winners", f"You keep {cap:.0%} of the best open profit on winners.")
 
@@ -149,14 +149,14 @@ def insights(trades, tz: str = "America/New_York", default_risk: float | None = 
         bh = max(hs, key=lambda h: sum(hs[h]))
         wh = min(hs, key=lambda h: sum(hs[h]))
         if bh != wh:
-            add("info", "Best / worst entry hour", f"Best: {bh:02d}:00 ({_usd(sum(hs[bh]))}, {len(hs[bh])} trades). "
-                f"Worst: {wh:02d}:00 ({_usd(sum(hs[wh]))}, {len(hs[wh])} trades).")
+            add("info", "Best / worst entry hour", f"Best: {bh:02d}:00 ({_money(sum(hs[bh]))}, {len(hs[bh])} trades). "
+                f"Worst: {wh:02d}:00 ({_money(sum(hs[wh]))}, {len(hs[wh])} trades).")
     ws = {d: v for d, v in wday.items() if len(v) >= MIN_GROUP}
     if len(ws) >= 2:
         bd = max(ws, key=lambda d: sum(ws[d]))
         wd = min(ws, key=lambda d: sum(ws[d]))
         if bd != wd:
-            add("info", "Best / worst weekday", f"Best: {WEEKDAYS[bd]} ({_usd(sum(ws[bd]))}); worst: {WEEKDAYS[wd]} ({_usd(sum(ws[wd]))}).")
+            add("info", "Best / worst weekday", f"Best: {WEEKDAYS[bd]} ({_money(sum(ws[bd]))}); worst: {WEEKDAYS[wd]} ({_money(sum(ws[wd]))}).")
 
     # --- overtrading
     per_day: dict = defaultdict(list)
@@ -167,7 +167,7 @@ def insights(trades, tz: str = "America/New_York", default_risk: float | None = 
     if len(busy) >= 2 and len(calm) >= 2:
         b_avg, c_avg = mean(sum(v) for v in busy), mean(sum(v) for v in calm)
         if b_avg < c_avg:
-            add("warn", "Overtrading days", f"Days with 4+ trades average {_usd(b_avg)} vs {_usd(c_avg)} on quieter days.")
+            add("warn", "Overtrading days", f"Days with 4+ trades average {_money(b_avg)} vs {_money(c_avg)} on quieter days.")
 
     order = {"warn": 0, "good": 1, "info": 2}
     out.sort(key=lambda i: order[i["level"]])

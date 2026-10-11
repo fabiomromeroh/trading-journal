@@ -1,13 +1,18 @@
 """Display-currency conversion (USD <-> EUR <-> GBP ...) for the combined / per-account views.
 
-Method (also shown in tooltips):
-  * ECB euro reference rates from the free Frankfurter API (https://api.frankfurter.dev/v1), cached in ``fx_rates``.
-    Weekends/holidays use the last published business day.
-  * A CLOSED trade is converted with the rate of its close date; an OPEN trade (realized-so-far and unrealized)
-    with the latest rate. Every amount of a trade (fills, P&L, fees, stop, risk) uses the same rate, so R multiples,
-    win rates and percentages are unchanged by the conversion.
-  * Trades already in the display currency are returned untouched (the Schwab/USD path stays byte-for-byte identical).
-  * If no rate is available the trade is shown in its own currency and a banner says so.
+Method (also the tooltip text): converted at the rate on each trade date; open positions at the latest rate.
+
+  * Realized gross, net and fees: each fill is converted on its own execution date.
+    Instrument currency -> account currency uses the broker rate stored on the fill (``fx_to_account``,
+    Trading 212's fxRate) when there is one, otherwise the ECB reference rate that day.
+    Account currency -> display currency uses the ECB rate that same day.
+    FIFO P&L is (exit price x exit rate - entry price x entry rate) x qty, so two currencies are never added raw.
+  * Unrealized P&L and open market value use the latest ECB chain (not a historical broker rate).
+  * MFE/MAE use the close-date chain for a closed trade and the latest rate while the trade is open.
+  * Prices (entry, exit, stop, targets, chart) are not converted. R and return % stay in instrument terms.
+  * A trade already in the display currency is returned untouched (the Schwab/USD path stays identical).
+  * If a rate is missing the trade stays in its own currency and a banner says so.
+ECB rates: Frankfurter (https://api.frankfurter.dev/v1), cached in ``fx_rates``. Weekends use the previous business day.
 Conversion is a read-only view: the database keeps native amounts."""
 from __future__ import annotations
 
@@ -141,37 +146,168 @@ class RateBook:
 
 
 # ------------------------------------------------------------------ converted view of trades
-MONEY_TRADE = {"entry_price", "exit_price", "cost_basis", "gross_pnl", "fees", "net_pnl", "mfe", "mae", "initial_stop",
-               "risk_amount", "profit_target", "stop_raw", "stop_prev"}
-MONEY_FILL = {"price", "fees"}
+# Money results only. Prices (entry/exit/stop/targets/fill prices) stay in the instrument currency.
+_MONEY = ("gross_pnl", "fees", "net_pnl", "mfe", "mae", "cost_basis", "risk_amount")
+FX_PHRASE = "converted at the rate on each trade date; open positions at the latest rate"
 
 
-class CFill:
-    def __init__(self, f, rate: float):
-        self._f, self._r = f, rate
+def trade_ccy(t) -> str:
+    return (t.currency or (t.account.currency if t.account is not None else None) or "USD").upper()
 
-    def __getattr__(self, n):
-        v = getattr(self._f, n)
-        return v * self._r if n in MONEY_FILL and v is not None else v
+
+def account_ccy(t) -> str:
+    acct = getattr(t, "account", None)
+    return ((getattr(acct, "currency", None) if acct is not None else None) or trade_ccy(t) or "USD").upper()
+
+
+def raw(t):
+    return t._t if isinstance(t, CTrade) else t
+
+
+def chain_rate(book: RateBook, instr: str, account: str, display: str, day: date,
+               fx_to_account: float | None = None, *, latest: bool = False) -> float | None:
+    """Multiply an instrument-currency amount to get ``display`` on ``day``.
+
+    Instrument -> account: the fill's broker rate when it has one (and this is not the latest-rate mark),
+    otherwise the ECB rate. Account -> display: the ECB rate. Either leg is 1 when the currencies match.
+    """
+    instr = (instr or account or "USD").upper()
+    account = (account or instr or "USD").upper()
+    display = (display or "USD").upper()
+    if instr == display:
+        return 1.0
+    if instr == account:
+        r1 = 1.0
+    elif fx_to_account is not None and not latest:
+        r1 = float(fx_to_account)
+    else:
+        r1 = book.rate(instr, account, day)
+    if not r1:
+        return None
+    r2 = 1.0 if account == display else book.rate(account, display, day)
+    if not r2:
+        return None
+    return r1 * r2
+
+
+def _broker_fx(fill) -> float | None:
+    ex = getattr(fill, "execution", None)
+    return getattr(ex, "fx_to_account", None) if ex is not None else None
+
+
+def _fill_rate(book: RateBook, t, fill, display: str, *, latest: bool = False) -> float | None:
+    day = datetime.now().date() if latest or fill is None or not getattr(fill, "executed_at", None) else fill.executed_at.date()
+    return chain_rate(book, trade_ccy(t), account_ccy(t), display, day, None if latest else _broker_fx(fill), latest=latest)
+
+
+def _fifo(t, rate_of) -> tuple[float, float]:
+    """(gross, fees) with each fill's own multiplier ``rate_of(fill)``. Same matching as ``app.realized``."""
+    from collections import deque
+    fills = sorted(getattr(t, "fills", None) or [], key=lambda f: f.position)
+    sign = 1.0 if t.direction == "LONG" else -1.0
+    mult = getattr(t, "multiplier", None) or 1.0
+    lots: deque = deque()
+    gross = fees = 0.0
+    for f in fills:
+        rate = rate_of(f) or 1.0
+        if f.role == "OPEN":
+            lots.append([f.quantity, f.price, rate])
+            fees += (f.fees or 0.0) * rate
+            continue
+        q, pnl = f.quantity, 0.0
+        while q > 1e-12 and lots:
+            m = min(q, lots[0][0])
+            pnl += (f.price * rate - lots[0][1] * lots[0][2]) * m * sign
+            lots[0][0] -= m
+            q -= m
+            if lots[0][0] <= 1e-12:
+                lots.popleft()
+        gross += pnl * mult
+        fees += (f.fees or 0.0) * rate
+    return gross, fees
+
+
+class _Conv:
+    """Converted money for one trade. ``rates`` maps fill id -> instrument-to-display rate."""
+
+    def __init__(self, money: dict, rates: dict, latest: float | None, entry: float | None):
+        self.money, self.rates, self.latest, self.entry = money, rates, latest, entry
+
+
+def convert(book: RateBook, t, display: str) -> _Conv | None:
+    """Per-execution money in ``display``, or None when a required rate is missing (keep the native figures)."""
+    display = display.upper()
+    native = trade_ccy(t)
+    if native == display:
+        return None
+    fills = list(getattr(t, "fills", None) or [])
+    today = datetime.now().date()
+    rates: dict = {}
+    if fills:
+        for f in fills:
+            r = _fill_rate(book, t, f, display)
+            if not r:
+                return None
+            rates[f.id] = r
+        g_nat, f_nat = _fifo(t, lambda f: 1.0)
+        g_fx, f_fx = _fifo(t, lambda f: rates.get(f.id) or 1.0)
+        last_r = rates.get(fills[-1].id) or 1.0
+        # rounding residue the native builder left on the stored totals, taken at the last fill's rate
+        gross = g_fx + ((t.gross_pnl or 0.0) - g_nat) * last_r
+        fees = f_fx + (((t.gross_pnl or 0.0) - (t.net_pnl or 0.0)) - f_nat) * last_r
+        entry_r = rates.get(next((f.id for f in fills if f.role == "OPEN"), fills[0].id))
+    else:
+        day = t.closed_at.date() if (t.status == "CLOSED" and t.closed_at) else today
+        r = chain_rate(book, native, account_ccy(t), display, day, None, latest=(t.status != "CLOSED"))
+        if not r:
+            return None
+        gross, fees, entry_r = (t.gross_pnl or 0.0) * r, (t.fees or 0.0) * r, r
+    net = gross - fees
+    if t.status == "CLOSED" and t.closed_at:
+        fx = _broker_fx(fills[-1]) if fills else None
+        mark = chain_rate(book, native, account_ccy(t), display, t.closed_at.date(), fx)
+    else:
+        mark = chain_rate(book, native, account_ccy(t), display, today, None, latest=True)
+    latest = chain_rate(book, native, account_ccy(t), display, today, None, latest=True)
+    if not mark or not latest or not entry_r:
+        return None
+    opens = [f for f in fills if f.role == "OPEN"]
+    if opens:
+        cost = sum(f.quantity * f.price * (getattr(t, "multiplier", None) or 1.0) * rates[f.id] for f in opens)
+    else:
+        cost = (t.cost_basis or 0.0) * entry_r
+    money = {
+        "gross_pnl": gross, "fees": fees, "net_pnl": net,
+        "mfe": None if t.mfe is None else t.mfe * mark,
+        "mae": None if t.mae is None else t.mae * mark,
+        "cost_basis": cost,
+        "risk_amount": None if t.risk_amount is None else t.risk_amount * entry_r,
+    }
+    return _Conv(money, rates, latest, entry_r)
 
 
 class CTrade:
-    """A Trade seen in another currency: money and price fields scaled by one rate, everything else delegated."""
+    """A trade whose money results are in the display currency. Prices and the rest delegate to the stored trade."""
 
-    def __init__(self, t: Trade, rate: float, native: str, shown: str):
-        self.__dict__["_t"], self.__dict__["_r"] = t, rate
-        self.__dict__["native_currency"], self.__dict__["shown_currency"] = native, shown
-        self.__dict__["fx_rate"] = rate
-        self.__dict__["_fills"] = None
+    def __init__(self, t: Trade, display: str, conv: _Conv):
+        self._t = t
+        self.native_trade = t
+        self.native_currency = trade_ccy(t)
+        self.shown_currency = display
+        self.fx_latest = conv.latest          # instrument -> display, latest rate (unrealized / open value)
+        self.fx_rate = conv.latest or 1.0     # same; prices are NOT scaled by this
+        self.fx_entry = conv.entry            # rate of the opening fill (risk $)
+        self._money = conv.money
+        self._rates = conv.rates
+
+    def fx_on(self, fill) -> float:
+        """Instrument -> display rate of one fill (used by the realized-P&L engine)."""
+        return self._rates.get(getattr(fill, "id", None), 1.0)
 
     def __getattr__(self, n):
-        t = self.__dict__["_t"]
-        if n == "fills":
-            if self.__dict__["_fills"] is None:
-                self.__dict__["_fills"] = [CFill(f, self._r) for f in t.fills]
-            return self.__dict__["_fills"]
-        v = getattr(t, n)
-        return v * self._r if n in MONEY_TRADE and v is not None else v
+        if n in _MONEY and n in self._money:
+            return self._money[n]
+        return getattr(self._t, n)
 
     def __setattr__(self, n, v):
         self.__dict__[n] = v
@@ -183,35 +319,102 @@ class CTrade:
         return hash(self._t)
 
 
-def trade_ccy(t) -> str:
-    return (t.currency or (t.account.currency if t.account is not None else None) or "USD").upper()
-
-
-def raw(t):
-    return t._t if isinstance(t, CTrade) else t
+def _span(trades) -> tuple[date, date]:
+    today = datetime.now().date()
+    days = []
+    for t in trades:
+        for f in getattr(t, "fills", None) or []:
+            if getattr(f, "executed_at", None):
+                days.append(f.executed_at.date())
+        if t.closed_at:
+            days.append(t.closed_at.date())
+        elif t.opened_at:
+            days.append(t.opened_at.date())
+    return (min(days) if days else today - timedelta(days=7)), today
 
 
 def view(db: Session, trades: list, display: str | None = None, http=None) -> list:
-    """Trades in the display currency (see module doc). Unchanged list when nothing needs converting."""
+    """Trades with money results in the display currency. Same objects when every trade is already in it."""
     trades = list(trades)
-    display = display or get_display(db)
-    ccys = {trade_ccy(t) for t in trades}
-    if ccys <= {display}:
+    display = (display or get_display(db)).upper()
+    if {trade_ccy(t) for t in trades} <= {display}:
         return trades
-    today = datetime.now().date()
-    days = [(t.closed_at or t.opened_at).date() for t in trades if trade_ccy(t) != display and t.closed_at]
     book = RateBook(db, http)
-    book.ensure(ccys | {display}, min(days) if days else today - timedelta(days=7), today)
+    start, today = _span([t for t in trades if trade_ccy(t) != display])
+    book.ensure({trade_ccy(t) for t in trades} | {account_ccy(t) for t in trades} | {display}, start, today)
     out = []
     for t in trades:
-        c = trade_ccy(t)
-        if c == display:
+        if trade_ccy(t) == display:
             out.append(t)
             continue
-        day = t.closed_at.date() if (t.status == "CLOSED" and t.closed_at) else today
-        r = book.rate(c, display, day)
-        out.append(t if r is None else CTrade(t, r, c, display))
+        conv = convert(book, t, display)
+        out.append(t if conv is None else CTrade(t, display, conv))
     return out
+
+
+class Presentation:
+    """Display-currency money for one trade page, next to the stored (instrument-currency) figures.
+
+    ``show`` is false when the trade is already in the display currency, or when a rate is missing
+    (the page then shows the native amount once, in its own symbol)."""
+
+    def __init__(self, show: bool, money: dict, rates: dict):
+        self.show, self._m, self.rates = show, money, rates
+
+    def __getattr__(self, n):
+        if n in self._m:
+            return self._m[n]
+        raise AttributeError(n)
+
+    def fill_amount(self, fill, native: float | None) -> float | None:
+        """A single fill's notional or fee in the display currency (that fill's own rate)."""
+        if not self.show or native is None:
+            return None
+        r = self.rates.get(getattr(fill, "id", None))
+        return None if not r else native * r
+
+
+def presentation(db: Session, t, tm: dict | None = None) -> Presentation:
+    """Both-currency figures for the trade page. ``tm`` is ``metrics.trade_metrics`` of the raw trade."""
+    display = get_display(db)
+    native = trade_ccy(t)
+    tm = tm or {}
+    blank = {k: None for k in ("net", "gross", "fees", "mfe", "mae", "risk", "total_risk", "target",
+                               "unrealized", "open_value", "position_value", "rps", "left", "best")}
+    if native == display:
+        return Presentation(False, blank, {})
+    book = RateBook(db)
+    start, today = _span([t])
+    book.ensure({native, account_ccy(t), display}, start, today)
+    conv = convert(book, t, display)
+    if conv is None:
+        return Presentation(False, blank, {})
+    m = conv.money
+    entry, latest = conv.entry or 1.0, conv.latest or 1.0
+    qty = (t.quantity or 0) * (getattr(t, "multiplier", None) or 1.0)
+
+    def at(v, rate):
+        return None if v is None else v * rate
+
+    unreal = at(tm.get("open_pnl"), latest)
+    mfe, gross = m["mfe"], m["gross_pnl"]
+    return Presentation(True, {
+        "net": m["net_pnl"], "gross": gross, "fees": m["fees"], "mfe": mfe, "mae": m["mae"],
+        "risk": at(tm.get("risk"), entry), "total_risk": at(tm.get("total_risk"), entry),
+        "target": at(tm.get("target_pnl"), entry), "unrealized": unreal,
+        "open_value": at(tm.get("open_value"), latest), "position_value": m["cost_basis"],
+        "rps": (m["net_pnl"] / qty) if qty and t.status == "CLOSED" else None,
+        "left": (mfe - gross) if (mfe is not None and t.status == "CLOSED") else None,
+        "best": mfe,
+    }, conv.rates)
+
+
+def scale_open(t, native_amount: float | None) -> float | None:
+    """Unrealized / open P&L in the display currency: the instrument amount at the latest rate (1 when already there)."""
+    if native_amount is None:
+        return None
+    r = getattr(t, "fx_latest", None)
+    return native_amount if r is None else native_amount * r
 
 
 def problem(db: Session, display: str) -> str | None:

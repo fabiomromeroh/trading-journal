@@ -56,21 +56,32 @@ def trade_events(t) -> list[Event]:
         return out
     sign = 1.0 if t.direction == "LONG" else -1.0
     mult = getattr(t, "multiplier", None) or 1.0
+    fx_on = getattr(t, "fx_on", None)  # present only on a display-currency view; absent => native path, unchanged
     lots: deque[list[float]] = deque()
     for f in fills:
+        rate = fx_on(f) if fx_on else None
         if f.role == "OPEN":
-            lots.append([f.quantity, f.price])
-            out.append(Event(f.executed_at, tid, sym, 0.0, f.fees or 0.0, 0.0, False, False, is_open))
+            if rate is None:
+                lots.append([f.quantity, f.price])
+                fee = f.fees or 0.0
+            else:
+                lots.append([f.quantity, f.price, rate])
+                fee = (f.fees or 0.0) * rate
+            out.append(Event(f.executed_at, tid, sym, 0.0, fee, 0.0, False, False, is_open))
             continue
         q, pnl = f.quantity, 0.0
         while q > EPS and lots:
             m = min(q, lots[0][0])
-            pnl += (f.price - lots[0][1]) * m * sign
+            if rate is None:
+                pnl += (f.price - lots[0][1]) * m * sign
+            else:
+                pnl += (f.price * rate - lots[0][1] * lots[0][2]) * m * sign
             lots[0][0] -= m
             q -= m
             if lots[0][0] <= EPS:
                 lots.popleft()
-        out.append(Event(f.executed_at, tid, sym, pnl * mult, f.fees or 0.0, f.quantity, True, False, is_open))
+        fee = f.fees or 0.0 if rate is None else (f.fees or 0.0) * rate
+        out.append(Event(f.executed_at, tid, sym, pnl * mult, fee, f.quantity, True, False, is_open))
     if t.status == "CLOSED":
         closes = [e for e in out if e.is_close]
         if closes:

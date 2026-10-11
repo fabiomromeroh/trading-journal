@@ -221,7 +221,13 @@ def risk_warnings(t) -> list[str]:
     return out
 
 
+def _own(t):
+    """The stored trade when ``t`` is a display-currency view, so ratios (R, MFE efficiency) stay in instrument terms."""
+    return getattr(t, "native_trade", None) or t
+
+
 def r_multiple(t, default_risk: float | None = None) -> float | None:
+    t = _own(t)
     if t.status != "CLOSED":
         return None
     risk, _ = risk_of(t, default_risk)
@@ -230,6 +236,7 @@ def r_multiple(t, default_risk: float | None = None) -> float | None:
 
 def mfe_efficiency(t) -> float | None:
     """% of the trade's MFE kept (net P&L / MFE), per TraderSync; None without a positive MFE."""
+    t = _own(t)
     if t.status != "CLOSED" or t.mfe is None or t.mfe <= 0:
         return None
     return t.net_pnl / t.mfe * 100
@@ -237,6 +244,7 @@ def mfe_efficiency(t) -> float | None:
 
 def mae_efficiency(t) -> float | None:
     """Net P&L / |MAE| (the MAE tab's efficiency: can exceed 100%)."""
+    t = _own(t)
     if t.status != "CLOSED" or t.mae is None or t.mae >= 0:
         return None
     return t.net_pnl / abs(t.mae) * 100
@@ -400,9 +408,10 @@ def summarize(trades, tz: str = "America/New_York", default_risk: float | None =
         "mfe_eff": _avg(mfe_eff), "mae_eff": _avg(mae_eff),
         "mfe_eff_median": median(mfe_eff) if mfe_eff else None, "mae_eff_median": median(mae_eff) if mae_eff else None,
         # robust aggregate: share of the total favourable excursion that was kept (tiny MFEs can't blow it up)
-        "mfe_capture": (sum(t.net_pnl for t in closed if t.mfe and t.mfe > 0)
-                        / sum(t.mfe for t in closed if t.mfe and t.mfe > 0) * 100)
-        if any(t.mfe and t.mfe > 0 for t in closed) else None,
+        # ratio of native amounts: a display-currency conversion must not move a percentage
+        "mfe_capture": (sum(_own(t).net_pnl for t in closed if _own(t).mfe and _own(t).mfe > 0)
+                        / sum(_own(t).mfe for t in closed if _own(t).mfe and _own(t).mfe > 0) * 100)
+        if any(_own(t).mfe and _own(t).mfe > 0 for t in closed) else None,
         "left_on_table": sum(t.mfe - t.gross_pnl for t in mfe_t) if mfe_t else None,
         "max_dd": dd["max_dd"], "current_dd": dd["current_dd"], "max_dd_days": dd["max_dd_days"],
         "max_dd_trades": dd["max_dd_trades"], "recovery_factor": (sum(pnl) / abs(dd["max_dd"])) if dd["max_dd"] else None,

@@ -44,8 +44,8 @@
         <td class="text-left text-white align-top">{{ r.symbol }}{% if r.direction == 'SHORT' %} <span class="text-[10px] text-amber-300">short</span>{% endif %}
           {% for fl in r.flags %}<div class="text-[10px] text-amber-300 whitespace-normal">⚠ {{ fl }}</div>{% endfor %}</td>
         <td class="text-right align-top">{{ ('−' if r.direction == 'SHORT' else '+') ~ (r.qty|qty) if r.qty else '—' }}</td>
-        <td class="text-right align-top">{{ r.avg|num(2) if r.avg is not none else '—' }}</td>
-        <td class="text-right align-top text-white">{{ r.price|num(2) if r.price is not none else '—' }}</td>
+        <td class="text-right align-top">{{ r.avg|num(2) if r.avg is not none else '—' }}{% if r.ccy and r.ccy != display_currency %} <span class="text-[10px] text-slate-500">{{ r.ccy }}</span>{% endif %}</td>
+        <td class="text-right align-top text-white">{{ r.price|num(2) if r.price is not none else '—' }}{% if r.price is not none and r.ccy and r.ccy != display_currency %} <span class="text-[10px] text-slate-500">{{ r.ccy }}</span>{% endif %}</td>
         <td class="text-right align-top font-semibold {{ r.pnl|pnl_class }}">{{ r.pnl|money(true) if r.pnl is not none else '—' }}</td>
         <td class="text-right align-top {{ r.realized|pnl_class }}">{{ r.realized|money(true) if r.trade_id else '' }}</td>
         <td class="text-right align-top text-slate-400">{{ r.snap_qty|qty if r.snap_qty is not none else '—' }}</td>
@@ -61,7 +61,7 @@
       <td class="text-right {{ anchor.unrealized_snap|pnl_class }}">{{ anchor.unrealized_snap|money(true) if anchor.snap_as_of else '—' }}</td><td></td></tr></tfoot>
   </table>
   </div>
-  <p class="text-[11px] text-slate-500 mt-2">Open P/L = qty × (last − FIFO avg cost of the remaining lots) × multiplier. Last = Yahoo's latest trade incl. pre/after-hours (refreshed at most every 90 s; Sync now forces it). thinkorswim marks at the bid/ask mid, so expect small differences.</p>
+  <p class="text-[11px] text-slate-500 mt-2">Open P/L = qty × (last − FIFO avg cost of the remaining lots) × multiplier, converted at the latest rate. Last and avg cost stay in the instrument currency. Realized so far is converted at the rate on each trade date. thinkorswim marks at the bid/ask mid, so expect small differences.</p>
   {% else %}<p class="text-sm text-slate-500">No open positions.</p>{% endif %}
 </div>
 {% elif wid == 'win_rate' %}{{ kpi('Win rate', st.win_rate|num(1) ~ '%', '', st.wins ~ 'W / ' ~ st.losses ~ 'L / ' ~ st.scratches ~ ' BE of ' ~ st.total_trades ~ ' closed') }}

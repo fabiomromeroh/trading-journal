@@ -516,8 +516,10 @@
     build();
     renderChips();
     if (data.mfe !== null && data.mfe !== undefined && $('mfe')) {
-      const f = (v) => (v < 0 ? '-' : '') + (window.CUR || '$') + Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-      $('mfe').textContent = f(data.mfe) + ' / ' + f(data.mae);
+      const f = (v, sym) => (v < 0 ? '-' : '') + (sym || window.CUR || '$') + Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      const both = (disp, nat) => f(disp) + (nat != null && data.native_symbol && data.native_symbol !== (window.CUR || '$')
+        ? ' <span class="text-[10px] text-slate-500 font-normal">(' + f(nat, data.native_symbol) + ')</span>' : '');
+      $('mfe').innerHTML = both(data.mfe, data.mfe_native) + ' / ' + both(data.mae, data.mae_native);
     }
     if ($('mferid') && data.mfe_r !== null && data.mfe_r !== undefined && data.mae_r !== null && data.mae_r !== undefined) {
       $('mferid').textContent = data.mfe_r.toFixed(1) + 'R / ' + data.mae_r.toFixed(1) + 'R';
@@ -547,9 +549,13 @@
       try {
         const j = await (await fetch(`/trades/${C.tradeId}/r.json`)).json();
         if ($('unrl') && j.open_pnl !== null && j.open_pnl !== undefined) {
-          const u = j.open_pnl, money = (v) => (v < 0 ? '-' : '+') + (window.CUR || '$') + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-          $('unrl').textContent = money(u) + ' · ' + (j.open_pnl_pct === null || j.open_pnl_pct === undefined ? '—' : (j.open_pnl_pct >= 0 ? '+' : '') + j.open_pnl_pct.toFixed(1) + '%');
-          $('unrl').className = 'text-sm font-semibold truncate ' + (u > 0 ? 'text-emerald-400' : u < 0 ? 'text-rose-400' : 'text-white');
+          const u = j.open_pnl, money = (v, sym) => (v < 0 ? '-' : '+') + (sym || window.CUR || '$') + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+          let text = money(u);
+          if (j.open_pnl_native != null && j.native_symbol && j.native_symbol !== (window.CUR || '$'))
+            text += ' <span class="text-[10px] text-slate-500 font-normal">(' + money(j.open_pnl_native, j.native_symbol) + ')</span>';
+          text += ' · ' + (j.open_pnl_pct === null || j.open_pnl_pct === undefined ? '—' : (j.open_pnl_pct >= 0 ? '+' : '') + j.open_pnl_pct.toFixed(1) + '%');
+          $('unrl').innerHTML = text;
+          $('unrl').className = 'text-sm font-semibold leading-tight ' + (u > 0 ? 'text-emerald-400' : u < 0 ? 'text-rose-400' : 'text-white');
         }
         if ($('rnow') && j.current_r !== null && j.current_r !== undefined) {
           $('rnow').textContent = (j.current_r >= 0 ? '+' : '') + j.current_r.toFixed(2) + 'R';

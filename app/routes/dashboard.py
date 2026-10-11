@@ -98,23 +98,23 @@ def _anchor(db: Session, f, trades, st):
         sp = snap.get(t.symbol)
         seen.add(t.symbol)
         q = live.get(t.symbol)
-        fx = getattr(t, "fx_rate", 1.0)  # native price -> display currency (1.0 when already in it)
-        if sp and sp.get("price"):
-            sp = {**sp, "price": sp["price"] * fx, "cost_basis": (sp.get("cost_basis") or 0) * fx or sp.get("cost_basis")}
+        # Prices stay in the instrument currency. Only the P&L (a money amount) is converted, at the latest rate.
         if q:
             sess = {"pre": " (pre-market)", "post": " (after-hours)", "closed": " (last close)"}.get(q.session, "")
-            px, at, src = q.price * fx, q.at, "Yahoo" + sess
+            px, at, src = q.price, q.at, "Yahoo" + sess
         elif sp and sp.get("price"):
             px, at, src = sp["price"], snap_as_of, "SnapTrade (last sync)"
         else:
             px, at, src = None, None, None
-        pnl = sign * (px * qty - cost) * mult if (px is not None and qty) else None
+        native_pnl = sign * (px * qty - cost) * mult if (px is not None and qty) else None
+        pnl = currency.scale_open(t, native_pnl)
         if pnl is not None:
             total += pnl
         snap_pnl = None
         if sp and sp.get("price") and qty:
-            snap_pnl = sign * (sp["price"] * qty - cost) * mult
-            total_snap += snap_pnl
+            snap_pnl = currency.scale_open(t, sign * (sp["price"] * qty - cost) * mult)
+            if snap_pnl is not None:
+                total_snap += snap_pnl
         flags = []
         if sp is None:
             if port:
@@ -127,6 +127,7 @@ def _anchor(db: Session, f, trades, st):
             if cb and qty and abs(cb - cost / qty) > max(0.01, 0.002 * cb):
                 flags.append(f"avg cost differs: SnapTrade {cb:,.4f}")
         rows.append({"symbol": t.symbol, "trade_id": t.id, "direction": t.direction, "qty": qty,
+                     "ccy": currency.trade_ccy(t),
                      "avg": cost / qty if qty else None, "price": px, "at": at, "source": src, "pnl": pnl,
                      "multiplier": mult, "realized": t.net_pnl or 0.0,
                      "snap_qty": sp.get("units") if sp else None, "snap_price": sp.get("price") if sp else None,

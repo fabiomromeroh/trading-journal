@@ -178,6 +178,13 @@ LABELS = {
 }
 
 
+# Money tooltips name the conversion rule. Ratios (R, return %) do not use it.
+_FX_KEYS = {"realized", "closed_net", "unrealized", "positions", "fees", "left_on_table", "avg_mfe", "avg_mae",
+            "t_net", "t_gross", "t_fees", "t_unrealized", "t_risk", "t_mfe", "t_mae", "t_mfe_mae", "t_open_value",
+            "t_position_value", "t_total_risk", "t_target_pnl", "t_return_per_share", "t_left_on_table", "t_best_exit",
+            "realized_view"}
+
+
 def info(key: str, page: str | None = None) -> dict | None:
     k = ALIASES.get(key, LABELS.get(key, key))
     if page == "trade" and "t_" + k in I:
@@ -190,6 +197,8 @@ def info(key: str, page: str | None = None) -> dict | None:
         from app import outcome
         calc += (f" {outcome.describe()} (Settings › Break-even range). BE trades are left out of wins, losses, "
                  "gross profit/loss and averages, but their P&L still counts in net P&L and expectancy.")
+    if k in _FX_KEYS:
+        calc += " Converted at the rate on each trade date; open positions at the latest rate."
     return {"key": k, "name": v[0], "desc": v[1], "calc": calc}
 
 

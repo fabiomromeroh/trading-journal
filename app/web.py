@@ -196,9 +196,11 @@ def base_context(request: Request, db: Session, **kw) -> dict:
     cur_f = parse_filters(request)
     fx_note = None
     if currency.needs_conversion(db, display):
-        fx_note = (f"Amounts are shown in {display}. Each closed trade is converted at the ECB reference rate of its close date, "
-                   f"open positions at the latest rate (ECB via Frankfurter; weekends use Friday's rate). "
-                   f"R multiples and percentages are unaffected.")
+        fx_note = (f"Amounts are shown in {display}, {currency.FX_PHRASE}. "
+                   f"Realized P&L and fees use the broker rate stored on each fill when there is one, otherwise the ECB "
+                   f"reference rate that day, from the instrument currency through the account currency into {display}. "
+                   f"Open positions use the latest rate. Prices stay in the instrument currency. "
+                   f"R multiples and return % are unchanged.")
     ctx = {"display_currency": display, "display_symbol": currency.symbol(display), "active_account": cur_f.account_id, "fx_note": fx_note,
            "currency_choices": currency.CHOICES,
            "request": request, "accounts": accounts, "has_demo": has_demo, "banners": banners,

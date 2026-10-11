@@ -220,9 +220,9 @@ def dashboard_extras(db: Session, trades, tz: str, events=None, cumulative=None)
     xcharts = {"cumgross": cumulative or rz.cumulative(rz.daily(evs, tz)), "drawdown": metrics.drawdown(closed, tz)["series"],
                "month": _series(b["month"]), "price": _series(b["entry_price"]), "size": _series(b["size"]),
                "pnldist": _series(b["pnl_dist"])}
-    from app import coach
+    from app import coach, currency
     return {"m": metrics.summarize(trades, tz, risk, events=evs), "xcharts": xcharts, "L": widgets.layout_ctx(db, "dashboard"),
-            "coach": coach.insights(trades, tz, risk)}
+            "coach": coach.insights(trades, tz, risk, sym=currency.symbol(currency.get_display(db)))}
 
 
 def trade_extras(db: Session, t: Trade, price: float | None = None) -> dict:
