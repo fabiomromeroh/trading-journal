@@ -14,8 +14,10 @@ Docs (verified Oct 2026): https://docs.trading212.com/api
 
 Journal mapping: one Account per key (currency = account currency, market EU); every TRADE fill becomes an Execution priced
 in the *instrument* currency (pence-quoted LSE lines are converted to pounds), with the broker's FX rate to the account
-currency stored per execution and fees (taxes) converted to the instrument currency. Splits / spin-offs / acquisitions are
-counted and skipped (they are not trades). Credentials live Fernet-encrypted in app_state (cred:t212; never in backups)."""
+currency stored per execution and fees (taxes) converted to the instrument currency. A GBX ``fxRate`` is pence per one
+account-currency unit (~85, not ~0.85); it is scaled to pounds before use, otherwise fees and P&L are ~100× too big.
+Splits / spin-offs / acquisitions are counted and skipped (they are not trades). Credentials live Fernet-encrypted in
+app_state (cred:t212; never in backups)."""
 from __future__ import annotations
 
 import json
@@ -196,21 +198,96 @@ class Skip:
     reason: str
 
 
-def resolve_fx(gross_instr: float, wallet: dict, instr_ccy: str | None) -> float | None:
+def resolve_fx(gross_instr: float, wallet: dict, instr_ccy: str | None, *, pence: bool = False) -> float | None:
     """Instrument-currency -> account-currency rate for one fill.
 
     The docs do not state the direction of walletImpact.fxRate, so choose between fxRate and 1/fxRate the one that
-    reconciles with the fill's wallet value (|netValue| ~ quantity x price x rate; fees make it close, not exact)."""
+    reconciles with the fill's wallet value (|netValue| ~ quantity x price x rate; fees make it close, not exact).
+
+    ``pence`` is set once a GBX price has been divided by 100 and stored in pounds. T212 still quotes that fxRate in
+    pence per one account-currency unit (about 85 for EUR, not 0.85). Trying fxRate/100 as well picks the pound rate
+    (~1.17 EUR per GBP) instead of the pence rate (~0.0117), which made fees and P&L ~100× too big."""
     if (instr_ccy or "").upper() == (wallet.get("currency") or "").upper():
         return 1.0
     fx = wallet.get("fxRate")
-    net = abs(wallet.get("netValue") or 0.0)
     if not fx:
         return None
+    fx = float(fx)
+    net = abs(float(wallet.get("netValue") or 0.0))
+    scales = (1.0, 0.01) if pence else (1.0,)
     if not net or not gross_instr:
-        return float(fx)
-    a, b = float(fx), 1.0 / float(fx)
-    return a if abs(net - gross_instr * a) <= abs(net - gross_instr * b) else b
+        scale = 0.01 if (pence and abs(fx) >= 20) else 1.0
+        quoted = fx * scale
+        return (1.0 / quoted) if quoted else None
+    best: float | None = None
+    best_err: float | None = None
+    gross = abs(gross_instr)
+    for scale in scales:
+        quoted = fx * scale
+        if not quoted:
+            continue
+        for rate in (quoted, 1.0 / quoted):
+            err = abs(net - gross * rate)
+            if best is None or err < best_err:
+                best, best_err = rate, err
+    return best
+
+
+def fees_in_instrument(wallet: dict, fx: float | None, instr_ccy: str | None) -> float:
+    """Sum walletImpact.taxes into the instrument currency (GBX amounts become pounds)."""
+    fees = 0.0
+    acct = (wallet.get("currency") or "").upper()
+    instr = (instr_ccy or "").upper()
+    for tax in wallet.get("taxes") or []:
+        raw_amt = tax.get("quantity") if tax.get("quantity") is not None else tax.get("q")
+        amt = abs(float(raw_amt or 0.0))
+        tccy = (tax.get("currency") or tax.get("ccy") or acct).upper()
+        if tccy == "GBX":
+            amt, tccy = amt / 100.0, "GBP"
+        if tccy == instr or not fx:
+            fees += amt
+        else:
+            fees += amt / fx
+    return fees
+
+
+def account_gross(fills: list[tuple[str, float, float, float]]) -> float:
+    """FIFO gross P&L in account currency.
+
+    Each fill is ``(side, quantity, price_in_instrument_ccy, fx_to_account)``. This is what Trading 212 reports as
+    ``walletImpact.realisedProfitLoss`` on the closing fill: each leg converted at its own rate, taxes not subtracted.
+    """
+    from collections import deque
+    lots: deque[list[float]] = deque()
+    pos = 0.0
+    pnl = 0.0
+    for side, qty, price, fx in fills:
+        if side not in ("BUY", "SELL") or qty <= 0:
+            continue
+        rate = 1.0 if not fx else float(fx)
+        sgn = 1.0 if side == "BUY" else -1.0
+        remaining = float(qty)
+        if abs(pos) > 1e-12 and (pos > 0) != (sgn > 0):
+            close_q = min(remaining, abs(pos))
+            direction = 1.0 if pos > 0 else -1.0
+            to_match = close_q
+            while to_match > 1e-12 and lots:
+                lot = lots[0]
+                m = min(lot[0], to_match)
+                pnl += (price * rate - lot[1] * lot[2]) * m * direction
+                lot[0] -= m
+                to_match -= m
+                if lot[0] <= 1e-12:
+                    lots.popleft()
+            pos += sgn * close_q
+            remaining -= close_q
+            if abs(pos) <= 1e-12:
+                pos = 0.0
+                lots.clear()
+        if remaining > 1e-12:
+            lots.append([remaining, float(price), rate])
+            pos += sgn * remaining
+    return pnl
 
 
 def to_record(item: dict, inst: Instrument | None = None, symbol: str | None = None) -> ExecRecord | Skip:
@@ -232,18 +309,12 @@ def to_record(item: dict, inst: Instrument | None = None, symbol: str | None = N
     sym = symbol or (inst.symbol if inst is not None else info.symbol)
     exch = inst.exchange if inst is not None else info.exchange
     ccy = (ii.get("currency") or order.get("currency") or "").upper() or None
-    if ccy == "GBX":                       # pence -> pounds; the journal keeps GBP
+    pence = ccy == "GBX"
+    if pence:                              # pence -> pounds; the journal keeps GBP
         price, ccy = price / 100.0, "GBP"
     wallet = fill.get("walletImpact") or {}
-    fx = resolve_fx(qty * price, wallet, ccy)
-    fees = 0.0
-    for tax in wallet.get("taxes") or []:
-        amt = abs(float(tax.get("quantity") or 0.0))
-        tccy = (tax.get("currency") or wallet.get("currency") or "").upper()
-        if tccy == (ccy or "") or fx is None:
-            fees += amt
-        else:
-            fees += amt / fx if fx else amt     # tax is in the account currency -> instrument currency
+    fx = resolve_fx(qty * price, wallet, ccy, pence=pence)
+    fees = fees_in_instrument(wallet, fx, ccy)
     when = parse_ts(fill["filledAt"])
     tz = markets.exchange_tz(exch)
     trade_date: date = when.replace(tzinfo=timezone.utc).astimezone(ZoneInfo(tz)).date()
@@ -257,6 +328,61 @@ def to_record(item: dict, inst: Instrument | None = None, symbol: str | None = N
                        for t in wallet.get("taxes") or []],
              "extended_hours": order.get("extendedHours"), "initiated_from": order.get("initiatedFrom")},
         trade_date=trade_date, currency=ccy, fx_to_account=fx, instrument_id=inst.id if inst is not None else None)
+
+
+def repair_stored_fx(db: Session) -> dict:
+    """Recompute fx and instrument-currency fees on stored T212 fills from their wallet raw.
+
+    Idempotent. A GBX fill was saved with a pound price but the pence-per-EUR rate, so fees (and therefore net P&L
+    and return %) are ~100× too big. The raw wallet still has the broker fxRate, netValue and taxes, which is enough
+    to correct the row without calling Trading 212. Journal notes, tags and stops are left to ``rebuild_trades``.
+    """
+    from app.models import Execution
+    fixed = 0
+    accounts: set[int] = set()
+    rows = list(db.scalars(select(Execution).where(Execution.source == SOURCE_KEY)))
+    for row in rows:
+        if _repair_row(row):
+            fixed += 1
+            accounts.add(row.account_id)
+    if accounts:
+        rebuild_trades(db, sorted(accounts))
+        db.commit()
+    return {"fixed": fixed, "accounts": len(accounts)}
+
+
+def _repair_row(row) -> bool:
+    if not row.raw:
+        return False
+    try:
+        raw = json.loads(row.raw)
+    except ValueError:
+        return False
+    wallet = dict(raw.get("wallet") or {})
+    if not wallet.get("fxRate"):
+        return False
+    taxes = []
+    for tax in raw.get("taxes") or []:
+        taxes.append({
+            "name": tax.get("name"),
+            "quantity": tax.get("quantity") if tax.get("quantity") is not None else tax.get("q"),
+            "currency": tax.get("currency") or tax.get("ccy"),
+        })
+    wallet["taxes"] = taxes
+    ccy = (row.currency or raw.get("ccy") or "").upper() or None
+    # Stored LSE prices are already pounds. Passing pence=True tries fxRate/100 as well; a true GBP quote
+    # (fxRate ~ 0.85) still reconciles on the unscaled rate, so those rows are left alone.
+    gross = abs((row.quantity or 0.0) * (row.price or 0.0))
+    fx = resolve_fx(gross, wallet, ccy, pence=(ccy == "GBP"))
+    fees = round(fees_in_instrument(wallet, fx, ccy), 6)
+    changed = False
+    if fx is not None and (row.fx_to_account is None or abs(row.fx_to_account - fx) > 1e-8):
+        row.fx_to_account = fx
+        changed = True
+    if abs((row.fees or 0.0) - fees) > 5e-7:
+        row.fees = fees
+        changed = True
+    return changed
 
 
 # ------------------------------------------------------------------ status helpers

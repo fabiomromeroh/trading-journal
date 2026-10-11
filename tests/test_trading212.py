@@ -168,6 +168,55 @@ def test_fx_picks_direction_that_matches_wallet():
     # inverted listing would still resolve
     assert t212.resolve_fx(971.0, {"currency": "EUR", "fxRate": 1 / 1.165, "netValue": 1131.2}, "GBP") == pytest.approx(1.165)
     assert t212.resolve_fx(100.0, {"currency": "EUR", "fxRate": 1.0, "netValue": -100}, "EUR") == 1.0
+    # a true GBP quote (pounds per EUR ~ 0.80) must not be treated as pence
+    assert t212.resolve_fx(100.0, {"currency": "EUR", "fxRate": 0.8, "netValue": 125.15}, "GBP", pence=True) == pytest.approx(1.25)
+
+
+def _gbx(side, fid, qty, price_pence, fx_rate, net, rpl, taxes, when="2026-09-02T08:00:00Z"):
+    """Hand-built GBX fill. fx_rate is pence per 1 EUR, the way Trading 212 quotes LSE lines."""
+    return {
+        "order": {
+            "id": fid, "side": side, "ticker": "GBXl_EQ",
+            "instrument": {"ticker": "GBXl_EQ", "name": "Pence Test", "isin": "GB0000000001", "currency": "GBX"},
+        },
+        "fill": {
+            "id": fid, "filledAt": when, "price": price_pence, "quantity": qty, "type": "TRADE",
+            "walletImpact": {
+                "currency": "EUR", "fxRate": fx_rate, "netValue": net, "realisedProfitLoss": rpl,
+                "taxes": [{"name": n, "quantity": q, "currency": "EUR"} for n, q in taxes],
+            },
+        },
+    }
+
+
+def test_gbx_round_trip_realized_matches_broker():
+    """10 shares bought at 1000 pence and sold at 1200, fxRate 80 pence per EUR.
+
+    Price stored in pounds is 10.00 then 12.00. GBP->EUR = 100/80 = 1.25.
+    Buy cash = 10 * 10.00 * 1.25 = 125 EUR, plus 1.00 EUR stamp (net 126).
+    Sell cash = 10 * 12.00 * 1.25 = 150 EUR, minus 0.50 EUR FX fee (net 149.50).
+    Broker realisedProfitLoss = 150 - 125 = 25.00 EUR (price result, taxes excluded).
+    Fees in pounds are 1.00/1.25 = 0.80 and 0.50/1.25 = 0.40, not the ~100× pence-rate figures 80 and 40.
+    The trade itself stays in GBP: gross 20, net 18.80, return 18.8%."""
+    buy = _gbx("BUY", 1, 10, 1000, 80, net=-126.0, rpl=None, taxes=[("STAMP_DUTY_RESERVE_TAX", 1.00)],
+               when="2026-09-02T08:00:00Z")
+    sell = _gbx("SELL", 2, 10, 1200, 80, net=149.50, rpl=25.0, taxes=[("CURRENCY_CONVERSION_FEE", 0.50)],
+                when="2026-09-10T15:00:00Z")
+    rb, rs = t212.to_record(buy), t212.to_record(sell)
+    assert isinstance(rb, ExecRecord) and isinstance(rs, ExecRecord)
+    assert rb.currency == "GBP" and rs.currency == "GBP"
+    assert rb.price == pytest.approx(10.0) and rs.price == pytest.approx(12.0)
+    assert rb.fx_to_account == pytest.approx(1.25) and rs.fx_to_account == pytest.approx(1.25)
+    assert rb.fees == pytest.approx(0.80)
+    assert rs.fees == pytest.approx(0.40)
+    # the unscaled pence rate (1/80) would have turned the 1 EUR stamp into 80 GBP
+    assert rb.fees * 100 == pytest.approx(80.0)
+    got = t212.account_gross([
+        (rb.side, rb.quantity, rb.price, rb.fx_to_account),
+        (rs.side, rs.quantity, rs.price, rs.fx_to_account),
+    ])
+    assert got == pytest.approx(sell["fill"]["walletImpact"]["realisedProfitLoss"])
+    assert got == pytest.approx(25.0)
 
 
 # --------------------------------------------------------------------------- HTTP client
@@ -386,6 +435,78 @@ def test_all_sources_includes_t212_but_unconfigured_is_skipped(db, enc):
     t212.save_credentials(db, KEY, SECRET)
     db.commit()
     assert any(s.key == "t212" for s in enabled_sources())
+
+
+def test_gbx_trade_stays_in_pounds_and_repair_keeps_journal(db, enc):
+    buy = _gbx("BUY", 1, 10, 1000, 80, net=-126.0, rpl=None, taxes=[("STAMP_DUTY_RESERVE_TAX", 1.00)],
+               when="2026-09-02T08:00:00Z")
+    sell = _gbx("SELL", 2, 10, 1200, 80, net=149.50, rpl=25.0, taxes=[("CURRENCY_CONVERSION_FEE", 0.50)],
+                when="2026-09-10T15:00:00Z")
+    acct = Account(name="T", broker="trading212", currency="EUR", source_key="t212", market="EU")
+    db.add(acct)
+    db.flush()
+    recs = [t212.to_record(buy), t212.to_record(sell)]
+    ingest_records(db, acct.id, "t212", recs)
+    rebuild_trades(db, [acct.id])
+    tr = db.scalar(select(Trade).where(Trade.account_id == acct.id))
+    assert tr.currency == "GBP" and tr.status == "CLOSED"
+    assert tr.entry_price == pytest.approx(10.0) and tr.exit_price == pytest.approx(12.0)
+    assert tr.gross_pnl == pytest.approx(20.0)
+    assert tr.fees == pytest.approx(1.20)
+    assert tr.net_pnl == pytest.approx(18.80)
+    assert tr.return_pct == pytest.approx(18.8)
+    tr.notes, tr.initial_stop, tr.setup = "keep me", 9.5, "breakout"
+    from app.models import Tag
+    tr.tags.append(Tag(name="gbx-note"))
+    db.commit()
+
+    # replay the old bug on the stored rows: pound price, pence-per-EUR rate, fees ~100×
+    for e in db.scalars(select(Execution).where(Execution.account_id == acct.id)):
+        e.fx_to_account = 1.0 / 80.0
+        e.fees = round(e.fees * 100, 6)
+    db.commit()
+    res = t212.repair_stored_fx(db)
+    assert res["fixed"] == 2
+    db.expire_all()
+    tr = db.scalar(select(Trade).where(Trade.account_id == acct.id))
+    assert tr.currency == "GBP"
+    assert tr.notes == "keep me" and tr.initial_stop == 9.5 and tr.setup == "breakout"
+    assert [t.name for t in tr.tags] == ["gbx-note"]
+    assert tr.net_pnl == pytest.approx(18.80) and tr.return_pct == pytest.approx(18.8)
+    execs = list(db.scalars(select(Execution).where(Execution.account_id == acct.id)))
+    assert {round(e.fx_to_account, 2) for e in execs} == {1.25}
+    assert sorted(e.fees for e in execs) == pytest.approx([0.40, 0.80])
+    # second pass changes nothing
+    assert t212.repair_stored_fx(db)["fixed"] == 0
+
+    # a pounds quote (fxRate already ~0.8 GBP per EUR) is not divided by 100 again
+    gbp = Execution(account_id=acct.id, source="t212", external_id="gbp1", match_key="gbp1",
+                    symbol="VUKE", underlying="VUKE", asset_type="STOCK", side="BUY", quantity=2, price=50.0,
+                    fees=0.12, currency="GBP", fx_to_account=1.25, executed_at=datetime(2026, 9, 3, 9, 0),
+                    raw=json.dumps({"ccy": "GBP", "wallet": {"currency": "EUR", "fxRate": 0.8, "netValue": 125.15,
+                                                             "realisedProfitLoss": None},
+                                    "taxes": [{"name": "CURRENCY_CONVERSION_FEE", "q": -0.15, "ccy": "EUR"}]}))
+    db.add(gbp)
+    db.commit()
+    assert t212.repair_stored_fx(db)["fixed"] == 0
+    db.refresh(gbp)
+    assert gbp.fx_to_account == pytest.approx(1.25)
+    assert gbp.fees == pytest.approx(0.15 / 1.25)
+
+
+def test_resync_refreshes_fx_rate(db, enc):
+    _run_sync(db)
+    acct = db.scalar(select(Account).where(Account.source_key == "t212"))
+    row = db.scalar(select(Execution).where(Execution.external_id == "1007"))
+    row.fx_to_account = 99.0
+    row.fees = 0.0
+    db.commit()
+    _run_sync(db)
+    db.expire_all()
+    row = db.scalar(select(Execution).where(Execution.external_id == "1007"))
+    assert row.fx_to_account == pytest.approx(0.8896)
+    assert row.fees == pytest.approx((0.65 + 0.01) / 0.8896)
+    assert db.query(Execution).filter(Execution.account_id == acct.id).count() == 8
 
 
 def test_sync_now_runs_t212_when_connected(db, enc, monkeypatch):

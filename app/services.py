@@ -323,6 +323,13 @@ def ingest_records(db: Session, account_id: int, source: str, records: list[Exec
                 if row is not None:
                     row.fees, row.price, row.quantity = rec.fees, rec.price, rec.quantity
                     row.match_key = rec.match_key()
+                    if source == "t212":  # a later sync must correct a pence FX rate, not only price and fees
+                        if rec.fx_to_account is not None:
+                            row.fx_to_account = rec.fx_to_account
+                        if rec.currency:
+                            row.currency = rec.currency
+                        if rec.raw is not None:
+                            row.raw = json.dumps(rec.raw, default=str)
             if row_ := db.scalar(select(Execution).where(
                     Execution.account_id == account_id, Execution.source == source,
                     Execution.external_id == rec.external_id)):

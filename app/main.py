@@ -47,6 +47,29 @@ class RequireLogin(BaseHTTPMiddleware):
         return resp
 
 
+def _repair_t212_gbx_fx() -> None:
+    """Correct stored GBX fills (pence FX on a pound price). Idempotent; no secrets logged.
+
+    Retries: Neon may still be waking when the process starts. Runs off the request path so /healthz can pass.
+    """
+    import time
+    from app.sources.trading212 import repair_stored_fx
+    log = logging.getLogger(__name__)
+    for attempt in range(4):
+        db = dbmod.SessionLocal()
+        try:
+            res = repair_stored_fx(db)
+            if res["fixed"]:
+                log.info("t212 GBX fx repair: %s executions on %s account(s)", res["fixed"], res["accounts"])
+            return
+        except Exception:  # noqa: BLE001 - a repair failure must not take the site down
+            db.rollback()
+            log.warning("t212 GBX fx repair failed (attempt %s)", attempt + 1, exc_info=True)
+            time.sleep(3 * (attempt + 1))
+        finally:
+            db.close()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     ka = keepawake.state
@@ -57,6 +80,7 @@ async def lifespan(app: FastAPI):
     import threading
     from app import stops
     threading.Thread(target=stops.startup_backfill, name="stops-backfill", daemon=True).start()
+    threading.Thread(target=_repair_t212_gbx_fx, name="t212-gbx-fx", daemon=True).start()
     yield
     if task:
         task.cancel()
