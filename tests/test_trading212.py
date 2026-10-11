@@ -375,14 +375,20 @@ def test_us_auto_stop_skipped_for_lse(db, enc):
     db.commit()
     aapl = db.scalar(select(Trade).where(Trade.symbol == "AAPL"))
     vusa = db.scalar(select(Trade).where(Trade.symbol == "VUSA"))
-    assert stops.eligible(aapl) is True
+    assert acct.auto_stop is False
+    assert stops.eligible(aapl) is False          # US listing, but the Trading 212 account has auto stop off
     assert stops.eligible(vusa) is False
-    schwab = Trade(key="s", account_id=acct.id, symbol="MSFT", underlying="MSFT", asset_type="STOCK",
-                   direction="LONG", status="OPEN", opened_at=datetime(2026, 9, 2, 14, 0),
-                   quantity=1, open_quantity=1, entry_price=100, cost_basis=100)
-    db.add(schwab)
+    assert stops.apply_default(db, aapl) == "off" and aapl.initial_stop is None
+    sch = Account(name="Schwab", broker="schwab", currency="USD")
+    db.add(sch)
     db.flush()
-    assert stops.eligible(schwab) is True  # no instrument: Schwab/US path
+    assert sch.auto_stop is True
+    msft = Trade(key="s", account_id=sch.id, symbol="MSFT", underlying="MSFT", asset_type="STOCK",
+                 direction="LONG", status="OPEN", opened_at=datetime(2026, 9, 2, 14, 0),
+                 quantity=1, open_quantity=1, entry_price=100, cost_basis=100)
+    db.add(msft)
+    db.flush()
+    assert stops.eligible(msft) is True           # Schwab account, US path
 
 
 def test_instrument_override_not_clobbered(db, enc):

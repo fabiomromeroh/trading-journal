@@ -89,8 +89,25 @@ def exchange_tz(exchange: str | None, default: str = "America/New_York") -> str:
     return ex.tz if ex else default
 
 
-def pence_factor(meta_currency: str | None, trade_currency: str | None) -> float:
-    """Yahoo quotes many LSE lines in pence ('GBp'). The journal stores GBP, so scale those by 0.01."""
-    if meta_currency in ("GBp", "GBX") and (trade_currency or "").upper() == "GBP":
+_MAJOR = {"GBP", "USD", "EUR", "CHF", "CAD", "AUD", "JPY", "SEK", "NOK", "DKK", "HKD", "SGD"}
+
+
+def pence_factor(meta_currency: str | None, trade_currency: str | None, price_scale: float | None = None) -> float:
+    """Scale a Yahoo quote into the instrument's major currency, once.
+
+    LSE lines come back as pence ('GBp' / 'GBX') even when the journal stores pounds. Divide those by 100
+    regardless of the currency we passed in. When Yahoo already names a major currency (GBP, USD, EUR, …)
+    do not also apply the instrument's stored price_scale — that would turn a pound quote into pence.
+    price_scale (0.01 on known GBX listings) is used only when Yahoo omits the currency."""
+    meta = (meta_currency or "").strip()
+    if meta in ("GBp", "GBX", "GBx"):
         return 0.01
+    if meta.upper() in _MAJOR:
+        return 1.0
+    try:
+        sc = float(price_scale) if price_scale not in (None, "") else 1.0
+    except (TypeError, ValueError):
+        sc = 1.0
+    if sc > 0 and sc != 1.0:
+        return sc
     return 1.0

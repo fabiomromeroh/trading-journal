@@ -69,7 +69,7 @@
   {{ stat('Kelly %', pct(s.kelly), s.kelly|pnl_class, 'W − (1 − W) ÷ P/L ratio') }}
   {{ stat('Trading days', s.days, '', s.win_days ~ ' green / ' ~ s.loss_days ~ ' red (' ~ pct(s.day_win_pct, 0) ~ ')') }}
   {{ stat('Avg daily P&L', s.avg_day|money(true), s.avg_day|pnl_class, 'Best ' ~ s.best_day|money ~ ' · worst ' ~ s.worst_day|money) }}
-  {{ stat('Avg R-multiple', (s.avg_r|num(2) ~ 'R') if s.avg_r is not none else '—', s.avg_r|pnl_class, (s.r_count ~ ' trades with risk') if s.r_count else 'Set a stop/risk (Win/loss tab)') }}
+  {{ stat('Avg R-multiple', (s.avg_r|num(2) ~ 'R') if s.avg_r is not none else '—', s.avg_r|pnl_class, (s.r_count ~ ' trades with a stop') if s.r_count else 'Set a stop to see R') }}
   {{ stat('MFE capture', pct(s.mfe_capture, 0), s.mfe_capture|pnl_class, ('Σ net ÷ Σ MFE · ' ~ s.mfe_count ~ ' trades with MFE') if s.mfe_count else 'No MFE/MAE yet') }}
   {{ stat('Commissions & fees', s.fees|money, '', 'Avg ' ~ s.avg_fees|money ~ ' per trade') }}
 </div>
@@ -132,12 +132,12 @@
   </div>
   <div class="grid grid-cols-2 gap-2 content-start">
     {{ stat('Expectancy', s.expectancy|money(true), s.expectancy|pnl_class, 'Win% × avg win + loss% × avg loss') }}
-    {{ stat('Expectancy (R)', (s.avg_r|num(2) ~ 'R') if s.avg_r is not none else '—', s.avg_r|pnl_class, (s.r_count ~ ' trades') if s.r_count else 'no risk set') }}
+    {{ stat('Expectancy (R)', (s.avg_r|num(2) ~ 'R') if s.avg_r is not none else '—', s.avg_r|pnl_class, (s.r_count ~ ' trades') if s.r_count else 'Set a stop to see R') }}
     {{ stat('Profit factor', s.profit_factor|num(2)) }}
     {{ stat('P/L ratio', s.pl_ratio|num(2), '', 'Avg win ÷ |avg loss|') }}
     {{ stat('Kelly %', pct(s.kelly), s.kelly|pnl_class) }}
     {{ stat('SQN', s.sqn|num(2)) }}
-    {{ stat('Total R', (s.total_r|num(2) ~ 'R') if s.total_r is not none else '—', s.total_r|pnl_class) }}
+    {{ stat('Total R', (s.total_r|num(2) ~ 'R') if s.total_r is not none else '—', s.total_r|pnl_class, '' if s.r_count else 'Set a stop to see R') }}
     {{ stat('BE trades', s.be, '', 'Fees ' ~ s.fees_be|money) }}
     {{ stat('Fees long / short', s.fees_long|money ~ ' / ' ~ s.fees_short|money) }}
     {{ stat('Fees on open trades', s.fees_open|money) }}

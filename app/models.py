@@ -4,7 +4,7 @@ from datetime import date, datetime, timezone
 
 from sqlalchemy import (
     Boolean, Column, Date, DateTime, Float, ForeignKey, Integer, String, Table, Text,
-    UniqueConstraint, Index,
+    UniqueConstraint, Index, event, false as sa_false,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -31,6 +31,30 @@ class Account(Base):
     market: Mapped[str] = mapped_column(String(8), default="US", server_default="US")
     kind: Mapped[str | None] = mapped_column(String(16))        # invest | isa | margin | cash
     source_key: Mapped[str | None] = mapped_column(String(30))  # adapter that owns it: t212 | ibkr_flex | ...
+    # 5-minute auto stop. Off unless the account is Schwab-family (see _account_auto_stop). New brokers stay off.
+    auto_stop: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default=sa_false())
+
+
+_SCHWAB_BROKERS = {"schwab", "snaptrade", "thinkorswim", "tos"}
+_SCHWAB_SOURCES = {"snaptrade", "schwab", "schwab_api", "schwab_csv", "tos_email", "tos_statement"}
+_OFF_BROKERS = {"trading212", "t212", "ibkr", "ibkr_flex", "interactivebrokers", "interactive brokers", "demo"}
+_OFF_SOURCES = {"t212", "trading212", "ibkr", "ibkr_flex"}
+
+
+def schwab_like(broker: str | None, source_key: str | None) -> bool:
+    """True only for Schwab / SnapTrade / thinkorswim / Schwab CSV. Trading 212, IBKR, demo and anything else are off."""
+    b = (broker or "").strip().lower()
+    s = (source_key or "").strip().lower()
+    if b in _OFF_BROKERS or s in _OFF_SOURCES:
+        return False
+    return b in _SCHWAB_BROKERS or s in _SCHWAB_SOURCES
+
+
+@event.listens_for(Account, "init")
+def _account_auto_stop(target, args, kwargs):
+    """Fill auto_stop when the caller did not pass it. Explicit True/False is kept."""
+    if kwargs.get("auto_stop") is None:
+        kwargs["auto_stop"] = schwab_like(kwargs.get("broker", "schwab"), kwargs.get("source_key"))
 
 
 class Instrument(Base):

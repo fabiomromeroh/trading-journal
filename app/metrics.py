@@ -188,6 +188,17 @@ def risk_of(t, default_risk: float | None = None) -> tuple[float | None, str | N
     return d["initial"], d["source"]
 
 
+def fmt_qty(v) -> str:
+    """Share/contract size: whole numbers as integers, otherwise at most 4 decimals with trailing zeros stripped."""
+    if v is None:
+        return "—"
+    x = float(v)
+    if abs(x - round(x)) < 1e-9:
+        return f"{round(x):,.0f}"
+    s = f"{x:,.4f}".rstrip("0").rstrip(".")
+    return s or "0"
+
+
 def position_of(t) -> dict:
     """Current open position: signed quantity (long +, short -), average cost of what's left, text."""
     unit = "contracts" if getattr(t, "asset_type", "STOCK") == "OPTION" else "sh"
@@ -201,7 +212,7 @@ def position_of(t) -> dict:
     cost = sum(x * p for x, p in lots)
     sign = 1 if t.direction == "LONG" else -1
     return {"qty": sign * q, "avg_cost": cost / q, "cost": cost * (getattr(t, "multiplier", 1) or 1),
-            "text": f"{'+' if sign > 0 else '−'}{q:,.10g} {unit} {t.direction.lower()}"}
+            "text": f"{'+' if sign > 0 else '−'}{fmt_qty(q)} {unit} {t.direction.lower()}"}
 
 
 def risk_warnings(t) -> list[str]:
@@ -226,11 +237,13 @@ def _own(t):
     return getattr(t, "native_trade", None) or t
 
 
-def r_multiple(t, default_risk: float | None = None) -> float | None:
+def r_multiple(t, default_risk: float | None = None, *, require_stop: bool = False) -> float | None:
     t = _own(t)
     if t.status != "CLOSED":
         return None
-    risk, _ = risk_of(t, default_risk)
+    if require_stop and not stop_side_ok(t):
+        return None
+    risk, _ = risk_of(t, None if require_stop else default_risk)
     return (t.net_pnl / risk) if risk else None
 
 
@@ -314,7 +327,8 @@ def r_levels(t, multiples) -> list[dict]:
 
 
 # ----------------------------------------------------------------------------- summary
-def summarize(trades, tz: str = "America/New_York", default_risk: float | None = None, events=None) -> dict:
+def summarize(trades, tz: str = "America/New_York", default_risk: float | None = None, events=None,
+              *, require_stop: bool = False) -> dict:
     """All headline statistics for a set of trades (closed ones; open ones only counted).
     Day statistics and ``realized`` use fill-level realized events (app.realized), which include
     partial exits of open trades; pass ``events`` already limited to the date range."""
@@ -351,7 +365,7 @@ def summarize(trades, tz: str = "America/New_York", default_risk: float | None =
     rets = lambda ts: [t.return_pct for t in ts if t.return_pct is not None]  # noqa: E731
     longs = [t for t in closed if t.direction == "LONG"]
     shorts = [t for t in closed if t.direction == "SHORT"]
-    rs = [r for r in (r_multiple(t, default_risk) for t in closed) if r is not None]
+    rs = [r for r in (r_multiple(t, default_risk, require_stop=require_stop) for t in closed) if r is not None]
     mfe_t = [t for t in closed if t.mfe is not None]
     mfe_eff = [e for e in (mfe_efficiency(t) for t in closed) if e is not None]
     mae_eff = [e for e in (mae_efficiency(t) for t in closed) if e is not None]
@@ -536,13 +550,13 @@ def group(closed, keyfn, order: list[str] | None = None, sort: str = "order") ->
     return [bucket_row(k, g[k]) for k in labels]
 
 
-def breakdowns(trades, tz: str, default_risk: float | None = None) -> dict:
+def breakdowns(trades, tz: str, default_risk: float | None = None, *, require_stop: bool = False) -> dict:
     closed = closed_sorted(trades)
     loc_open = lambda t: utc_naive_to_tz(t.opened_at, tz)  # noqa: E731
     loc_close = lambda t: utc_naive_to_tz(t.closed_at, tz)  # noqa: E731
 
     def r_key(t):
-        r = r_multiple(t, default_risk)
+        r = r_multiple(t, default_risk, require_stop=require_stop)
         return _range_label(r, R_BUCKETS) if r is not None else None
 
     return {

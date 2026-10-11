@@ -91,7 +91,13 @@
         <select name="currency" class="inp text-xs">{% for c in ['USD','EUR','GBP'] %}<option {{ 'selected' if a.currency == c }}>{{ c }}</option>{% endfor %}</select>
         <input name="timezone" value="{{ a.timezone }}" class="inp text-xs w-36" aria-label="Time zone">
         <select name="market" class="inp text-xs">{% for m in ['US','UK','DE','EU'] %}<option {{ 'selected' if a.market == m }}>{{ m }}</option>{% endfor %}</select>
-        <button class="text-xs text-indigo-300">Save</button></form></td>
+        <button class="text-xs text-indigo-300">Save</button></form>
+        <form method="post" action="/settings/accounts/{{ a.id }}/auto-stop" class="mt-1">
+          <label class="text-[11px] text-slate-300 inline-flex items-center gap-1">
+            <input type="checkbox" name="auto_stop" value="1" {% if a.auto_stop %}checked{% endif %} onchange="this.form.submit()">
+            Auto stop (5m low of day before entry)
+          </label>
+        </form></td>
       <td class="text-right">{{ row.executions }}</td><td class="text-right">{{ row.trades }}</td>
       <td class="text-slate-400 text-xs whitespace-normal max-w-[320px]">{% if row.orphans %}<span class="text-amber-300">{{ row.orphans|length }}</span> fills closed positions opened before your imported history{% for o in row.orphans[:4] %} · {{ o.symbol }} {{ o.quantity|qty }}{% endfor %}{% if row.orphans|length > 4 %} …{% endif %}. Import older history to match them.{% else %}—{% endif %}</td>
       <td>{% if not a.is_demo %}<form method="post" action="/settings/accounts/{{ a.id }}/delete" class="flex gap-1" onsubmit="return confirm('Delete this account and ALL its fills and trades?')"><input name="confirm" class="inp text-xs w-28" placeholder="type name"><button class="text-xs text-rose-300">Delete</button></form>{% endif %}</td>

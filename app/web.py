@@ -45,7 +45,8 @@ def num(v, decimals: int = 2) -> str:
 
 
 def qty(v) -> str:
-    return "—" if v is None else (f"{v:,.0f}" if abs(v - round(v)) < 1e-9 else f"{v:,.4f}".rstrip("0"))
+    from app.metrics import fmt_qty
+    return fmt_qty(v)
 
 
 def pnl_class(v) -> str:

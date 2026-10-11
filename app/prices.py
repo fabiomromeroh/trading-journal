@@ -298,7 +298,7 @@ def _polygon(symbol: str, interval: str, start: datetime, end: datetime) -> list
 
 
 def _yahoo(symbol: str, interval: str, start: datetime, end: datetime, prepost: bool = False,
-           ccy: str | None = None) -> list[dict]:
+           ccy: str | None = None, price_scale: float | None = None) -> list[dict]:
     r = httpx.get(f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}", params={
         "period1": _sec(start), "period2": _sec(end), "interval": interval,
         "includePrePost": "true" if prepost else "false"}, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
@@ -310,7 +310,7 @@ def _yahoo(symbol: str, interval: str, start: datetime, end: datetime, prepost: 
     vols = q.get("volume") or [0] * len(res["timestamp"])
     meta = res.get("meta") or {}
     from app.markets import pence_factor
-    k = pence_factor(meta.get("currency"), ccy)  # LSE lines quoted in pence -> pounds when the trade is in GBP
+    k = pence_factor(meta.get("currency"), ccy, price_scale)  # GBp/GBX -> pounds, once
     out = []
     n = len(res["timestamp"])
     for i, ts in enumerate(res["timestamp"]):
@@ -383,9 +383,17 @@ def _fetch(db: Session, prov: str, trade: Trade, interval: str, start: datetime,
     hit = _MEM.get(mem_key)
     if hit and _time.monotonic() - hit[0] < _MEM_TTL and not _stale(hit[1], interval, now):
         return hit[1]
+    inst = getattr(trade, "instrument", None)
+    ccy = trade.currency or (getattr(inst, "currency", None) if inst is not None else None)
+    scale = getattr(inst, "price_scale", None) if inst is not None else None
+    ykw = {}
+    if ccy:
+        ykw["ccy"] = ccy
+    if scale not in (None, 1, 1.0):
+        ykw["price_scale"] = scale
     candles = (_schwab(db, symbol, interval, start, end) if prov == "schwab" else
                _polygon(symbol, interval, start, end) if prov == "polygon" else
-               _yahoo(symbol, interval, start, end, **({"ccy": trade.currency} if trade.currency else {}))
+               _yahoo(symbol, interval, start, end, **ykw)
                if prov == "yahoo" else [])
     if candles:
         if persistent:

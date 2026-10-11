@@ -76,8 +76,8 @@ def report_data(trades, tz: str, risk: float | None, events=None) -> dict:
     from app import realized as rz
     closed = metrics.closed_sorted(trades)
     evs = rz.events(trades) if events is None else events
-    s = metrics.summarize(trades, tz, risk, events=evs)
-    b = metrics.breakdowns(trades, tz, risk)
+    s = metrics.summarize(trades, tz, risk, events=evs, require_stop=True)
+    b = metrics.breakdowns(trades, tz, risk, require_stop=True)
     dd = metrics.drawdown(closed, tz)
     days = rz.daily(evs, tz)
     cum = rz.cumulative(days)
@@ -90,7 +90,7 @@ def report_data(trades, tz: str, risk: float | None, events=None) -> dict:
                     "left": (t.mfe - t.gross_pnl) if t.mfe is not None else None})
     rtrades = []
     for t in closed:
-        r = metrics.r_multiple(t, risk)
+        r = metrics.r_multiple(t, risk, require_stop=True)
         if r is not None:
             rk, src = metrics.risk_of(t, risk)
             rtrades.append({"id": t.id, "symbol": t.symbol, "closed": t.closed_at, "net": t.net_pnl, "risk": rk,

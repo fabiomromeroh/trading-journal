@@ -102,10 +102,21 @@ def first_entry_time_known(t: Trade) -> bool:
     return bool(sp["time_known"]) if sp else bool(t.time_known)
 
 
+def account_auto_stop(t: Trade) -> bool:
+    """Per-account switch. A trade with no account keeps the old behaviour (unit fixtures)."""
+    acc = getattr(t, "account", None)
+    if acc is None:
+        return getattr(t, "account_id", None) is None
+    return bool(getattr(acc, "auto_stop", False))
+
+
 def eligible(t: Trade) -> bool:
-    """Stock trades listed in the US only: the rule is built on the New York regular session (09:30-16:00 ET).
-    Other exchanges (LSE, Xetra...) have other sessions, so they get no automatic stop (set one by hand)."""
+    """Stock trades listed in the US, and only on accounts that opted into the auto stop.
+    The rule is built on the New York regular session (09:30-16:00 ET). Other exchanges (LSE, Xetra...)
+    and non-Schwab accounts get no automatic stop (set one by hand)."""
     from app import symbolmap
+    if not account_auto_stop(t):
+        return False
     return (t.asset_type == "STOCK" and bool(t.entry_price) and t.direction in ("LONG", "SHORT")
             and symbolmap.is_us(t))
 
@@ -173,6 +184,23 @@ def clear_auto(t: Trade) -> None:
     t.stop_auto = t.stop_src = t.stop_raw = t.stop_bar = t.stop_at = None
 
 
+def clear_auto_stops(db: Session, account_id: int | None = None) -> int:
+    """Drop automatic stops (stop_auto True) on accounts with auto stop off. Manual stops are never touched.
+    stop_prev and risk_amount stay. account_id limits the clear to one account; otherwise every off account."""
+    from app.models import Account
+    q = select(Trade).where(Trade.stop_auto.is_(True))
+    if account_id is not None:
+        q = q.where(Trade.account_id == account_id)
+    else:
+        q = q.where(Trade.account_id.in_(select(Account.id).where(Account.auto_stop.is_(False))))
+    n = 0
+    for t in db.scalars(q).all():
+        t.initial_stop = None
+        clear_auto(t)
+        n += 1
+    return n
+
+
 def extreme_before_entry(db: Session, t: Trade, now: datetime, allow_daily: bool = True) -> tuple[float, str, int | None] | None:
     """(raw low-of-day-before-entry / high-of-day, source, epoch of the bar that printed it) from 5-minute bars, else
     (allow_daily) the daily bar of the entry day."""
@@ -199,6 +227,8 @@ def decide(db: Session, t: Trade, now: datetime | None = None, force: bool = Fal
     A stored 5-minute stop is never replaced by worse (daily) data; with force it is recomputed from 5-minute bars if
     they are still available, otherwise only the buffer is re-applied to the stored raw low/high."""
     if get_rule(db) != "low_of_day":
+        return "off", None
+    if not account_auto_stop(t):
         return "off", None
     if not eligible(t):
         return ("option" if t.asset_type != "STOCK" else "no-data"), None
@@ -251,6 +281,8 @@ def preview(db: Session, now: datetime | None = None) -> list[dict]:
     out = []
     q = select(Trade).where(Trade.initial_stop.is_(None) | (Trade.stop_auto.is_(True))).order_by(Trade.opened_at.desc())
     for t in db.scalars(q).all():
+        if not account_auto_stop(t):
+            continue
         res, plan = decide(db, t, now, force=True)
         if plan and res in ("set", "refreshed", "unchanged"):
             out.append({"id": t.id, "symbol": t.symbol, "opened": t.opened_at, "direction": t.direction, "result": res,
@@ -280,14 +312,20 @@ def startup_backfill() -> None:
         db.close()
 
 
-def backfill(db: Session, limit: int | None = None, now: datetime | None = None, force: bool = False) -> dict:
+def backfill(db: Session, limit: int | None = None, now: datetime | None = None, force: bool = False,
+             account_id: int | None = None) -> dict:
     """Set the default stop on every eligible stock trade that has none and refresh auto stops that are stale
     (old rule, daily fallback that could now use 5-minute bars, entry bar still open). Manual stops are never
-    touched. force=True recomputes every auto stop (after changing the buffer / premarket setting)."""
+    touched. force=True recomputes every auto stop (after changing the buffer / premarket setting).
+    Accounts with auto stop off are skipped (they do not consume ``limit``)."""
     done = {"set": 0, "refreshed": 0, "unchanged": 0, "kept": 0, "no-data": 0, "option": 0, "off": 0, "has-risk": 0}
     q = select(Trade).where(Trade.initial_stop.is_(None) | (Trade.stop_auto.is_(True))).order_by(Trade.opened_at.desc())
+    if account_id is not None:
+        q = q.where(Trade.account_id == account_id)
     n = 0
     for t in db.scalars(q).all():
+        if not account_auto_stop(t):
+            continue
         if limit is not None and n >= limit:
             break
         res = apply_default(db, t, now, force=force)

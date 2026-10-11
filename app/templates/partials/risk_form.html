@@ -17,11 +17,11 @@
     {% if tm.risk %}
     <div title="Initial risk = (first entry price − stop) × first entry size. Total risk adds every add measured against the same stop.">Initial risk <b class="text-slate-200">{{ tm.risk|money }}</b> ({{ tm.risk_source }}){% if tm.risk_per_share %} · {{ tm.risk_per_share|num(2) }}/sh × {{ tm.init_qty|qty }} first entry{% endif %}</div>
     <div>Total risk <b class="text-slate-200">{{ tm.total_risk|money }}</b>{% if tm.add_qty %} · {{ tm.add_qty|qty }} added after the first entry{% else %} · no adds{% endif %}</div>
-    {% if t.status == 'OPEN' %}<div>Current R: <b class="{{ tm.current_r|pnl_class }}">{{ (tm.current_r|num(2) ~ 'R') if tm.current_r is not none else '—' }}</b>{% if tm.price %} at {{ native_symbol }}{{ tm.price|num(2) }} <span class="text-slate-500">{{ native_ccy }}</span>{% endif %}{% if tm.total_r is not none %} · Total R <b class="{{ tm.total_r|pnl_class }}">{{ tm.total_r|num(2) }}R</b> (all P&amp;L ÷ initial risk){% endif %}</div>
+    {% if t.status == 'OPEN' %}<div>Current R: <b class="{{ tm.current_r|pnl_class }}">{{ (tm.current_r|num(2) ~ 'R') if tm.current_r is not none else '—' }}</b>{% if tm.current_r is none and tm.price is none %} <span class="text-slate-500">· no live price</span>{% endif %}{% if tm.price %} at {{ native_symbol }}{{ tm.price|num(2) }} <span class="text-slate-500">{{ native_ccy }}</span>{% endif %}{% if tm.total_r is not none %} · Total R <b class="{{ tm.total_r|pnl_class }}">{{ tm.total_r|num(2) }}R</b> (all P&amp;L ÷ initial risk){% endif %}</div>
     {% else %}<div>R-multiple: <b class="{{ tm.r_multiple|pnl_class }}">{{ (tm.r_multiple|num(2) ~ 'R') if tm.r_multiple is not none else '—' }}</b> (net P&amp;L ÷ initial risk){% if tm.r_on_total is not none and tm.add_qty %} · on total risk <b class="{{ tm.r_on_total|pnl_class }}">{{ tm.r_on_total|num(2) }}R</b>{% endif %}</div>{% endif %}
     {% if tm.mfe_r is not none %}<div>MFE <b class="text-emerald-300">{{ tm.mfe_r|num(2) }}R</b>{% if tm.mae_r is not none %} · MAE <b class="text-rose-300">{{ tm.mae_r|num(2) }}R</b>{% endif %}</div>{% endif %}
     {% if tm.planned_rr %}<div>Planned 1 : {{ tm.planned_rr|num(2) }}</div>{% endif %}
-    {% else %}<div>No risk yet{% if t.asset_type == 'OPTION' %} (options have no default stop: set Risk $){% elif stop_rule == 'manual' %}: set a stop or Risk ${% else %}: no price data for the entry day, set a stop or Risk ${% endif %}.</div>{% endif %}
+    {% else %}<div>— <span class="text-slate-500">Set a stop to see R</span></div>{% endif %}
     {% for w in tm.warnings %}<div class="text-amber-300" data-testid="risk-warning">⚠ {{ w }}</div>{% endfor %}
   </div>
 </form>

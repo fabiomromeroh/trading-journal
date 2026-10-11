@@ -53,7 +53,8 @@ def _period(ts: int, tp: dict) -> str:
     return "closed"
 
 
-def parse_chart(symbol: str, data: dict, now: float | None = None, ccy: str | None = None) -> Quote | None:
+def parse_chart(symbol: str, data: dict, now: float | None = None, ccy: str | None = None,
+                price_scale: float | None = None) -> Quote | None:
     """Pick the freshest price out of a v8 chart response."""
     res = ((data or {}).get("chart") or {}).get("result") or []
     if not res:
@@ -72,27 +73,47 @@ def parse_chart(symbol: str, data: dict, now: float | None = None, ccy: str | No
         return None
     now = time.time() if now is None else now
     from app.markets import pence_factor
-    k = pence_factor(meta.get("currency"), ccy)
+    k = pence_factor(meta.get("currency"), ccy, price_scale)
     sc = lambda v: None if v is None else v * k  # noqa: E731
     return Quote(symbol=symbol, price=round(float(best_px) * k, 4), at=datetime.fromtimestamp(best_ts, timezone.utc),
                  session=_period(int(best_ts), tp), market=_period(int(now), tp),
                  regular_price=sc(meta.get("regularMarketPrice")), prev_close=sc(meta.get("chartPreviousClose")))
 
 
-def _fetch(ysym: str) -> dict:
-    r = httpx.get(URL.format(sym=ysym), params={"interval": "1m", "range": "1d", "includePrePost": "true"},
-                  headers={"User-Agent": "Mozilla/5.0"}, timeout=6)
+def _http_chart(ysym: str, interval: str, range_: str, timeout: float) -> dict:
+    r = httpx.get(URL.format(sym=ysym), params={"interval": interval, "range": range_, "includePrePost": "true"},
+                  headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
     r.raise_for_status()
     return r.json()
 
 
-def get_quotes(trades, fetch=_fetch) -> dict[str, Quote]:
-    """Quotes for the open trades' symbols (journal symbol -> Quote). Missing/failed symbols are omitted."""
-    want, ccys = {}, {}
+def _fetch(ysym: str) -> dict:
+    return _http_chart(ysym, "1m", "1d", 6)
+
+
+def _fetch_daily(ysym: str) -> dict:
+    """Last close when the 1-minute chart is empty (some non-US listings)."""
+    return _http_chart(ysym, "1d", "5d", 12)
+
+
+def get_quotes(trades, fetch=None) -> dict[str, Quote]:
+    """Quotes for the open trades' symbols (journal symbol -> Quote). Missing/failed symbols are omitted.
+
+    ``fetch`` defaults to the 1-minute Yahoo chart. A custom fetch is used as-is (tests). The default
+    fetch falls back to the daily chart when the 1-minute response has no price, and only then is a
+    failure cached."""
+    if fetch is None:
+        fetch = _fetch
+    want, ccys, scales = {}, {}, {}
     for t in trades:
         if getattr(t, "status", "OPEN") == "OPEN":
             want[t.symbol] = yahoo_symbol(t)
-            ccys[t.symbol] = getattr(t, "native_currency", None) or getattr(t, "currency", None)
+            inst = getattr(t, "instrument", None)
+            ccy = getattr(t, "native_currency", None) or getattr(t, "currency", None)
+            if not ccy and inst is not None:
+                ccy = getattr(inst, "currency", None)
+            ccys[t.symbol] = ccy
+            scales[t.symbol] = getattr(inst, "price_scale", None) if inst is not None else None
     out, todo, mono = {}, [], time.monotonic()
     with _lock:
         for sym, ysym in want.items():
@@ -105,10 +126,18 @@ def get_quotes(trades, fetch=_fetch) -> dict[str, Quote]:
 
     def one(item):
         sym, ysym = item
+        ccy, scale = ccys.get(sym), scales.get(sym)
+        q = None
         try:
-            return sym, ysym, parse_chart(sym, fetch(ysym), ccy=ccys.get(sym))
+            q = parse_chart(sym, fetch(ysym), ccy=ccy, price_scale=scale)
         except Exception:
-            return sym, ysym, None
+            q = None
+        if q is None and fetch is _fetch:
+            try:
+                q = parse_chart(sym, _fetch_daily(ysym), ccy=ccy, price_scale=scale)
+            except Exception:
+                q = None
+        return sym, ysym, q
 
     if todo:
         with ThreadPoolExecutor(max_workers=min(8, len(todo))) as ex:

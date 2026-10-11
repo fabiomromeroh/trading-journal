@@ -273,6 +273,26 @@ def account_meta(account_id: int, request: Request, currency: str = Form("USD"),
     return RedirectResponse("/settings#accounts", status_code=303)
 
 
+@router.post("/settings/accounts/{account_id}/auto-stop")
+def account_auto_stop(account_id: int, request: Request, auto_stop: str = Form(""), db: Session = Depends(get_db)):
+    """Per-account 5-minute auto stop. An unchecked box is omitted from the form, which means off."""
+    a = db.get(Account, account_id)
+    if a is None:
+        return RedirectResponse("/settings#accounts", status_code=303)
+    on = (auto_stop or "").strip().lower() in ("1", "on", "true", "yes")
+    a.auto_stop = on
+    from app import stops
+    if on:
+        db.commit()
+        res = stops.backfill(db, account_id=a.id)
+        request.session["flash"] = f"{a.name}: auto stop on ({res.get('set', 0)} set)."
+    else:
+        n = stops.clear_auto_stops(db, a.id)
+        db.commit()
+        request.session["flash"] = f"{a.name}: auto stop off. Cleared {n} automatic stop{'s' if n != 1 else ''}."
+    return RedirectResponse("/settings#accounts", status_code=303)
+
+
 @router.post("/settings/accounts/{account_id}/delete")
 def delete_account(account_id: int, request: Request, confirm: str = Form(""), db: Session = Depends(get_db)):
     a = db.get(Account, account_id)
