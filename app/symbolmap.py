@@ -25,7 +25,10 @@ def upsert_t212(db: Session, ticker: str, isin: str | None, name: str | None, cu
     if ccy == "GBX":
         ccy = "GBP"          # the journal stores pounds; prices are divided by 100 at ingest
     row = db.scalar(select(Instrument).where(Instrument.source_key == "t212", Instrument.broker_symbol == ticker))
-    ysym = markets.yahoo_symbol_for(sym, info.exchange)
+    # Journal symbol stays the history ticker. A renamed listing (DMYI order, catalogue IONQ) is only
+    # the Yahoo symbol, so one position is not split across two symbols.
+    from app.corporate import chart_symbol
+    ysym = chart_symbol(sym, info.exchange, short_name)
     if row is None:
         row = Instrument(source_key="t212", broker_symbol=ticker, isin=isin, symbol=sym, name=name,
                          exchange=info.exchange, currency=ccy, asset_type="STOCK", price_symbol=ysym,

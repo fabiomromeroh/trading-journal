@@ -17,7 +17,7 @@
       <input x-ref="file" type="file" name="file" accept=".csv,text/csv" class="hidden" required @change="name = $event.target.files[0]?.name">
       <div class="text-4xl mb-2">⬆</div>
       <div class="text-white font-medium" x-text="name || 'Drop your CSV here or click to choose'"></div>
-      <div class="text-xs text-slate-500 mt-1">Schwab.com Transactions export or thinkorswim Account Statement · detected automatically</div>
+      <div class="text-xs text-slate-500 mt-1">Schwab.com, thinkorswim, or a Trading 212 history export · detected automatically. If you also have Schwab, pick the Trading 212 account.</div>
     </label>
     <div class="flex flex-wrap items-end gap-3 mt-4">
       <div class="min-w-0 max-w-full">
@@ -50,6 +50,13 @@
         <li>Menu (top-right) → <b>Export to file</b> → CSV</li>
       </ol>
       <div class="text-xs text-slate-500 mt-1">Fill-level times for hold-time & hour-of-day stats; no fees. Import both for the best data.</div>
+    </div>
+    <div><span class="text-white font-medium">Trading 212 history export</span>
+      <ol class="list-decimal ml-5 text-slate-400 space-y-0.5 mt-1">
+        <li>Trading 212 → History → Export (include orders and transactions)</li>
+        <li>Upload the CSV here and choose the Trading 212 account</li>
+      </ol>
+      <div class="text-xs text-slate-500 mt-1">Splits, spin-offs, free shares and dividend reinvestments are imported. Cash dividends, deposits and card rows are skipped. Rows are deduped by ID. A corporate action the API already stored for that symbol and day is not imported again.</div>
     </div>
   </div>
 </div>

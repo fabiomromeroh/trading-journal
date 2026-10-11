@@ -21,6 +21,8 @@ from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from app.corporate import POSITION_KINDS, choose_split_ratio
+
 EPS = 1e-9
 CLOSING_KINDS = {"EXPIRATION", "ASSIGNMENT", "EXERCISE"}
 _EFFECT_RANK = {"OPEN": 0, None: 1, "CLOSE": 2}
@@ -166,7 +168,19 @@ def _build_symbol(execs: list[BuilderExec]) -> tuple[list[BuiltTrade], list[Orph
         qty = abs(e.quantity)
         if qty < EPS:
             continue
+        if e.kind == "SPLIT":
+            pos, cur = _apply_split(e, pos, lots, cur, orphans)
+            continue
         side = e.side
+        px = e.price
+        if e.kind in POSITION_KINDS:
+            if side == "SELL" and abs(pos) <= EPS:
+                orphans.append(Orphan(e.id, e.symbol, qty, f"{e.kind.lower()} sell with no open position"))
+                continue
+            if side == "SELL" and qty > abs(pos) + EPS:
+                qty = abs(pos)  # an ISA corporate row must not open a short
+            if e.kind == "CONVERSION" and side == "SELL" and abs(pos) > EPS:
+                px = _lot_avg(lots)
         if e.kind in CLOSING_KINDS:
             if abs(pos) < EPS:
                 orphans.append(Orphan(e.id, e.symbol, qty, f"{e.kind.lower()} with no open position"))
@@ -180,7 +194,7 @@ def _build_symbol(execs: list[BuilderExec]) -> tuple[list[BuiltTrade], list[Orph
             orphans.append(Orphan(e.id, e.symbol, qty, "unknown side"))
             continue
         sgn = 1.0 if side == "BUY" else -1.0
-        fee_per_unit = (e.fees / qty) if qty > EPS else 0.0
+        fee_per_unit = (e.fees / abs(e.quantity)) if abs(e.quantity) > EPS else 0.0
         remaining = qty
 
         # 1) closing portion
@@ -193,7 +207,7 @@ def _build_symbol(execs: list[BuilderExec]) -> tuple[list[BuiltTrade], list[Orph
             while to_match > EPS and lots:
                 lot = lots[0]
                 m = min(lot[0], to_match)
-                pnl += (e.price - lot[1]) * m * direction
+                pnl += (px - lot[1]) * m * direction
                 lot[0] -= m
                 to_match -= m
                 if lot[0] <= EPS:
@@ -201,7 +215,7 @@ def _build_symbol(execs: list[BuilderExec]) -> tuple[list[BuiltTrade], list[Orph
             cur.gross_pnl += pnl * cur.multiplier
             fees = fee_per_unit * close_q
             cur.fees += fees
-            cur.fills.append(BuiltFill(e.id, side, "CLOSE", close_q, e.price, fees, e.executed_at))
+            cur.fills.append(BuiltFill(e.id, side, "CLOSE", close_q, px, fees, e.executed_at))
             cur.time_known = cur.time_known and e.time_known
             pos += sgn * close_q
             remaining -= close_q
@@ -234,9 +248,9 @@ def _build_symbol(execs: list[BuilderExec]) -> tuple[list[BuiltTrade], list[Orph
                 )
             fees = fee_per_unit * remaining
             cur.fees += fees
-            cur.fills.append(BuiltFill(e.id, side, "OPEN", remaining, e.price, fees, e.executed_at))
+            cur.fills.append(BuiltFill(e.id, side, "OPEN", remaining, px, fees, e.executed_at))
             cur.time_known = cur.time_known and e.time_known
-            lots.append([remaining, e.price])
+            lots.append([remaining, px])
             pos += sgn * remaining
             cur.open_quantity = abs(pos)
             cur.max_quantity = max(cur.max_quantity, abs(pos))
@@ -244,6 +258,39 @@ def _build_symbol(execs: list[BuilderExec]) -> tuple[list[BuiltTrade], list[Orph
     if cur is not None:
         trades.append(cur)
     return trades, orphans
+
+
+def _lot_avg(lots) -> float:
+    q = sum(lot[0] for lot in lots)
+    return sum(lot[0] * lot[1] for lot in lots) / q if q > EPS else 0.0
+
+
+def _apply_split(e: BuilderExec, pos: float, lots, cur: BuiltTrade | None, orphans: list[Orphan]):
+    """Scale the open position by new/old. Cost basis and P&L already booked stay the same."""
+    if abs(pos) <= EPS or cur is None:
+        orphans.append(Orphan(e.id, e.symbol, abs(e.quantity), "split with no open position"))
+        return pos, cur
+    if e.position_effect == "RATIO" and e.quantity > 0 and abs(e.quantity - 1.0) > 1e-6:
+        ratio = e.quantity
+    elif e.price > 0:
+        ratio = choose_split_ratio(pos, _lot_avg(lots), e.quantity, e.price)
+    else:
+        ratio = None
+    if not ratio or abs(ratio - 1.0) <= 1e-6:
+        orphans.append(Orphan(e.id, e.symbol, abs(e.quantity), "split ratio not reliable"))
+        return pos, cur
+    for lot in lots:
+        lot[0] *= ratio
+        lot[1] /= ratio
+    for f in cur.fills:
+        if f.role in ("OPEN", "CLOSE"):
+            f.quantity *= ratio
+            f.price /= ratio
+    pos *= ratio
+    cur.open_quantity = abs(pos)
+    cur.max_quantity *= ratio
+    cur.fills.append(BuiltFill(e.id, "BUY", "ADJUST", abs(pos), cur.entry_price, 0.0, e.executed_at))
+    return pos, cur
 
 
 def _close_inferred_expiration(tr: BuiltTrade, when: datetime) -> None:

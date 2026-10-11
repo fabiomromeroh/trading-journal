@@ -145,8 +145,12 @@ def compute(trades, tz: str, open_count: int = 0, events=None) -> Stats:
     cum = peak = 0.0
     streak_w = streak_l = 0
     st.hours_known = any(t.time_known for t in closed) if closed else True
+    from app.corporate import NON_DISCRETIONARY_KINDS
     for t in closed:
         pnl = t.net_pnl
+        # A corporate close that books nothing (split leftover, conversion at cost) is not a trade decision.
+        if (getattr(t, "close_reason", None) or "TRADE") in NON_DISCRETIONARY_KINDS and abs(pnl) < 0.01:
+            continue
         st.total_trades += 1
         st.net_pnl += pnl
         st.gross_pnl += t.gross_pnl

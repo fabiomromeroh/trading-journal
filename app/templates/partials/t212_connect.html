@@ -22,7 +22,20 @@
     {% endif %}
     {% if last.error %}<div class="text-xs text-rose-300 whitespace-pre-line">{{ last.error }}</div>{% endif %}
     {% if last.warning %}<div class="text-xs text-amber-300">{{ last.warning }}</div>{% endif %}
-    {% if last.reconcile %}<div class="text-xs text-amber-300">Positions differ from Trading 212:<ul class="list-disc ml-5">{% for r in last.reconcile %}<li>{{ r }}</li>{% endfor %}</ul></div>{% endif %}
+    {% if last.reconcile %}<div class="text-xs text-amber-300">Positions still differ from Trading 212:<ul class="list-disc ml-5">{% for r in last.reconcile %}<li>{{ r }}</li>{% endfor %}</ul></div>{% endif %}
+    {% if last.adjustments %}<div class="text-xs text-slate-400">Reconciliation adjustments (estimated, editable on the trade):<ul class="list-disc ml-5">{% for r in last.adjustments %}<li>{{ r }}</li>{% endfor %}</ul></div>{% endif %}
+    {% if t212.instrument_issues %}
+    <details class="text-xs" open>
+      <summary class="cursor-pointer text-amber-300">Instruments to check ({{ t212.instrument_issues|length }})</summary>
+      <ul class="mt-1 space-y-1 text-slate-400">
+      {% for i in t212.instrument_issues %}
+        <li><span class="text-slate-200">{{ i.symbol }}</span>{% if i.exchange %} · {{ i.exchange }}{% endif %}{% if i.price_symbol %} · {{ i.price_symbol }}{% endif %}
+          {% if i.fixed %} — fixed: {{ i.fixed|join(', ') }}{% endif %}
+          {% if i.notes %} — {{ i.notes|join('; ') }}{% endif %}</li>
+      {% endfor %}
+      </ul>
+    </details>
+    {% endif %}
     <div class="flex flex-wrap gap-2">
       <button hx-post="/settings/brokers/t212/sync" hx-target="#t212-sync" class="btn btn-p text-xs">Sync Trading 212</button>
       <button hx-post="/settings/brokers/t212/resync" hx-target="#t212-sync" hx-confirm="Re-scan the full Trading 212 history? Existing fills are kept." class="btn btn-s text-xs">Re-scan full history</button>

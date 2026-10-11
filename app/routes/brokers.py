@@ -121,9 +121,11 @@ def set_instrument(iid: int, request: Request, price_symbol: str = Form(""), sym
 
 
 def settings_ctx(db: Session) -> dict:
+    from app.corporate import audit_instruments
     creds = t212.load_credentials(db)
     insts = list(db.scalars(select(Instrument).where(Instrument.source_key == "t212").order_by(Instrument.symbol)))
     return {"t212": {"connected": creds is not None, "masked": t212.mask(creds["key"]) if creds else None,
                      "practice": bool(creds and creds.get("env") == "demo"), "last": t212.last_status(db),
-                     "instruments": insts, "scope_help": t212.SCOPE_HELP,
+                     "instruments": insts, "instrument_issues": audit_instruments(db, fix=False),
+                     "scope_help": t212.SCOPE_HELP,
                      "enc_key": bool(get_settings().token_encryption_key)}}

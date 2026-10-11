@@ -5,7 +5,7 @@ from datetime import timezone
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -191,6 +191,21 @@ def trade_detail(trade_id: int, request: Request, db: Session = Depends(get_db))
         next_id = db.scalar(select(Trade.id).where(Trade.opened_at < t.opened_at).order_by(Trade.opened_at.desc()))
     filtered = any(k in q for k in LIST_KEYS if k not in ("sort", "dir"))
     native = currency.trade_ccy(t)
+    from app import symbolmap
+    chart_symbol = symbolmap.price_symbol(t)
+    inst = t.instrument
+    listing = " · ".join(p for p in (inst.exchange if inst is not None else None, chart_symbol, native) if p)
+    adjustments: dict[int, dict] = {}
+    for fill in t.fills:
+        ex = fill.execution
+        if ex is None or not ex.raw:
+            continue
+        try:
+            raw = json.loads(ex.raw)
+        except ValueError:
+            continue
+        if isinstance(raw, dict) and raw.get("estimated"):
+            adjustments[ex.id] = raw
     # A cached quote only. The page asks /r.json after paint so Yahoo is not on this response.
     from app import quotes
     extras = trade_extras(db, t, quotes.cached_price(t))
@@ -201,9 +216,69 @@ def trade_detail(trade_id: int, request: Request, db: Session = Depends(get_db))
         request, db, nav="trades", t=t, native_symbol=currency.symbol(native),
         native_ccy=native, fx=fx, list_symbol=currency.symbol(currency.get_display(db)), prev_id=prev_id, next_id=next_id,
         **symbol_override,
-        saved=False, fullscreen=True, **journal_ctx(db, t), stop_rule=stops.get_rule(db), opened_ts=int(t.opened_at.replace(tzinfo=timezone.utc).timestamp()), mfe_note=excursion_note(excursion_basis(t)), nav_rows=nav_rows,
+        saved=False, fullscreen=True, chart_symbol=chart_symbol, listing=listing, adjustments=adjustments,
+        **journal_ctx(db, t), stop_rule=stops.get_rule(db), opened_ts=int(t.opened_at.replace(tzinfo=timezone.utc).timestamp()), mfe_note=excursion_note(excursion_basis(t)), nav_rows=nav_rows,
         list_qs=list_qs, in_list=in_list, list_filtered=filtered, list_truncated=len(nav_rows) >= SIDEBAR_LIMIT,
         **extras))
+
+
+@router.post("/trades/{trade_id}/adjustments/{exec_id}")
+def edit_adjustment(trade_id: int, exec_id: int, action: str = Form("save"), quantity: str = Form(""),
+                    price: str = Form(""), when: str = Form(""), db: Session = Depends(get_db)):
+    """Save or remove one estimated reconciliation row. A save is never overwritten by the next sync."""
+    from app.corporate import parse_csv_time
+    from app.models import Execution
+    from app.services import get_state, rebuild_trades, set_state
+
+    t = _get_trade(db, trade_id)
+    ex = db.get(Execution, exec_id)
+    if ex is None or ex.account_id != t.account_id:
+        raise HTTPException(404, "Adjustment not found")
+    try:
+        raw = json.loads(ex.raw or "{}")
+    except ValueError:
+        raw = {}
+    if not isinstance(raw, dict) or not raw.get("estimated"):
+        raise HTTPException(400, "Not an estimated adjustment")
+    acct_id = ex.account_id
+    if action == "remove":
+        key = (ex.symbol or "").upper()
+        try:
+            state = json.loads(get_state(db, "t212:recon") or "{}")
+        except ValueError:
+            state = {}
+        dismissed = set(state.get("dismissed") or [])
+        dismissed.add(key)
+        set_state(db, "t212:recon", json.dumps({"seen": state.get("seen") or {}, "dismissed": sorted(dismissed)}))
+        db.delete(ex)
+        db.flush()
+        rebuild_trades(db, [acct_id])
+        db.commit()
+        still = db.get(Trade, trade_id)
+        return RedirectResponse(f"/trades/{trade_id}" if still is not None else "/trades", status_code=303)
+    try:
+        q, p = float(quantity), float(price)
+    except ValueError:
+        raise HTTPException(400, "Quantity and price must be numbers")
+    if q <= 0:
+        raise HTTPException(400, "Quantity must be positive")
+    if when.strip():
+        parsed = parse_csv_time(when.strip())
+        if parsed is None:
+            raise HTTPException(400, "Date not understood")
+        ex.executed_at = parsed
+        ex.time_known = len(when.strip()) > 10
+    ex.quantity, ex.price = q, p
+    raw["user_edited"] = True
+    raw["estimated"] = True
+    ex.raw = json.dumps(raw)
+    ex.match_key = (f"{ex.executed_at.date().isoformat()}|{ex.symbol}|{ex.side}|"
+                    f"{ex.quantity:.4f}|{ex.price:.4f}|{ex.kind}")
+    db.flush()
+    rebuild_trades(db, [acct_id])
+    db.commit()
+    new_id = db.scalar(select(TradeFill.trade_id).where(TradeFill.execution_id == exec_id))
+    return RedirectResponse(f"/trades/{new_id or trade_id}", status_code=303)
 
 
 def _auto_stop(db: Session, t: Trade) -> None:

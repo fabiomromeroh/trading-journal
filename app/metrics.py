@@ -106,7 +106,15 @@ def entry_split(t) -> dict | None:
     5 minutes of it, as long as nothing has been sold yet (fills without a time of day: same date). Every other
     opening fill is an add. None for a trade without fills."""
     fills = sorted(getattr(t, "fills", None) or [], key=lambda f: f.position)
-    opens = [f for f in fills if f.role == "OPEN"]
+    from app.corporate import NON_DISCRETIONARY_KINDS
+
+    def _discretionary(f) -> bool:
+        ex = getattr(f, "execution", None)
+        kind = getattr(ex, "kind", None) if ex is not None else getattr(f, "kind", None)
+        return kind not in NON_DISCRETIONARY_KINDS
+
+    all_opens = [f for f in fills if f.role == "OPEN"]
+    opens = [f for f in all_opens if _discretionary(f)] or all_opens
     if not opens:
         return None
     first_close = next((f.position for f in fills if f.role == "CLOSE"), None)

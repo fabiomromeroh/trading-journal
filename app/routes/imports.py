@@ -25,6 +25,14 @@ def _history(db: Session):
                            .order_by(ImportBatch.created_at.desc()).limit(50)))
 
 
+def _csv_records(db: Session, batch, records: list) -> list:
+    """A Trading 212 CSV must not repeat a corporate action the orders feed already stored."""
+    if batch.file_format != "t212_csv":
+        return records
+    from app.corporate import omit_duplicate_corporate
+    return omit_duplicate_corporate(db, batch.account_id, records)
+
+
 @router.get("/import")
 def import_page(request: Request, db: Session = Depends(get_db)):
     return templates.TemplateResponse(request, "import.html", base_context(
@@ -98,7 +106,8 @@ def preview(batch_id: int, request: Request, db: Session = Depends(get_db)):
     if batch is None or batch.status != "pending":
         return RedirectResponse("/import", status_code=303)
     result = parse(batch.content, batch.file_format)
-    plan = plan_ingest(db, batch.account_id, batch.file_format, result.records)
+    records = _csv_records(db, batch, result.records)
+    plan = plan_ingest(db, batch.account_id, batch.file_format, records)
     counts = Counter(a for a, _, _ in plan)
     rows = [{"action": a, "r": r} for a, r, _ in plan]
     return templates.TemplateResponse(request, "import_preview.html", base_context(
@@ -113,7 +122,8 @@ def commit(batch_id: int, db: Session = Depends(get_db)):
     if batch is None or batch.status != "pending":
         raise HTTPException(404)
     result = parse(batch.content, batch.file_format)
-    stats = ingest_records(db, batch.account_id, batch.file_format, result.records, batch_id=batch.id)
+    records = _csv_records(db, batch, result.records)
+    stats = ingest_records(db, batch.account_id, batch.file_format, records, batch_id=batch.id)
     batch.inserted, batch.merged, batch.duplicates = stats.inserted, stats.merged, stats.duplicates
     batch.status, batch.committed_at, batch.content = "committed", utcnow(), None
     if result.warnings:

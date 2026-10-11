@@ -418,7 +418,8 @@ def get_chart(db: Session, trade: Trade, tf: str | None = None, now: datetime | 
     elif not avail[tf]["available"]:
         notes.append(f"{tf} isn't available for this trade ({avail[tf]['reason']}); showing {default}.")
         tf = default
-    base = {"symbol": trade.underlying, "tf": tf, "interval": tf, "default_tf": default,
+    from app.symbolmap import price_symbol
+    base = {"symbol": price_symbol(trade), "tf": tf, "interval": tf, "default_tf": default,
             "timeframes": options, "swing": is_swing(trade, now), "time_known": trade.time_known,
             "intraday": tf not in DAILYISH}
     order = _provider_order(trade)
@@ -533,10 +534,15 @@ def markers(trade: Trade, candles: list[dict], tf: str = "1D") -> tuple[list[dic
     times = [c["time"] for c in candles]
     kinds = fill_kinds(trade)
     out, hidden = [], 0
+    from app.corporate import NON_DISCRETIONARY_KINDS
     for (f, i, how), kind in zip(place_fills(trade, candles, tf), kinds):
+        ex = getattr(f, "execution", None)
+        corp = f.role == "ADJUST" or (ex is not None and (ex.kind or "TRADE") in NON_DISCRETIONARY_KINDS)
         if i is None:
             hidden += 1
             continue
+        if corp:
+            continue  # corporate actions are badged on the trade page; they are not entry/exit arrows
         buy = f.side == "BUY"
         text = f"{'B' if buy else 'S'} {f.quantity:g} @ {f.price:g} ({kind})"
         if how == "price":
@@ -625,7 +631,7 @@ def running_excursions(trade: Trade, candles: list[dict], placed: list[tuple]) -
                 pnl = realized + (px - cost) * pos * mult
                 best, worst = max(best, pnl), min(worst, pnl)
         for f in fills:
-            if f.role != "OPEN":
+            if f.role not in ("OPEN", "ADJUST"):
                 apply(f)
         best, worst = max(best, realized), min(worst, realized)
     return round(best, 2), round(worst, 2)

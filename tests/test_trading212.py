@@ -154,10 +154,11 @@ def test_to_record_eu_session_dates():
     assert asml.symbol == "ASML" and asml.trade_date == date(2026, 10, 1)
 
 
-def test_to_record_skips_splits_and_unfilled():
+def test_to_record_keeps_splits_and_skips_unfilled():
     split = _item(load("history_page2.json"), 1005)
     r = t212.to_record(split)
-    assert isinstance(r, t212.Skip) and r.reason == "stock split"
+    assert isinstance(r, ExecRecord) and r.kind == "SPLIT" and r.symbol == "NVDA"
+    assert r.quantity == pytest.approx(1) and r.price == 0 and r.side == "BUY"
     unfilled = load("history_page2.json")["items"][0]  # cancelled TSLA, no fill
     assert isinstance(t212.to_record(unfilled), t212.Skip)
 
@@ -312,14 +313,17 @@ def _run_sync(db, fake=None):
     return src.sync(db, SyncContext()), fake, src
 
 
-def test_sync_ingests_trades_skips_splits_idempotent(db, enc):
+def test_sync_ingests_trades_and_splits_idempotent(db, enc):
     res, fake, src = _run_sync(db)
-    # 8 TRADE fills (page1: 4, page2: 4); 1 STOCK_SPLIT and 1 cancelled order are skipped
-    assert res.inserted == 8
+    # 8 TRADE fills plus the NVDA STOCK_SPLIT. The cancelled TSLA order is still skipped.
+    # The split has quantity 1 and price 0 and no open NVDA position, so it is stored and orphaned.
+    assert res.inserted == 9
     acct = db.scalar(select(Account).where(Account.source_key == "t212"))
     assert acct.currency == "EUR" and acct.broker == "trading212"
     execs = list(db.scalars(select(Execution).where(Execution.account_id == acct.id)))
-    assert {e.external_id for e in execs} == {"1010", "1009", "1008", "1007", "1004", "1003", "1002", "1001"}
+    assert {e.external_id for e in execs} == {"1010", "1009", "1008", "1007", "1005", "1004", "1003", "1002", "1001"}
+    nvda = next(e for e in execs if e.external_id == "1005")
+    assert nvda.kind == "SPLIT" and nvda.symbol == "NVDA"
     vusa = [e for e in execs if e.symbol == "VUSA"]
     assert {e.quantity for e in vusa} == {4.0, 6.0, 10.0}
     assert all(e.currency == "GBP" and e.price == pytest.approx(96.50 if e.side == "BUY" else 97.10) for e in vusa)
@@ -331,10 +335,9 @@ def test_sync_ingests_trades_skips_splits_idempotent(db, enc):
     assert insts["ASMLa_EQ"].price_symbol == "ASML.AS"
     assert insts["AAPL_US_EQ"].price_symbol == "AAPL"
     last = t212.last_status(db)
-    assert last["ok"] is True and last["skipped"]["stock split"] == 1 and last["skipped"]["cancelled"] == 1
-    assert last["skipped_detail"]["stock split"] == ["NVDA"]
+    assert last["ok"] is True and last["skipped"] == {"cancelled": 1}
+    assert "stock split" not in last["skipped"]
     assert last["skipped_detail"]["cancelled"] == ["TSLA"]
-    assert "fill.type" in last["skip_fields"]["stock split"]
     assert KEY not in json.dumps(last["skip_fields"]) and SECRET not in json.dumps(last["skip_fields"])
     assert KEY not in json.dumps(last) and SECRET not in json.dumps(last)
 
@@ -348,7 +351,8 @@ def test_sync_ingests_trades_skips_splits_idempotent(db, enc):
     # second sync is idempotent
     res2, _, _ = _run_sync(db, fake)
     assert res2.inserted == 0
-    assert db.query(Execution).filter(Execution.account_id == acct.id).count() == 8
+    assert db.query(Execution).filter(Execution.account_id == acct.id).count() == 9
+    assert not any(str(e.external_id).startswith("recon:") for e in db.scalars(select(Execution)))
 
 
 def test_incremental_stops_after_old_page(db, enc):
@@ -516,7 +520,7 @@ def test_resync_refreshes_fx_rate(db, enc):
     row = db.scalar(select(Execution).where(Execution.external_id == "1007"))
     assert row.fx_to_account == pytest.approx(0.8896)
     assert row.fees == pytest.approx((0.65 + 0.01) / 0.8896)
-    assert db.query(Execution).filter(Execution.account_id == acct.id).count() == 8
+    assert db.query(Execution).filter(Execution.account_id == acct.id).count() == 9
 
 
 def _dropped(fill_id):
@@ -560,21 +564,21 @@ def test_dropped_shapes_import_real_buys_and_sells():
 
     assert isinstance(t212.to_record(_dropped(9007)), t212.Skip)  # rejected, no fill
     spin = t212.to_record(_dropped(9008))
-    assert isinstance(spin, t212.Skip) and spin.reason == "spin off"
+    assert isinstance(spin, ExecRecord) and spin.kind == "SPIN_OFF" and spin.symbol == "HON"
+    assert spin.quantity == pytest.approx(0.15) and spin.price == 0 and spin.side == "BUY"
 
 
 def test_sync_imports_dropped_shapes_and_lists_skips(db, enc):
     page = load("history_dropped.json")
     fake = FakeT212(pages=[page, {"items": [], "nextPagePath": None}])
     res, _, _ = _run_sync(db, fake)
-    assert res.inserted == 7  # 9001, 9002, 9003, 9101, 9102, 9005, 9006
+    assert res.inserted == 8  # the seven trades plus the HON spin-off
     syms = {e.symbol for e in db.scalars(select(Execution))}
-    assert {"CGC", "WMT", "CNQ", "SOLS", "NVDA"} <= syms
-    assert "HON" not in syms and "TSLA" not in syms
+    assert {"CGC", "WMT", "CNQ", "SOLS", "NVDA", "HON"} <= syms
+    assert "TSLA" not in syms
     last = t212.last_status(db)
-    assert last["skipped"]["rejected"] == 1 and last["skipped"]["spin off"] == 1
+    assert last["skipped"]["rejected"] == 1 and "spin off" not in last["skipped"]
     assert last["skipped_detail"]["rejected"] == ["TSLA"]
-    assert last["skipped_detail"]["spin off"] == ["HON"]
     assert last["skip_fields"]["rejected"]  # names only
     dumped = json.dumps(last)
     assert "t212_test_secret" not in dumped and "secret" not in json.dumps(last["skip_fields"])
@@ -646,7 +650,9 @@ def test_cursor_does_not_stop_on_oldest_first_or_dateless_shape(db, enc):
     assert res.inserted >= 1
     assert db.scalar(select(Execution).where(Execution.external_id == "50")) is not None
     last = t212.last_status(db)
-    assert any(str(ln).startswith("CGC: missing buys") for ln in last["reconcile"])
+    assert any(str(ln).startswith("CGC: missing buys") for ln in last["reconcile_before"])
+    assert last["reconcile"] == []
+    assert any("CGC" in ln for ln in last["adjustments"])
 
 
 def test_full_rescan_ignores_cursor(db, enc):
@@ -681,8 +687,8 @@ def test_settings_shows_skip_list_and_rescan(db, enc, monkeypatch):
     page = c.get("/settings").text
     assert "Re-scan full history" in page
     assert "Skipped rows, by reason and ticker" in page
-    assert "NVDA" in page and "TSLA" in page
-    assert "fill.type" in page
+    assert "TSLA" in page and "cancelled" in page
+    assert "stock split" not in page
     assert KEY not in page and SECRET not in page
 
 
@@ -697,4 +703,4 @@ def test_sync_now_runs_t212_when_connected(db, enc, monkeypatch):
     src = t212.Trading212Source(transport=fake.transport(), sleep=nop_sleep)
     out = execute_run(run.id, sources=[src])
     assert out.status in ("success", "partial")
-    assert db.query(Execution).count() == 8
+    assert db.query(Execution).count() == 9  # 8 trades plus the orphaned NVDA split
