@@ -10,6 +10,7 @@ from app import markets
 from app.config import get_settings
 from app.db import get_db
 from app.models import Instrument
+from app.services import set_state
 from app.sources import trading212 as t212
 from app.sync import start_background
 from app.web import templates
@@ -80,6 +81,17 @@ def disconnect(request: Request, db: Session = Depends(get_db)):
 @router.post("/settings/brokers/t212/sync")
 def sync(request: Request, db: Session = Depends(get_db)):
     from app.models import SyncRun
+    run_id = start_background("manual", only={"t212"})
+    run = db.get(SyncRun, run_id)
+    return templates.TemplateResponse(request, "partials/sync_status.html", {"request": request, "run": run})
+
+
+@router.post("/settings/brokers/t212/resync")
+def resync(request: Request, db: Session = Depends(get_db)):
+    """One-off full history pull. Ingest is idempotent on fill id; nothing is deleted."""
+    from app.models import SyncRun
+    set_state(db, t212.FULL_STATE, "1")
+    db.commit()
     run_id = start_background("manual", only={"t212"})
     run = db.get(SyncRun, run_id)
     return templates.TemplateResponse(request, "partials/sync_status.html", {"request": request, "run": run})

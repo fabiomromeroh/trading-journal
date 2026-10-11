@@ -1,0 +1,127 @@
+{
+  "items": [
+    {
+      "type": "MARKET",
+      "id": 9001,
+      "fillId": 9001,
+      "ticker": "CGC_US_EQ",
+      "orderedQuantity": null,
+      "filledQuantity": null,
+      "orderedValue": 12.6,
+      "filledValue": 12.6,
+      "executor": "WEB",
+      "dateExecuted": "2024-01-15T15:00:00Z",
+      "dateCreated": "2024-01-15T14:59:00Z",
+      "fillPrice": 2.52,
+      "fillType": "OTC",
+      "status": "FILLED",
+      "taxes": [],
+      "instrument": {"ticker": "CGC_US_EQ", "name": "Canopy Growth", "isin": "CA1380351009", "currency": "USD"}
+    },
+    {
+      "order": {
+        "id": 9002,
+        "status": "FILLED",
+        "type": "LIMIT",
+        "ticker": "CGC_US_EQ",
+        "filledQuantity": 5,
+        "dateExecuted": "2024-02-01T15:00:00Z",
+        "createdAt": "2024-02-01T14:00:00Z",
+        "fillPrice": 3.1,
+        "side": "BUY",
+        "instrument": {"ticker": "CGC_US_EQ", "name": "Canopy Growth", "isin": "CA1380351009", "currency": "USD"}
+      }
+    },
+    {
+      "order": {
+        "id": 9003,
+        "side": "BUY",
+        "status": "PARTIALLY_FILLED",
+        "type": "LIMIT",
+        "ticker": "WMT_US_EQ",
+        "instrument": {"ticker": "WMT_US_EQ", "name": "Walmart", "isin": "US9311421039", "currency": "USD"}
+      },
+      "fill": {
+        "id": 9003,
+        "filledAt": "2024-03-01T15:00:00Z",
+        "price": 60.0,
+        "quantity": 0.5,
+        "type": "TOTV",
+        "walletImpact": {"currency": "EUR", "fxRate": 0.9, "netValue": -27.0, "taxes": []}
+      }
+    },
+    {
+      "order": {
+        "id": 9004,
+        "status": "FILLED",
+        "type": "MARKET",
+        "ticker": "CNQ_US_EQ",
+        "instrument": {"ticker": "CNQ_US_EQ", "name": "Canadian Natural", "isin": "CA1363851017", "currency": "USD"}
+      },
+      "fills": [
+        {"id": 9101, "filledAt": "2024-04-01T14:00:00Z", "price": 30.0, "quantity": 1.0, "type": "TRADE", "walletImpact": {"currency": "USD", "fxRate": 1, "netValue": -30, "taxes": []}},
+        {"id": 9102, "filledAt": "2024-04-01T14:00:05Z", "price": 30.2, "quantity": 0.25, "type": "TRADE", "walletImpact": {"currency": "USD", "fxRate": 1, "netValue": -7.55, "taxes": []}}
+      ]
+    },
+    {
+      "order": {
+        "id": 9005,
+        "status": "FILLED",
+        "type": "MARKET",
+        "ticker": "SOLS_US_EQ",
+        "instrument": {"ticker": "SOLS_US_EQ", "name": "Solstice", "isin": "US0000000001", "currency": "USD"}
+      },
+      "fill": {
+        "id": 9005,
+        "filledAt": "2024-05-01T15:00:00Z",
+        "price": 40.0,
+        "quantity": -2,
+        "type": "TRADE",
+        "walletImpact": {"currency": "EUR", "fxRate": 0.9, "netValue": 72.0, "taxes": []}
+      }
+    },
+    {
+      "order": {
+        "id": 9006,
+        "side": "BUY",
+        "status": "FILLED",
+        "ticker": "NVDA_US_EQ",
+        "instrument": {"ticker": "NVDA_US_EQ", "name": "NVIDIA", "isin": "US67066G1040", "currency": "USD"}
+      },
+      "execution": {
+        "id": 9006,
+        "dateExecuted": "2024-06-01T15:00:00Z",
+        "price": 120.0,
+        "quantity": 1,
+        "type": "BUY",
+        "walletImpact": {"currency": "USD", "fxRate": 1, "netValue": -120, "taxes": []}
+      }
+    },
+    {
+      "order": {
+        "id": 9007,
+        "side": "BUY",
+        "status": "REJECTED",
+        "ticker": "TSLA_US_EQ",
+        "instrument": {"ticker": "TSLA_US_EQ", "name": "Tesla", "isin": "US88160R1014", "currency": "USD"}
+      }
+    },
+    {
+      "order": {
+        "id": 9008,
+        "side": "BUY",
+        "status": "FILLED",
+        "ticker": "HON_US_EQ",
+        "instrument": {"ticker": "HON_US_EQ", "name": "Honeywell", "isin": "US4385161066", "currency": "USD"}
+      },
+      "fill": {
+        "id": 9008,
+        "filledAt": "2024-07-01T15:00:00Z",
+        "price": 0,
+        "quantity": 0.15,
+        "type": "SPIN_OFF",
+        "walletImpact": {"currency": "USD", "fxRate": 1, "netValue": 0, "taxes": []}
+      }
+    }
+  ]
+}

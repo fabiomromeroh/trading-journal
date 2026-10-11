@@ -46,6 +46,7 @@ HOSTS = {"live": "https://live.trading212.com/api/v0", "demo": "https://demo.tra
 CRED_STATE = "cred:t212"        # encrypted {"key","secret","env"}; the cred: prefix keeps it out of JSON backups
 LAST_STATE = "t212:last"        # last sync / test status (no secrets)
 CURSOR_STATE = "t212:cursor"    # newest filledAt stored (ISO, UTC)
+FULL_STATE = "t212:full"        # "1" → next sync ignores the cursor (one-off full re-scan)
 OVERLAP_DAYS = 3
 PAGE_LIMIT = 50
 SOURCE_KEY = "t212"
@@ -198,6 +199,363 @@ class Skip:
     reason: str
 
 
+# Fill types that change the share count without being a buy or a sell. Cancelled / rejected orders
+# never get a fill and are counted separately. Anything else with a price and a size is a trade,
+# even when the payload puts the order type (LIMIT) or the trading method (TOTV/OTC) in `type`.
+_NON_TRADE_TYPES = {
+    "STOCK_SPLIT", "SPIN_OFF", "SPINOFF", "STOCK_DISTRIBUTION", "FOP", "FOP_CORRECTION",
+    "CUSTOM_STOCK_DISTRIBUTION", "EQUITY_RIGHTS", "SCRIP_STOCK_DIVIDENDS", "STOCK_DIVIDENDS",
+    "STOCK_ACQUISITION", "CASH_AND_STOCK_ACQUISITION",
+}
+_METHOD_OR_SIDE = {"TRADE", "TOTV", "OTC", "BUY", "SELL", "MARKET", "LIMIT", "STOP", "STOP_LIMIT"}
+_FILLED_STATUS = {"FILLED", "PARTIALLY_FILLED"}
+_SECRET_KEYS = {"key", "secret", "password", "authorization", "token", "api_key", "apisecret"}
+
+
+def _num(v):
+    if v is None or v == "":
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _norm_type(v) -> str:
+    return (v or "").upper().replace("-", "_").replace(" ", "_")
+
+
+def _order_of(item: dict) -> dict:
+    order = item.get("order")
+    return order if isinstance(order, dict) else {}
+
+
+def _ticker_of(item: dict) -> str:
+    order = _order_of(item)
+    ii = order.get("instrument") if isinstance(order.get("instrument"), dict) else {}
+    if not ii and isinstance(item.get("instrument"), dict):
+        ii = item["instrument"]
+    return order.get("ticker") or ii.get("ticker") or item.get("ticker") or ""
+
+
+def _skip_summary(counts: Counter, detail: dict[str, list[str]]) -> str:
+    bits = []
+    for k, n in sorted(counts.items()):
+        ts = detail.get(k) or []
+        shown = ", ".join(ts[:12])
+        extra = f" +{len(ts) - 12}" if len(ts) > 12 else ""
+        bits.append(f"{n} {k}" + (f" ({shown}{extra})" if shown else ""))
+    return "; ".join(bits)
+
+
+def _qty_diff(sym: str, theirs: float, journal: float) -> list[str]:
+    if abs(theirs - journal) <= 1e-4:
+        return []
+    if theirs > journal:
+        return [f"{sym}: missing buys — Trading 212 holds {theirs:g}, journal {journal:g}"]
+    return [f"{sym}: journal holds more — Trading 212 {theirs:g}, journal {journal:g} (sell, split or transfer?)"]
+
+
+def skip_ticker(item: dict) -> str:
+    """Journal symbol for a skip line (CGC, not the raw CGC_US_EQ ticker)."""
+    order = _order_of(item)
+    ii = order.get("instrument") if isinstance(order.get("instrument"), dict) else {}
+    if not ii and isinstance(item.get("instrument"), dict):
+        ii = item["instrument"]
+    ticker = _ticker_of(item)
+    if not ticker:
+        return "?"
+    return markets.parse_t212_ticker(ticker, ii.get("isin")).symbol or ticker
+
+
+def sample_fields(item: dict, limit: int = 12) -> list[str]:
+    """Dotted field names from one raw history item. Values are never copied (no secrets)."""
+    if not isinstance(item, dict):
+        return []
+    out: list[str] = []
+
+    def add(path: str) -> None:
+        if path not in out and path.split(".")[-1].lower() not in _SECRET_KEYS and len(out) < limit:
+            out.append(path)
+
+    for k in list(item)[:6]:
+        add(str(k))
+    for prefix in ("fill", "order", "execution"):
+        sub = item.get(prefix)
+        if isinstance(sub, dict):
+            for k in ("type", "status", "side", "filledAt", "dateExecuted", "fillType", "quantity", "id"):
+                if k in sub:
+                    add(f"{prefix}.{k}")
+    for k in ("fillType", "dateExecuted", "filledAt", "status", "type", "side", "filledQuantity", "filledValue"):
+        if k in item:
+            add(k)
+    return out[:limit]
+
+
+def _fill_type(order: dict, fill: dict, top: dict) -> str:
+    ft = _norm_type(fill.get("type"))
+    fill_method = _norm_type(fill.get("fillType") or order.get("fillType") or top.get("fillType"))
+    order_type = _norm_type(order.get("type") or top.get("type"))
+    if ft in _NON_TRADE_TYPES:
+        return ft
+    if ft in _METHOD_OR_SIDE:
+        return "TRADE"
+    if not ft:
+        if order_type in _NON_TRADE_TYPES:
+            return order_type
+        if fill_method in _NON_TRADE_TYPES:
+            return fill_method
+        return "TRADE"
+    # Unknown label (not a documented corporate action). A buy/sell still has price and size.
+    if _has_economics(order, fill, top):
+        return "TRADE"
+    return ft
+
+
+def _has_economics(order: dict, fill: dict, top: dict) -> bool:
+    price = _num(fill.get("price"))
+    if price is None:
+        price = _num(fill.get("fillPrice") or order.get("fillPrice") or top.get("fillPrice"))
+    qty = _num(fill.get("quantity"))
+    if qty is None:
+        qty = _num(fill.get("filledQuantity") or order.get("filledQuantity") or top.get("filledQuantity"))
+    fv = _num(fill.get("filledValue") if fill.get("filledValue") is not None else order.get("filledValue"))
+    if fv is None:
+        fv = _num(top.get("filledValue"))
+    return bool(price) and (bool(qty) or bool(fv))
+
+
+def _looks_executed(order: dict, fill: dict, top: dict) -> bool:
+    status = _norm_type(order.get("status") or top.get("status"))
+    qty = _num(fill.get("quantity"))
+    if qty is None:
+        qty = _num(fill.get("filledQuantity") or order.get("filledQuantity") or top.get("filledQuantity"))
+    fv = _num(order.get("filledValue") if order.get("filledValue") is not None else top.get("filledValue"))
+    has_fill_id = fill.get("id") is not None or fill.get("fillId") is not None or order.get("fillId") is not None or top.get("fillId") is not None
+    if status in ("CANCELLED", "CANCELED", "REJECTED", "REPLACED"):
+        return bool(has_fill_id and qty)
+    if status in _FILLED_STATUS:
+        return True
+    if has_fill_id and (qty or fv or _num(fill.get("price"))):
+        return True
+    if qty or fv:
+        return status not in ("LOCAL", "UNCONFIRMED", "CONFIRMED", "NEW", "CANCELLING", "")
+    return False
+
+
+def _infer_side(order: dict, fill: dict, top: dict, qty: float | None) -> str:
+    for src in (order.get("side"), fill.get("side"), top.get("side")):
+        s = (src or "").strip().upper()
+        if s in ("BUY", "SELL"):
+            return s
+    if qty is not None and qty < 0:
+        return "SELL"
+    wallet = fill.get("walletImpact") or order.get("walletImpact") or top.get("walletImpact") or {}
+    net = _num(wallet.get("netValue")) if isinstance(wallet, dict) else None
+    if net is not None and net != 0 and (qty is None or qty > 0):
+        return "SELL" if net > 0 else "BUY"
+    if qty is not None and qty > 0:
+        return "BUY"
+    fv = _num(top.get("filledValue"))
+    if fv is None:
+        fv = _num(order.get("filledValue"))
+    if fv is not None and fv != 0:
+        return "SELL" if fv < 0 else "BUY"
+    return ""
+
+
+def item_time(item: dict) -> datetime | None:
+    """Execution time used to decide whether a history page is older than the cursor.
+
+    ``filledAt`` and ``dateExecuted`` are both read. The later one wins, so a row whose fill time
+    lives only in ``dateExecuted`` (or is newer there) does not look old just because ``filledAt``
+    is missing or stale. ``createdAt`` is used only when neither execution field is present.
+    """
+    order = _order_of(item)
+    fill = item.get("fill") if isinstance(item.get("fill"), dict) else {}
+    fills = item.get("fills") if isinstance(item.get("fills"), list) else []
+    if not fill and fills and isinstance(fills[0], dict):
+        fill = fills[0]
+    exec_vals = [
+        fill.get("filledAt"), fill.get("dateExecuted"), order.get("filledAt"), order.get("dateExecuted"),
+        item.get("dateExecuted"), item.get("filledAt"),
+    ]
+    parsed: list[datetime] = []
+    for v in exec_vals:
+        if not isinstance(v, str) or not v.strip():
+            continue
+        try:
+            parsed.append(parse_ts(v))
+        except (TypeError, ValueError):
+            continue
+    if parsed:
+        return max(parsed)
+    for v in (order.get("createdAt"), item.get("dateCreated"), item.get("createdAt"),
+              fill.get("dateModified"), order.get("dateModified"), item.get("dateModified")):
+        if isinstance(v, str) and v.strip():
+            try:
+                return parse_ts(v)
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def _maybe_fill(item: dict) -> bool:
+    """True when the row looks like a real execution even if it has no parseable time yet."""
+    order = _order_of(item) or item
+    status = _norm_type(order.get("status") or item.get("status"))
+    if status in _FILLED_STATUS:
+        return True
+    if item.get("fillId") or (isinstance(order, dict) and order.get("fillId")):
+        return True
+    if _num(item.get("filledValue")) or (isinstance(order, dict) and _num(order.get("filledValue"))):
+        return True
+    fill = item.get("fill")
+    if isinstance(fill, dict) and (fill.get("id") is not None or _num(fill.get("quantity"))):
+        return True
+    return False
+
+
+def _page_newest_first(page: list[dict]) -> bool | None:
+    times = [t for t in (item_time(i) for i in page) if t is not None]
+    if len(times) < 2 or times[0] == times[-1]:
+        return None
+    return times[0] > times[-1]
+
+
+def _instrument_from(order: dict, top: dict) -> dict:
+    ii = order.get("instrument") if isinstance(order.get("instrument"), dict) else None
+    if ii:
+        return ii
+    ii = top.get("instrument") if isinstance(top.get("instrument"), dict) else None
+    if ii:
+        return ii
+    ticker = order.get("ticker") or top.get("ticker") or ""
+    if not ticker and not top.get("isin"):
+        return {}
+    return {"ticker": ticker, "name": top.get("name"), "isin": top.get("isin"),
+            "currency": top.get("currency") or order.get("currency")}
+
+
+def _synthesize_fill(order: dict, fill: dict, top: dict) -> dict:
+    """Copy a possibly-flat or half-empty fill into the nested shape `to_record` expects."""
+    fill = dict(fill or {})
+    if fill.get("id") is None:
+        fill["id"] = fill.get("fillId") if fill.get("fillId") is not None else (
+            order.get("fillId") if order.get("fillId") is not None else top.get("fillId"))
+    if fill.get("id") is None and (order.get("id") is not None or top.get("id") is not None):
+        fill["id"] = order.get("id") if order.get("id") is not None else top.get("id")
+    if not fill.get("filledAt"):
+        for v in (fill.get("dateExecuted"), order.get("dateExecuted"), top.get("dateExecuted"),
+                  order.get("filledAt"), fill.get("dateModified"), order.get("dateModified"),
+                  top.get("dateModified"), order.get("createdAt"), top.get("dateCreated"), top.get("createdAt")):
+            if isinstance(v, str) and v.strip():
+                fill["filledAt"] = v
+                break
+    if _num(fill.get("price")) is None:
+        for src in (fill.get("fillPrice"), order.get("fillPrice"), top.get("fillPrice"), order.get("averagePrice")):
+            if _num(src) is not None:
+                fill["price"] = src
+                break
+    qty = _num(fill.get("quantity"))
+    if qty is None:
+        qty = _num(fill.get("filledQuantity"))
+    if qty is None:
+        qty = _num(order.get("filledQuantity"))
+    if qty is None:
+        qty = _num(top.get("filledQuantity"))
+    price = _num(fill.get("price"))
+    if (qty is None or qty == 0) and price:
+        fv = _num(fill.get("filledValue"))
+        if fv is None:
+            fv = _num(order.get("filledValue"))
+        if fv is None:
+            fv = _num(top.get("filledValue"))
+        if fv:
+            qty = fv / price
+            if _num(fill.get("price")) is None:
+                fill["price"] = abs(fv / qty) if qty else fill.get("price")
+    if qty is not None and fill.get("quantity") is None:
+        fill["quantity"] = qty
+    if not fill.get("walletImpact"):
+        w = order.get("walletImpact") or top.get("walletImpact")
+        taxes = fill.get("taxes") or order.get("taxes") or top.get("taxes")
+        if isinstance(w, dict):
+            fill["walletImpact"] = w
+        elif taxes:
+            fill["walletImpact"] = {"taxes": taxes}
+    fill["type"] = _fill_type(order, fill, top)
+    if not (order.get("side") or fill.get("side")):
+        side = _infer_side(order, fill, top, _num(fill.get("quantity")))
+        if side:
+            fill["side"] = side
+    return fill
+
+
+def history_rows(item: dict) -> list[dict]:
+    """Flatten one history payload into `{order, fill}` rows.
+
+    The live API mixes shapes in one account history:
+      * `{order, fill}` (current docs)
+      * `{order, fills:[...]}` or `execution` / `executions` (partials, nested differently)
+      * a flat legacy row (`fillId`, `fillPrice`, `dateExecuted`, `fillType` = TOTV/OTC, no `side`)
+      * `{order}` only, with the fill fields on the order (`status` FILLED, `type` LIMIT/MARKET,
+        `dateExecuted` set, `filledAt` absent). Value orders often have null `filledQuantity`
+        and a `filledValue` instead.
+    Cancelled / rejected rows come back with an empty fill so the caller can count them.
+    """
+    if not isinstance(item, dict):
+        return []
+    nested = _order_of(item)
+    flat = not nested and "fill" not in item and "fills" not in item
+    top = item if flat else {}
+    order = dict(nested or {})
+    if flat:
+        order = {
+            "id": item.get("id"), "side": item.get("side"), "ticker": item.get("ticker"),
+            "status": item.get("status"), "type": item.get("type"), "currency": item.get("currency"),
+            "filledQuantity": item.get("filledQuantity"), "filledValue": item.get("filledValue"),
+            "quantity": item.get("orderedQuantity") or item.get("quantity"),
+            "createdAt": item.get("dateCreated") or item.get("createdAt"),
+            "dateExecuted": item.get("dateExecuted"), "dateModified": item.get("dateModified"),
+            "fillPrice": item.get("fillPrice"), "fillId": item.get("fillId"), "fillType": item.get("fillType"),
+            "extendedHours": item.get("extendedHours"),
+            "initiatedFrom": item.get("initiatedFrom") or item.get("executor"),
+            "instrument": _instrument_from({}, item), "taxes": item.get("taxes"),
+            "walletImpact": item.get("walletImpact"),
+        }
+    else:
+        if "instrument" not in order:
+            order["instrument"] = _instrument_from(order, item)
+        for k in ("dateExecuted", "filledAt", "fillPrice", "fillId", "fillType", "filledQuantity", "filledValue"):
+            if order.get(k) is None and item.get(k) is not None:
+                order[k] = item.get(k)
+    blobs: list[dict] = []
+    if isinstance(item.get("fills"), list) and item["fills"]:
+        blobs = [x for x in item["fills"] if isinstance(x, dict)]
+    elif isinstance(item.get("executions"), list) and item["executions"]:
+        blobs = [x for x in item["executions"] if isinstance(x, dict)]
+    elif isinstance(item.get("fill"), dict):
+        blobs = [item["fill"]]
+    elif isinstance(item.get("execution"), dict):
+        blobs = [item["execution"]]
+    if not blobs:
+        blobs = [{}]
+    rows = []
+    top_row = top if flat else item
+    for blob in blobs:
+        fill = _synthesize_fill(order, blob, top_row)
+        row_order = dict(order)
+        if not row_order.get("side") and fill.get("side"):
+            row_order["side"] = fill["side"]
+        # A cancelled/rejected order has no execution. Do not keep a fill id copied from the order id.
+        if not _looks_executed(row_order, fill if blob else {}, top_row):
+            rows.append({"order": row_order, "fill": {}})
+        else:
+            rows.append({"order": row_order, "fill": fill})
+    return rows or [{"order": order, "fill": {}}]
+
+
 def resolve_fx(gross_instr: float, wallet: dict, instr_ccy: str | None, *, pence: bool = False) -> float | None:
     """Instrument-currency -> account-currency rate for one fill.
 
@@ -290,18 +648,31 @@ def account_gross(fills: list[tuple[str, float, float, float]]) -> float:
     return pnl
 
 
+def to_records(item: dict, inst: Instrument | None = None, symbol: str | None = None) -> list[ExecRecord | Skip]:
+    """One history payload -> one record per real fill (a `fills` array is several)."""
+    rows = history_rows(item)
+    if not rows:
+        return [Skip("no fill")]
+    return [_to_record_one(row, inst, symbol) for row in rows]
+
+
 def to_record(item: dict, inst: Instrument | None = None, symbol: str | None = None) -> ExecRecord | Skip:
     """One history item -> ExecRecord (pure; ``inst`` supplies symbol/exchange/currency, else they are derived)."""
+    return to_records(item, inst, symbol)[0]
+
+
+def _to_record_one(item: dict, inst: Instrument | None, symbol: str | None) -> ExecRecord | Skip:
     fill, order = item.get("fill") or {}, item.get("order") or {}
     if not fill:
         return Skip("no fill")
-    ftype = (fill.get("type") or "TRADE").upper()
+    ftype = _norm_type(fill.get("type") or "TRADE")
     if ftype != "TRADE":
         return Skip(ftype.lower().replace("_", " "))       # split, spin-off, acquisition ... not a trade
     qty = abs(float(fill.get("quantity") or 0.0))
     price = float(fill.get("price") or 0.0)
-    side = (order.get("side") or "").upper()
-    if qty <= 0 or side not in ("BUY", "SELL") or not fill.get("filledAt") or fill.get("id") is None:
+    side = (order.get("side") or fill.get("side") or "").upper()
+    when_s = fill.get("filledAt") or order.get("dateExecuted")
+    if qty <= 0 or side not in ("BUY", "SELL") or not when_s or fill.get("id") is None:
         return Skip("incomplete")
     ii = order.get("instrument") or {}
     ticker = order.get("ticker") or ii.get("ticker") or ""
@@ -315,7 +686,7 @@ def to_record(item: dict, inst: Instrument | None = None, symbol: str | None = N
     wallet = fill.get("walletImpact") or {}
     fx = resolve_fx(qty * price, wallet, ccy, pence=pence)
     fees = fees_in_instrument(wallet, fx, ccy)
-    when = parse_ts(fill["filledAt"])
+    when = parse_ts(when_s)
     tz = markets.exchange_tz(exch)
     trade_date: date = when.replace(tzinfo=timezone.utc).astimezone(ZoneInfo(tz)).date()
     return ExecRecord(
@@ -519,18 +890,27 @@ class Trading212Source(DataSource):
             summary = cl.account_summary()
             acct = self.ensure_account(db, summary)
             res.accounts.append(acct.id)
-            cursor = get_state(db, CURSOR_STATE)
+            full = get_state(db, FULL_STATE) == "1"
+            if full:
+                set_state(db, FULL_STATE, None)
+            cursor = None if full else get_state(db, CURSOR_STATE)
             threshold = (datetime.fromisoformat(cursor) - timedelta(days=OVERLAP_DAYS)) if cursor else None
-            items, newest_first = [], True
-            for n, page in enumerate(cl.history_pages()):
-                if n == 0 and len(page) > 1:
-                    newest_first = parse_ts(page[0]["fill"]["filledAt"]) >= parse_ts(page[-1]["fill"]["filledAt"]) \
-                        if page[0].get("fill") and page[-1].get("fill") else True
+            items: list[dict] = []
+            newest_first: bool | None = None
+            for page in cl.history_pages():
+                if newest_first is None:
+                    newest_first = _page_newest_first(page)
                 items.extend(page)
-                if threshold and newest_first and page and all(
-                        (i.get("fill") or {}).get("filledAt") and parse_ts(i["fill"]["filledAt"]) < threshold for i in page):
-                    break
-            recs, skipped, newest = self.convert(db, cl, items)
+                # Stop only when this page is entirely older than the overlap window. A row that looks
+                # filled but has no filledAt (dateExecuted, flat legacy item) must not be cut off, and
+                # an oldest-first page must not be treated as newest-first just because its last item
+                # has no fill.
+                if threshold and newest_first and page:
+                    times = [t for t in (item_time(i) for i in page) if t is not None]
+                    blind = any(item_time(i) is None and _maybe_fill(i) for i in page)
+                    if times and not blind and max(times) < threshold:
+                        break
+            recs, skipped, newest, detail, fields = self.convert(db, cl, items)
             res.fetched = len(recs)
             stats = ingest_records(db, acct.id, SOURCE_KEY, recs)
             res.inserted, res.merged = stats.inserted, stats.merged
@@ -538,15 +918,20 @@ class Trading212Source(DataSource):
                 set_state(db, CURSOR_STATE, max(newest, parse_ts(cursor) if cursor else newest).isoformat())
             rebuild_trades(db, [acct.id])
             recon = self.reconcile(db, cl, acct)
-            sk = ", ".join(f"{n} {k}" for k, n in sorted(skipped.items()))
+            sk = _skip_summary(skipped, detail)
             res.message = f"Trading 212: {len(recs)} fills read, {stats.inserted} new" + (f"; skipped {sk} (not trades)" if sk else "")
+            if full:
+                res.message += " (full history)"
             ctx.info(res.message)
+            for reason, names in fields.items():
+                ctx.info(f"Skipped {reason} fields: {', '.join(names)}")
             for line in recon:
                 ctx.info("Trading 212 reconcile: " + line)
             _save_last(db, reset=True, ok=True, error=None, error_kind=None,
                        synced_at=utcnow().strftime("%Y-%m-%d %H:%M UTC"),
                        account_id=summary.get("id"), currency=acct.currency, fetched=len(recs), inserted=stats.inserted,
-                       skipped=dict(skipped), reconcile=recon, api_calls=cl.calls)
+                       skipped=dict(skipped), skipped_detail=detail, skip_fields=fields,
+                       reconcile=recon, api_calls=cl.calls, full=full)
             db.commit()
             return res
         except T212Error as exc:
@@ -558,68 +943,103 @@ class Trading212Source(DataSource):
             if cl is not None:
                 cl.close()
 
-    def convert(self, db: Session, cl: T212Client, items: list[dict]) -> tuple[list[ExecRecord], Counter, datetime | None]:
+    def convert(self, db: Session, cl: T212Client, items: list[dict]
+                ) -> tuple[list[ExecRecord], Counter, datetime | None, dict, dict]:
         skipped: Counter = Counter()
+        detail: dict[str, list[str]] = {}
+        fields: dict[str, list[str]] = {}
         recs: list[ExecRecord] = []
         newest: datetime | None = None
         cache: dict[str, Instrument] = {}
         meta: dict[str, dict] | None = None
+
+        def skip(reason: str, raw: dict) -> None:
+            skipped[reason] += 1
+            ticker = skip_ticker(raw)
+            lst = detail.setdefault(reason, [])
+            if ticker not in lst and len(lst) < 100:
+                lst.append(ticker)
+            fields.setdefault(reason, sample_fields(raw))
+
         for it in items:
-            order, fill = it.get("order") or {}, it.get("fill") or {}
-            if not fill:
-                skipped["unfilled"] += 1
-                continue
-            if (fill.get("type") or "TRADE").upper() != "TRADE":
-                skipped[(fill.get("type") or "").lower().replace("_", " ")] += 1
-                continue
-            ii = order.get("instrument") or {}
-            ticker = order.get("ticker") or ii.get("ticker")
-            if not ticker:
-                skipped["no ticker"] += 1
-                continue
-            inst = cache.get(ticker)
-            if inst is None:
-                known = db.scalar(select(Instrument).where(Instrument.source_key == SOURCE_KEY, Instrument.broker_symbol == ticker))
-                short = None
-                if known is None:       # new instrument: ask the metadata endpoint once for the real short name
-                    if meta is None:
-                        meta = {}
-                        try:
-                            meta = {m["ticker"]: m for m in cl.instruments() if m.get("ticker")}
-                        except T212Error:
-                            pass        # optional scope / rate limit: fall back to the ticker's own base
-                    short = (meta.get(ticker) or {}).get("shortName")
-                inst = symbolmap.upsert_t212(db, ticker, ii.get("isin"), ii.get("name"), ii.get("currency"), short)
-                cache[ticker] = inst
-            r = to_record(it, inst)
-            if isinstance(r, Skip):
-                skipped[r.reason] += 1
-                continue
-            recs.append(r)
-            newest = r.executed_at if newest is None or r.executed_at > newest else newest
+            for row in history_rows(it):
+                order, fill = row.get("order") or {}, row.get("fill") or {}
+                if not fill:
+                    status = _norm_type((_order_of(it).get("status") or it.get("status")))
+                    skip("cancelled" if status in ("CANCELLED", "CANCELED") else
+                         "rejected" if status == "REJECTED" else "unfilled", it)
+                    continue
+                if _norm_type(fill.get("type") or "TRADE") != "TRADE":
+                    skip(_norm_type(fill.get("type")).lower().replace("_", " "), it)
+                    continue
+                ii = order.get("instrument") or {}
+                ticker = order.get("ticker") or ii.get("ticker")
+                if not ticker:
+                    skip("no ticker", it)
+                    continue
+                inst = cache.get(ticker)
+                if inst is None:
+                    known = db.scalar(select(Instrument).where(Instrument.source_key == SOURCE_KEY, Instrument.broker_symbol == ticker))
+                    short = None
+                    if known is None:       # new instrument: ask the metadata endpoint once for the real short name
+                        if meta is None:
+                            meta = {}
+                            try:
+                                meta = {m["ticker"]: m for m in cl.instruments() if m.get("ticker")}
+                            except T212Error:
+                                pass        # optional scope / rate limit: fall back to the ticker's own base
+                        short = (meta.get(ticker) or {}).get("shortName")
+                    inst = symbolmap.upsert_t212(db, ticker, ii.get("isin"), ii.get("name"), ii.get("currency"), short)
+                    cache[ticker] = inst
+                r = _to_record_one(row, inst, None)
+                if isinstance(r, Skip):
+                    skip(r.reason if r.reason != "no fill" else "unfilled", it)
+                    continue
+                recs.append(r)
+                newest = r.executed_at if newest is None or r.executed_at > newest else newest
         recs.sort(key=lambda r: (r.executed_at, r.external_id))
-        return recs, skipped, newest
+        return recs, skipped, newest, detail, fields
 
     def reconcile(self, db: Session, cl: T212Client, acct: Account) -> list[str]:
-        """Compare T212's open positions with the journal's open trades; returns human-readable differences."""
+        """Compare each T212 open position with journal open trades.
+
+        A renamed listing (history ticker DMYI, journal symbol IONQ) is matched on instrument id so it
+        is not reported as a missing buy. Where Trading 212 still holds more shares, the line says so
+        per ticker.
+        """
         try:
             self._sleep(1.0)          # positions: 1 request / second
             pos = cl.positions()
         except T212Error:
             return []
-        mine: dict[str, float] = {}
-        for t in db.scalars(select(Trade).where(Trade.account_id == acct.id, Trade.status == "OPEN")):
-            mine[t.symbol] = mine.get(t.symbol, 0.0) + (t.open_quantity or 0.0)
-        theirs: dict[str, float] = {}
-        for p in pos:
-            ii = p.get("instrument") or {}
-            inst = db.scalar(select(Instrument).where(Instrument.source_key == SOURCE_KEY,
-                                                      Instrument.broker_symbol == ii.get("ticker")))
-            sym = inst.symbol if inst else markets.parse_t212_ticker(ii.get("ticker") or "").symbol
-            theirs[sym] = theirs.get(sym, 0.0) + float(p.get("quantity") or 0.0)
+        opens = list(db.scalars(select(Trade).where(Trade.account_id == acct.id, Trade.status == "OPEN")))
+        by_inst: dict[int, list[Trade]] = {}
+        for t in opens:
+            if t.instrument_id:
+                by_inst.setdefault(t.instrument_id, []).append(t)
+        claimed: set[int] = set()
         out = []
-        for sym in sorted(set(mine) | set(theirs)):
-            a, b = theirs.get(sym, 0.0), mine.get(sym, 0.0)
-            if abs(a - b) > 1e-4:
-                out.append(f"{sym}: Trading 212 holds {a:g}, journal {b:g} (split, transfer or skipped corporate action?)")
+        for p in pos or []:
+            ii = p.get("instrument") or {}
+            ticker = ii.get("ticker") or ""
+            inst = db.scalar(select(Instrument).where(Instrument.source_key == SOURCE_KEY,
+                                                      Instrument.broker_symbol == ticker)) if ticker else None
+            parsed = markets.parse_t212_ticker(ticker, ii.get("isin")).symbol if ticker else "?"
+            sym = (inst.symbol if inst else None) or parsed or "?"
+            theirs = float(p.get("quantity") or 0.0)
+            rows: list[Trade] = []
+            if inst is not None and inst.id in by_inst:
+                rows = by_inst[inst.id]
+            else:
+                rows = [t for t in opens if t.symbol in {sym, parsed} and t.id not in claimed]
+            journal = sum((t.open_quantity or 0.0) for t in rows)
+            claimed.update(t.id for t in rows)
+            out.extend(_qty_diff(sym, theirs, journal))
+        left: dict[str, float] = {}
+        for t in opens:
+            if t.id in claimed or abs(t.open_quantity or 0.0) <= 1e-4:
+                continue
+            left[t.symbol] = left.get(t.symbol, 0.0) + (t.open_quantity or 0.0)
+        for sym in sorted(left):
+            out.extend(_qty_diff(sym, 0.0, left[sym]))
         return out

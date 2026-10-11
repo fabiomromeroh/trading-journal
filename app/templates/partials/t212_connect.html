@@ -5,11 +5,27 @@
       Key <b class="text-slate-200">{{ t212.masked }}</b>{% if t212.practice %} · practice{% endif %}
       {% if last.synced_at %}· last sync <b class="text-slate-200">{{ last.synced_at }}</b> · {{ last.fetched or 0 }} fills read, {{ last.inserted or 0 }} new{% if last.skipped %} · skipped {% for k, n in last.skipped.items() %}{{ n }} {{ k }}{{ ', ' if not loop.last }}{% endfor %} (not trades){% endif %}{% else %}· never synced yet.{% endif %}
     </div>
+    {% if last.skipped_detail %}
+    <details class="text-xs">
+      <summary class="cursor-pointer text-slate-400">Skipped rows, by reason and ticker</summary>
+      <ul class="mt-1 space-y-1 text-slate-400">
+      {% for reason, tickers in last.skipped_detail.items() %}
+        <li><span class="text-slate-200">{{ last.skipped.get(reason, tickers|length) }} {{ reason }}</span>
+          — {{ tickers|join(', ') }}
+          {% if last.skip_fields and last.skip_fields.get(reason) %}
+          <div class="text-slate-500">fields: {{ last.skip_fields[reason]|join(', ') }}</div>
+          {% endif %}
+        </li>
+      {% endfor %}
+      </ul>
+    </details>
+    {% endif %}
     {% if last.error %}<div class="text-xs text-rose-300 whitespace-pre-line">{{ last.error }}</div>{% endif %}
     {% if last.warning %}<div class="text-xs text-amber-300">{{ last.warning }}</div>{% endif %}
     {% if last.reconcile %}<div class="text-xs text-amber-300">Positions differ from Trading 212:<ul class="list-disc ml-5">{% for r in last.reconcile %}<li>{{ r }}</li>{% endfor %}</ul></div>{% endif %}
     <div class="flex flex-wrap gap-2">
       <button hx-post="/settings/brokers/t212/sync" hx-target="#t212-sync" class="btn btn-p text-xs">Sync Trading 212</button>
+      <button hx-post="/settings/brokers/t212/resync" hx-target="#t212-sync" hx-confirm="Re-scan the full Trading 212 history? Existing fills are kept." class="btn btn-s text-xs">Re-scan full history</button>
       <form method="post" action="/settings/brokers/t212/test"><button class="btn btn-s text-xs">Test connection</button></form>
       <form method="post" action="/settings/brokers/t212/disconnect" onsubmit="return confirm('Delete the stored API key? Imported trades stay.')"><button class="btn btn-d text-xs">Disconnect</button></form>
     </div>

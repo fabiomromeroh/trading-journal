@@ -314,7 +314,7 @@ def _run_sync(db, fake=None):
 
 def test_sync_ingests_trades_skips_splits_idempotent(db, enc):
     res, fake, src = _run_sync(db)
-    # 8 TRADE fills (page1: 4, page2: 4); 1 STOCK_SPLIT and 1 unfilled order are skipped
+    # 8 TRADE fills (page1: 4, page2: 4); 1 STOCK_SPLIT and 1 cancelled order are skipped
     assert res.inserted == 8
     acct = db.scalar(select(Account).where(Account.source_key == "t212"))
     assert acct.currency == "EUR" and acct.broker == "trading212"
@@ -331,7 +331,11 @@ def test_sync_ingests_trades_skips_splits_idempotent(db, enc):
     assert insts["ASMLa_EQ"].price_symbol == "ASML.AS"
     assert insts["AAPL_US_EQ"].price_symbol == "AAPL"
     last = t212.last_status(db)
-    assert last["ok"] is True and last["skipped"]["stock split"] == 1 and last["skipped"]["unfilled"] == 1
+    assert last["ok"] is True and last["skipped"]["stock split"] == 1 and last["skipped"]["cancelled"] == 1
+    assert last["skipped_detail"]["stock split"] == ["NVDA"]
+    assert last["skipped_detail"]["cancelled"] == ["TSLA"]
+    assert "fill.type" in last["skip_fields"]["stock split"]
+    assert KEY not in json.dumps(last["skip_fields"]) and SECRET not in json.dumps(last["skip_fields"])
     assert KEY not in json.dumps(last) and SECRET not in json.dumps(last)
 
     trades = list(db.scalars(select(Trade).where(Trade.account_id == acct.id)))
@@ -513,6 +517,173 @@ def test_resync_refreshes_fx_rate(db, enc):
     assert row.fx_to_account == pytest.approx(0.8896)
     assert row.fees == pytest.approx((0.65 + 0.01) / 0.8896)
     assert db.query(Execution).filter(Execution.account_id == acct.id).count() == 8
+
+
+def _dropped(fill_id):
+    page = load("history_dropped.json")
+    for it in page["items"]:
+        rows = t212.history_rows(it)
+        for row in rows:
+            if (row.get("fill") or {}).get("id") == fill_id or (it.get("order") or {}).get("id") == fill_id or it.get("id") == fill_id:
+                if (row.get("fill") or {}).get("id") == fill_id or not row.get("fill"):
+                    return it
+    raise AssertionError(fill_id)
+
+
+def test_dropped_shapes_import_real_buys_and_sells():
+    """Flat value orders, LIMIT fills without a nested fill, TOTV/BUY types, fills[], missing side."""
+    flat = t212.to_record(_dropped(9001))
+    assert isinstance(flat, ExecRecord)
+    assert flat.symbol == "CGC" and flat.side == "BUY" and flat.quantity == pytest.approx(5.0)
+    assert flat.price == pytest.approx(2.52) and flat.external_id == "9001"
+    assert flat.trade_date == date(2024, 1, 15)
+
+    limit = t212.to_record(_dropped(9002))
+    assert isinstance(limit, ExecRecord)
+    assert limit.symbol == "CGC" and limit.side == "BUY" and limit.quantity == pytest.approx(5)
+    assert limit.price == pytest.approx(3.1) and limit.executed_at == datetime(2024, 2, 1, 15, 0)
+
+    totv = t212.to_record(_dropped(9003))
+    assert isinstance(totv, ExecRecord) and totv.symbol == "WMT" and totv.quantity == pytest.approx(0.5)
+
+    parts = t212.to_records(_dropped(9101))
+    trades = [r for r in parts if isinstance(r, ExecRecord)]
+    assert {r.external_id for r in trades} == {"9101", "9102"}
+    assert all(r.side == "BUY" and r.symbol == "CNQ" for r in trades)
+
+    sell = t212.to_record(_dropped(9005))
+    assert isinstance(sell, ExecRecord) and sell.side == "SELL" and sell.quantity == pytest.approx(2) and sell.symbol == "SOLS"
+
+    renamed_type = t212.to_record(_dropped(9006))
+    assert isinstance(renamed_type, ExecRecord) and renamed_type.side == "BUY" and renamed_type.symbol == "NVDA"
+    assert renamed_type.executed_at == datetime(2024, 6, 1, 15, 0)
+
+    assert isinstance(t212.to_record(_dropped(9007)), t212.Skip)  # rejected, no fill
+    spin = t212.to_record(_dropped(9008))
+    assert isinstance(spin, t212.Skip) and spin.reason == "spin off"
+
+
+def test_sync_imports_dropped_shapes_and_lists_skips(db, enc):
+    page = load("history_dropped.json")
+    fake = FakeT212(pages=[page, {"items": [], "nextPagePath": None}])
+    res, _, _ = _run_sync(db, fake)
+    assert res.inserted == 7  # 9001, 9002, 9003, 9101, 9102, 9005, 9006
+    syms = {e.symbol for e in db.scalars(select(Execution))}
+    assert {"CGC", "WMT", "CNQ", "SOLS", "NVDA"} <= syms
+    assert "HON" not in syms and "TSLA" not in syms
+    last = t212.last_status(db)
+    assert last["skipped"]["rejected"] == 1 and last["skipped"]["spin off"] == 1
+    assert last["skipped_detail"]["rejected"] == ["TSLA"]
+    assert last["skipped_detail"]["spin off"] == ["HON"]
+    assert last["skip_fields"]["rejected"]  # names only
+    dumped = json.dumps(last)
+    assert "t212_test_secret" not in dumped and "secret" not in json.dumps(last["skip_fields"])
+
+
+class _Pages:
+    """Three history pages. Page 0 is the oldest (oldest-first feed) so a cursor must not stop there."""
+
+    def __init__(self):
+        self.calls = []
+
+    def handler(self, req: httpx.Request) -> httpx.Response:
+        self.calls.append(req)
+        if not _auth_ok(req):
+            return httpx.Response(401, json={"message": "Invalid API key"})
+        path = req.url.path
+        if path.endswith("/equity/account/summary"):
+            return httpx.Response(200, json=load("summary.json"))
+        if path.endswith("/equity/positions"):
+            return httpx.Response(200, json=[
+                {"quantity": 8, "instrument": {"ticker": "CGC_US_EQ", "isin": "CA1380351009", "currency": "USD"}},
+            ])
+        if path.endswith("/equity/metadata/instruments"):
+            return httpx.Response(200, json=load("instruments.json"))
+        if path.endswith("/equity/history/orders"):
+            cursor = req.url.params.get("cursor")
+            if cursor == "2":
+                body = {"items": [_old_fill(3, "2026-09-02T15:00:00Z")], "nextPagePath": None}
+            elif cursor == "1":
+                body = {"items": [_old_fill(2, "2026-09-01T15:00:00Z")],
+                        "nextPagePath": "/api/v0/equity/history/orders?cursor=2&limit=50"}
+            else:
+                # oldest page, plus a filled flat row whose only timestamp is dateExecuted (newer than the cursor window)
+                body = {"items": [
+                    _old_fill(1, "2020-01-02T15:00:00Z"),
+                    _old_fill(11, "2020-06-01T15:00:00Z"),
+                    {"order": {"id": 50, "side": "BUY", "status": "FILLED", "type": "MARKET", "ticker": "CGC_US_EQ",
+                               "instrument": {"ticker": "CGC_US_EQ", "isin": "CA1380351009", "currency": "USD"}},
+                     "fill": {"id": 50, "price": 2.5, "quantity": 5, "type": "TRADE",
+                              "dateExecuted": "2026-09-20T15:00:00Z",
+                              "walletImpact": {"currency": "USD", "fxRate": 1, "netValue": -12.5, "taxes": []}}},
+                ], "nextPagePath": "/api/v0/equity/history/orders?cursor=1&limit=50"}
+            return httpx.Response(200, json=body)
+        return httpx.Response(404, json={"message": "not found"})
+
+    def transport(self):
+        return httpx.MockTransport(self.handler)
+
+
+def _old_fill(fid, when, ticker="AAPL_US_EQ"):
+    return {
+        "order": {"id": fid, "side": "BUY", "status": "FILLED", "type": "MARKET", "ticker": ticker,
+                  "instrument": {"ticker": ticker, "isin": "US0378331005", "currency": "USD"}},
+        "fill": {"id": fid, "filledAt": when, "price": 100.0, "quantity": 1, "type": "TRADE",
+                 "walletImpact": {"currency": "USD", "fxRate": 1, "netValue": -100, "taxes": []}},
+    }
+
+
+def test_cursor_does_not_stop_on_oldest_first_or_dateless_shape(db, enc):
+    t212.save_credentials(db, KEY, SECRET, "live")
+    from app.services import set_state
+    set_state(db, t212.CURSOR_STATE, "2026-09-10T00:00:00")  # threshold ~ 2026-09-07
+    db.commit()
+    fake = _Pages()
+    src = t212.Trading212Source(transport=fake.transport(), sleep=nop_sleep)
+    res = src.sync(db, SyncContext())
+    hist = [c for c in fake.calls if c.url.path.endswith("/equity/history/orders")]
+    assert len(hist) == 3  # did not stop on the old first page; dateExecuted fill is inside the window
+    assert res.inserted >= 1
+    assert db.scalar(select(Execution).where(Execution.external_id == "50")) is not None
+    last = t212.last_status(db)
+    assert any(str(ln).startswith("CGC: missing buys") for ln in last["reconcile"])
+
+
+def test_full_rescan_ignores_cursor(db, enc):
+    _run_sync(db)
+    from app.services import set_state, get_state
+    set_state(db, t212.CURSOR_STATE, "2099-01-01T00:00:00")
+    db.commit()
+    fake = FakeT212()
+    src = t212.Trading212Source(transport=fake.transport(), sleep=nop_sleep)
+    src.sync(db, SyncContext())
+    hist = [c for c in fake.calls if str(c.url.path).endswith("/equity/history/orders")]
+    assert len(hist) == 1  # newest-first page is entirely before the cursor window
+
+    set_state(db, t212.FULL_STATE, "1")
+    set_state(db, t212.CURSOR_STATE, "2099-01-01T00:00:00")
+    db.commit()
+    fake2 = FakeT212()
+    src2 = t212.Trading212Source(transport=fake2.transport(), sleep=nop_sleep)
+    res = src2.sync(db, SyncContext())
+    hist2 = [c for c in fake2.calls if str(c.url.path).endswith("/equity/history/orders")]
+    assert len(hist2) == 2
+    assert "full history" in res.message
+    assert get_state(db, t212.FULL_STATE) in (None, "")
+
+
+def test_settings_shows_skip_list_and_rescan(db, enc, monkeypatch):
+    _run_sync(db)
+    monkeypatch.setattr(t212, "_TRANSPORT", FakeT212().transport())
+    from app.main import create_app
+    c = TestClient(create_app())
+    assert c.post("/login", data={"password": "test-pass", "next": "/"}, follow_redirects=False).status_code == 303
+    page = c.get("/settings").text
+    assert "Re-scan full history" in page
+    assert "Skipped rows, by reason and ticker" in page
+    assert "NVDA" in page and "TSLA" in page
+    assert "fill.type" in page
+    assert KEY not in page and SECRET not in page
 
 
 def test_sync_now_runs_t212_when_connected(db, enc, monkeypatch):

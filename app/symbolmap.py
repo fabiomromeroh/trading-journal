@@ -12,9 +12,12 @@ def upsert_t212(db: Session, ticker: str, isin: str | None, name: str | None, cu
                 short_name: str | None = None) -> Instrument:
     """Create/refresh the Instrument row for a Trading 212 ticker. Manual overrides are never overwritten."""
     info = markets.parse_t212_ticker(ticker, isin)
-    sym = (short_name or info.symbol).strip() or info.symbol
-    if short_name and info.exchange == "US":
-        sym = short_name
+    # shortName usually repeats the ticker (AAPL). After a rename the catalogue's shortName is the
+    # new symbol (DMYI order -> IONQ) while history and positions still use the old ticker. Adopting
+    # that name splits one position across two symbols, so only an exact match is applied.
+    sym = info.symbol
+    if short_name and short_name.strip().upper() == (info.symbol or "").upper():
+        sym = short_name.strip()
     ccy = (currency or "").upper() or None
     scale = 1.0
     if ccy in ("GBX", "GBP") and info.exchange == "LSE":
