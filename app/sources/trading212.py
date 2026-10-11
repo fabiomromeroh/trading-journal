@@ -1005,6 +1005,12 @@ class Trading212Source(DataSource):
             held = self._positions(cl)
             recon_before = self.reconcile(db, cl, acct, positions=held)
             adjustments = self.apply_adjustments(db, acct, held)
+            # The new gap is often the missing split (WMT 3-for-1, CGC 1-for-10). Fetch again
+            # in this same re-scan, then drop the estimate if the listing split closed the gap.
+            again = self._listing_splits(db, acct.id)
+            if again:
+                split_notes.extend(again)
+                adjustments = self.apply_adjustments(db, acct, held)
             from app.corporate import audit_instruments
             issues = audit_instruments(db, fix=True)
             # A removed adjustment (the gap closed) must rebuild even when nothing new was booked.

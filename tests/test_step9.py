@@ -243,6 +243,38 @@ def test_adjustment_for_an_oversell_does_not_become_a_short(db):
     assert adj.currency == "USD" and adj.instrument_id == inst.id
 
 
+def test_one_rescan_replaces_a_forward_split_gap_with_the_listing_split(db):
+    """Broker holds the post-split shares and no recon row exists yet. One pass must not
+    leave a zero-cost buy; the listing split is inserted and the estimate is removed."""
+    acct = Account(name="Trading 212", broker="trading212", currency="EUR", source_key="t212",
+                   market="EU", kind="invest")
+    db.add(acct)
+    db.flush()
+    inst = Instrument(source_key="t212", broker_symbol="WMT_US_EQ", isin="US9311421039", symbol="WMT",
+                      exchange="US", currency="USD", price_symbol="WMT", asset_type="STOCK")
+    db.add(inst)
+    db.flush()
+    db.add(Execution(
+        account_id=acct.id, source="t212", external_id="b", match_key="b", symbol="WMT", underlying="WMT",
+        asset_type="STOCK", side="BUY", quantity=1, price=90, executed_at=datetime(2024, 1, 31, 15),
+        currency="USD", instrument_id=inst.id))
+    db.flush()
+    held = [{"quantity": 3, "instrument": {"ticker": "WMT_US_EQ", "isin": "US9311421039", "currency": "USD"}}]
+    fetch = lambda *_a, **_k: [(datetime(2024, 2, 26, 14, 30), 3.0)]
+    src = t212.Trading212Source(sleep=lambda *_a, **_k: None, split_fetch=fetch)
+    assert src._listing_splits(db, acct.id) == []
+    src.apply_adjustments(db, acct, held)
+    assert src._listing_splits(db, acct.id)
+    src.apply_adjustments(db, acct, held)
+    assert db.scalar(select(Execution).where(Execution.external_id == "recon:WMT")) is None
+    assert db.scalar(select(func.count()).select_from(Execution).where(Execution.kind == "SPLIT")) == 1
+    rebuild_trades(db, [acct.id])
+    trade = db.scalar(select(Trade))
+    assert trade.symbol == "WMT" and trade.status == "OPEN"
+    assert trade.open_quantity == pytest.approx(3)
+    assert trade.entry_price == pytest.approx(30)
+
+
 def test_chart_price_off_flags_a_different_scale_only():
     from types import SimpleNamespace
     day = datetime(2023, 1, 11, 16, 0)
