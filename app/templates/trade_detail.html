@@ -15,8 +15,9 @@
     <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/></svg><span class="hidden sm:inline">List</span>
   </button>
   <a href="/trades{{ '?' ~ list_qs if list_qs }}" class="text-slate-400 hover:text-white text-sm">← Trades</a>
-  <h1 class="text-xl font-semibold text-white">{{ t.symbol }}</h1>
+  <h1 class="text-xl font-semibold text-white">{{ t.symbol }}{% if t.company and t.company.name %} <span class="font-normal text-slate-300">- {{ t.company.name }}</span>{% endif %}</h1>
   {% if listing %}<span class="text-xs text-slate-400" title="Exchange · chart ticker · currency">{{ listing }}</span>{% endif %}
+  {% if t.company and (t.company.sector or t.company.industry) %}<span class="text-xs text-slate-400" title="Sector · industry">{{ t.company.sector or '—' }}{% if t.company.industry %} · {{ t.company.industry }}{% endif %}</span>{% endif %}
   <span class="pill {{ 'bg-emerald-500/15 text-emerald-300' if t.direction == 'LONG' else 'bg-rose-500/15 text-rose-300' }}">{{ t.direction }}</span>
   <span class="pill bg-slate-700/60 text-slate-300">{{ 'Option' if t.asset_type == 'OPTION' else 'Stock' }}</span>
   {% if t.status == 'OPEN' %}<span class="pill bg-sky-500/15 text-sky-300">OPEN</span>{% else %}

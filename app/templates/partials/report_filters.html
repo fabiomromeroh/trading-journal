@@ -39,6 +39,14 @@
     <option value="">Any mistake</option>
     {% for s in mistakes %}<option {{ 'selected' if q.get('mistake') == s }}>{{ s }}</option>{% endfor %}
   </select>{% endif %}
+  <select name="sector" class="inp text-xs" aria-label="Sector">
+    <option value="">Any sector</option>
+    {% for s in sectors|default([]) %}<option value="{{ s }}" {{ 'selected' if q.get('sector') == s }}>{{ s }}</option>{% endfor %}
+  </select>
+  <select name="industry" class="inp text-xs" aria-label="Industry">
+    <option value="">Any industry</option>
+    {% for s in industries|default([]) %}<option value="{{ s }}" {{ 'selected' if q.get('industry') == s }}>{{ s }}</option>{% endfor %}
+  </select>
   <button class="btn btn-s text-xs nojs-only">Apply</button>
   {% if params %}<a href="?{% if tab %}tab={{ tab }}{% endif %}" class="text-slate-400 hover:text-white underline px-1">Clear</a>{% endif %}
 </form>

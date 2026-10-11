@@ -75,6 +75,22 @@ class Instrument(Base):
     user_override: Mapped[bool] = mapped_column(Boolean, default=False)  # symbol/price_symbol typed by the user
 
 
+class CompanyProfile(Base):
+    """Company name, sector and industry for one Yahoo symbol. Filled in the background; kept 90 days."""
+    __tablename__ = "company_profiles"
+    __table_args__ = (
+        Index("ix_company_profiles_sector", "sector"),
+        Index("ix_company_profiles_industry", "industry"),
+    )
+    yahoo_symbol: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str | None] = mapped_column(String(160))
+    sector: Mapped[str | None] = mapped_column(String(80))
+    industry: Mapped[str | None] = mapped_column(String(120))
+    quote_type: Mapped[str | None] = mapped_column(String(20))  # EQUITY | ETF | ...
+    source: Mapped[str | None] = mapped_column(String(20))      # yahoo | t212 | t212+yahoo | fallback | miss
+    fetched_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
 class FxRate(Base):
     """Daily ECB reference rate cache: 1 EUR = rate x quote (Frankfurter API). Weekends use the previous business day."""
     __tablename__ = "fx_rates"

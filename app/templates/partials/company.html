@@ -1,0 +1,6 @@
+{% macro name(t) %}
+{% if t.company and t.company.name %}<div class="js-co text-[11px] font-normal text-slate-500 leading-tight truncate max-w-[18rem]" title="{{ t.company.name }}">{{ t.company.name }}</div>{% endif %}
+{% endmacro %}
+{% macro pills(t) %}
+{% if t.company and (t.company.sector or t.company.industry) %}<span class="inline-flex flex-wrap gap-1 max-w-[220px]">{% if t.company.sector %}<span class="pill bg-violet-500/15 text-violet-200 js-sector" title="Sector: {{ t.company.sector }}{% if t.company.industry %} · Industry: {{ t.company.industry }}{% endif %}">{{ t.company.sector }}</span>{% endif %}{% if t.company.industry %}<span class="pill bg-slate-700/80 text-slate-300 js-industry" title="Industry: {{ t.company.industry }}{% if t.company.sector %} · Sector: {{ t.company.sector }}{% endif %}">{{ t.company.industry }}</span>{% endif %}</span>{% else %}<span class="text-slate-600">—</span>{% endif %}
+{% endmacro %}

@@ -22,7 +22,7 @@ TABS = [("overview", "Overview"), ("timing", "Days & times"), ("price", "Price &
         ("instrument", "Instrument & symbol"), ("tags", "Setups & tags"), ("winloss", "Win/loss & expectancy"),
         ("drawdown", "Drawdown"), ("excursion", "MFE / MAE")]
 # Query parameters shared with the Trades page filters.
-EXTRA_PARAMS = ("symbol", "direction", "status", "asset", "outcome", "setup", "tag", "mistake")
+EXTRA_PARAMS = ("symbol", "direction", "status", "asset", "outcome", "setup", "tag", "mistake", "sector", "industry")
 
 
 def default_risk(db: Session) -> float | None:
@@ -61,9 +61,12 @@ def apply_extra_filters(stmt, q):
 
 def filtered_trades(request: Request, db: Session):
     f = parse_filters(request)
-    stmt = apply_extra_filters(apply_trade_filters(select(Trade), f), request.query_params)
-    from app import currency
-    return f, currency.view(db, load_trades(db, stmt))
+    from app import companies, currency
+    stmt = companies.restrict(apply_extra_filters(apply_trade_filters(select(Trade), f), request.query_params),
+                              db, request.query_params)
+    trades = currency.view(db, load_trades(db, stmt))
+    companies.annotate(db, trades)
+    return f, trades
 
 
 def _series(rows, key="net"):
@@ -104,6 +107,10 @@ def report_data(trades, tz: str, risk: float | None, events=None) -> dict:
     }
     for k, rows in b.items():
         charts[k] = _series(rows)
+    from app import companies
+    b["sector"], b["industry"] = companies.breakdown(trades)
+    charts["sector"] = _series(b["sector"])
+    charts["industry"] = _series(b["industry"])
     return {"s": s, "b": b, "dd": dd, "charts": charts, "exc": exc, "rtrades": rtrades, "n_closed": len(closed)}
 
 
@@ -116,8 +123,13 @@ def reports(request: Request, db: Session = Depends(get_db)):
     tz = get_settings().display_tz
     risk = default_risk(db)
     if f.start or f.end:
+        from app import companies
         from app.web import realized_scope
-        evs, _, _ = realized_scope(db, f, lambda st: apply_extra_filters(st, request.query_params))
+
+        def _extra(st):
+            return companies.restrict(apply_extra_filters(st, request.query_params), db, request.query_params)
+
+        evs, _, _ = realized_scope(db, f, _extra)
     else:
         from app import realized as rz
         evs = rz.events(trades)
@@ -125,9 +137,12 @@ def reports(request: Request, db: Session = Depends(get_db)):
     q = request.query_params
     from app.routes.trades import filter_options
     setups, tags, mistakes = filter_options(db)
+    from app import companies
+    sectors, industries = companies.choices(db)
     params = {k: v for k, v in q.items() if k != "tab" and v}
     return templates.TemplateResponse(request, "reports.html", base_context(
         request, db, nav="reports", f=f, q=q, tab=tab, tabs=TABS, params=params, setups=setups, tags=tags, mistakes=mistakes,
+        sectors=sectors, industries=industries,
         default_risk=risk, flash=request.session.pop("flash", None), **data))
 
 

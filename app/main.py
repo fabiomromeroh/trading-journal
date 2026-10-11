@@ -81,11 +81,16 @@ async def lifespan(app: FastAPI):
     from app import stops
     threading.Thread(target=stops.startup_backfill, name="stops-backfill", daemon=True).start()
     threading.Thread(target=_repair_t212_gbx_fx, name="t212-gbx-fx", daemon=True).start()
+    from app import companies
+    if companies.enabled():
+        companies.request_full()  # missing / stale names only; Yahoo stays off the request path
     yield
     if task:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
+    from app import companies
+    companies.stop()
 
 
 def create_app() -> FastAPI:

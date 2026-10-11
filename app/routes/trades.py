@@ -26,7 +26,7 @@ SORTS = {
 
 
 LIST_KEYS = ("preset", "start", "end", "account", "symbol", "direction", "asset", "status", "outcome", "setup",
-             "tag", "mistake", "sort", "dir", "realized_day")
+             "tag", "mistake", "sector", "industry", "sort", "dir", "realized_day")
 
 
 def realized_on_day(db: Session, f, day) -> dict:
@@ -100,6 +100,8 @@ def filtered_trades(request: Request, db: Session | None = None):
         stmt = stmt.where(Trade.tags.any(Tag.name == q["tag"]))
     if q.get("mistake"):
         stmt = stmt.where(Trade.mistake_rows.any(TradeMistake.name == q["mistake"]))
+    from app import companies
+    stmt = companies.restrict(stmt, db, q)
     sort = q.get("sort", "opened")
     sort = sort if sort in SORTS else "opened"
     desc = q.get("dir", "desc") != "asc"
@@ -139,10 +141,14 @@ def trades_list(request: Request, db: Session = Depends(get_db)):
     closed_pnl, n_closed = by_status.get("CLOSED", (0.0, 0))
     open_pnl, n_open = by_status.get("OPEN", (0.0, 0))
     setups, tags, mistakes = filter_options(db)
+    from app import companies
+    companies.annotate(db, rows)
+    sectors, industries = companies.choices(db)
     params = {k: v for k, v in q.items() if k not in ("sort", "dir", "page")}
     return templates.TemplateResponse(request, "trades.html", base_context(
         request, db, nav="trades", f=f, trades=rows, total=total, page=page, pages=max(1, -(-total // PAGE)),
-        sort=sort, desc=desc, params=params, q=q, setups=setups, tags=tags, mistakes=mistakes, list_qs=list_qs,
+        sort=sort, desc=desc, params=params, q=q, setups=setups, tags=tags, mistakes=mistakes,
+        sectors=sectors, industries=industries, list_qs=list_qs,
         filtered_pnl=closed_pnl, n_closed=n_closed, n_open=n_open, open_realized=open_pnl,
         realized_pnl=closed_pnl + open_pnl, day=day, day_rows=day_rows or {},
         day_total=sum(r["net"] for r in (day_rows or {}).values())))
@@ -207,7 +213,8 @@ def trade_detail(trade_id: int, request: Request, db: Session = Depends(get_db))
         if isinstance(raw, dict) and raw.get("estimated"):
             adjustments[ex.id] = raw
     # A cached quote only. The page asks /r.json after paint so Yahoo is not on this response.
-    from app import quotes
+    from app import companies, quotes
+    companies.annotate(db, [t])
     extras = trade_extras(db, t, quotes.cached_price(t))
     fx = currency.presentation(db, t, extras["tm"])
     # A missing rate must not stamp the selected symbol on instrument-currency amounts.

@@ -10,6 +10,7 @@ os.environ["APP_PASSWORD"] = "test-pass"
 os.environ["SECRET_KEY"] = "test-secret"
 os.environ["PRICE_PROVIDER"] = "none"
 os.environ["QUOTE_PROVIDER"] = "none"
+os.environ["COMPANY_FETCH"] = "off"  # never hit Yahoo for company profiles from the test suite
 for k in ("SCHWAB_APP_KEY", "SCHWAB_APP_SECRET", "SCHWAB_CALLBACK_URL", "SNAPTRADE_CLIENT_ID", "SNAPTRADE_CONSUMER_KEY"):
     os.environ.pop(k, None)
 

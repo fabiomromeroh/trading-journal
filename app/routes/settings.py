@@ -80,9 +80,10 @@ def _settings_ctx(request, db, **kw):
     from app.routes.email_sync import settings_ctx as _tos_email_ctx
     from app.routes.security import security_ctx as _security_ctx
     from app.routes.backup import settings_ctx as _backup_ctx
-    from app import brokers
+    from app import brokers, companies
     from app.routes.brokers import settings_ctx as _brokers_ctx
     return base_context(request, db, nav="settings", broker_cards=brokers.cards(db), **_brokers_ctx(db), sources=sources, runs=runs, acct_rows=acct_rows,
+                        company_stats=companies.stats(db),
                         active_run=running_sync(db), s=s, snaptrade=_snaptrade_ctx(db), **_alias_ctx(db),
                         tos_email=_tos_email_ctx(request, db), **_security_ctx(db), keepawake=keepawake_ctx(), backups=_backup_ctx(request, db), journal_cfg=_journal_ctx(db), **kw)
 
@@ -362,6 +363,19 @@ def save_aliases(request: Request, aliases: str = Form(""), db: Session = Depend
     request.session["flash"] = (f"Ticker aliases saved. Re-matched imports ({st.merged} fills merged); "
                                 f"rebuilt {n} trades.")
     return RedirectResponse("/settings#aliases", status_code=303)
+
+
+@router.post("/settings/companies/refresh")
+def refresh_companies(request: Request, db: Session = Depends(get_db)):
+    """Fill missing or stale company names in the background. Never calls Yahoo in this request."""
+    from app import companies
+    if not companies.enabled():
+        request.session["flash"] = "Company info is off on this server (quotes disabled)."
+        return RedirectResponse("/settings", status_code=303)
+    missing = companies.stats(db)["missing"]
+    companies.request_full()
+    request.session["flash"] = f"Refreshing company info in the background ({missing} symbol(s) to fill)."
+    return RedirectResponse("/settings", status_code=303)
 
 
 @router.post("/settings/rebuild")

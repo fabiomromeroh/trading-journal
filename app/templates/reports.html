@@ -104,6 +104,8 @@
   {% if b.call_put %}<div>{{ section('Calls vs puts', 'call_put', b.call_put, 'Type') }}</div>{% endif %}
 </div>
 {{ section('Symbol', 'symbol', b.symbol, 'Symbol', 'symbol', h='h-72') }}
+{{ section('By sector', 'sector', b.sector, 'Sector', 'sector', h='h-72') }}
+{{ section('By industry', 'industry', b.industry, 'Industry', 'industry', h='h-72') }}
 
 {% elif tab == 'tags' %}
 <div class="grid grid-cols-1 xl:grid-cols-2 gap-x-4">

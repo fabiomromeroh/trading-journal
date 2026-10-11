@@ -159,11 +159,13 @@
   <div class="card p-5">
     <div class="card-h mb-2">Maintenance</div>
     <p class="text-sm text-slate-400 mb-3">Rebuild all round-trip trades from stored fills (journal notes, tags and ratings are kept).</p>
-    <div class="flex gap-2">
+    <div class="flex flex-wrap gap-2">
       <form method="post" action="/settings/rebuild"><button class="btn btn-s text-xs">Rebuild trades</button></form>
       <a href="/settings/backup.json" class="btn btn-s text-xs">Download backup (JSON)</a>
       <form method="post" action="/settings/recompute-excursions"><button class="btn btn-s text-xs" title="Best / worst running P&amp;L during each trade, from the finest available price bars">Recompute MFE/MAE</button></form>
+      <form method="post" action="/settings/companies/refresh"><button class="btn btn-s text-xs" title="Fill company name, sector and industry for symbols that are missing or older than 90 days">Refresh company info</button></form>
     </div>
+    <p class="text-xs text-slate-500 mt-2" id="company-info">{{ company_stats.cached }} cached, {{ company_stats.missing }} missing (of {{ company_stats.symbols }}). Fetched in the background, kept 90 days. Trading 212 name when the instrument has one, otherwise Yahoo; sector and industry from Yahoo.</p>
   </div>
   <div class="card p-5 text-sm text-slate-400">
     <div class="card-h mb-2">Environment</div>
