@@ -1,0 +1,173 @@
+{
+ "items": [
+  {
+   "order": {
+    "id": 110,
+    "createdAt": "2026-10-01T08:30:12.000Z",
+    "currency": "EUR",
+    "extendedHours": false,
+    "filledQuantity": 3.0,
+    "initiatedFrom": "IOS",
+    "side": "BUY",
+    "status": "FILLED",
+    "strategy": "QUANTITY",
+    "ticker": "ASMLa_EQ",
+    "type": "MARKET",
+    "timeInForce": "DAY",
+    "instrument": {
+     "ticker": "ASMLa_EQ",
+     "name": "ASML Holding",
+     "isin": "NL0010273215",
+     "currency": "EUR"
+    }
+   },
+   "fill": {
+    "id": 1010,
+    "filledAt": "2026-10-01T08:30:12.000Z",
+    "price": 742.0,
+    "quantity": 3.0,
+    "type": "TRADE",
+    "tradingMethod": "TOTV",
+    "walletImpact": {
+     "currency": "EUR",
+     "fxRate": 1.0,
+     "netValue": -2226.0,
+     "realisedProfitLoss": 0,
+     "taxes": []
+    }
+   }
+  },
+  {
+   "order": {
+    "id": 109,
+    "createdAt": "2026-09-24T13:40:00.000+01:00",
+    "currency": "EUR",
+    "extendedHours": false,
+    "filledQuantity": 10.0,
+    "initiatedFrom": "IOS",
+    "side": "SELL",
+    "status": "FILLED",
+    "strategy": "QUANTITY",
+    "ticker": "VUSAl_EQ",
+    "type": "MARKET",
+    "timeInForce": "DAY",
+    "instrument": {
+     "ticker": "VUSAl_EQ",
+     "name": "Vanguard S&P 500 UCITS ETF",
+     "isin": "IE00B3XXRP09",
+     "currency": "GBX"
+    }
+   },
+   "fill": {
+    "id": 1009,
+    "filledAt": "2026-09-24T13:40:00.000+01:00",
+    "price": 9710.0,
+    "quantity": 10.0,
+    "type": "TRADE",
+    "tradingMethod": "TOTV",
+    "walletImpact": {
+     "currency": "EUR",
+     "fxRate": 1.165,
+     "netValue": 1131.2,
+     "realisedProfitLoss": 0,
+     "taxes": [
+      {
+       "name": "STAMP_DUTY",
+       "quantity": 0.0,
+       "currency": "EUR",
+       "chargedAt": "2026-09-01T10:00:00Z"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "order": {
+    "id": 108,
+    "createdAt": "2026-09-18T14:10:00.000+02:00",
+    "currency": "EUR",
+    "extendedHours": false,
+    "filledQuantity": 8.0,
+    "initiatedFrom": "IOS",
+    "side": "SELL",
+    "status": "FILLED",
+    "strategy": "QUANTITY",
+    "ticker": "SAPd_EQ",
+    "type": "MARKET",
+    "timeInForce": "DAY",
+    "instrument": {
+     "ticker": "SAPd_EQ",
+     "name": "SAP SE",
+     "isin": "DE0007164600",
+     "currency": "EUR"
+    }
+   },
+   "fill": {
+    "id": 1008,
+    "filledAt": "2026-09-18T14:10:00.000+02:00",
+    "price": 193.2,
+    "quantity": 8.0,
+    "type": "TRADE",
+    "tradingMethod": "TOTV",
+    "walletImpact": {
+     "currency": "EUR",
+     "fxRate": 1.0,
+     "netValue": 1545.6,
+     "realisedProfitLoss": 0,
+     "taxes": []
+    }
+   }
+  },
+  {
+   "order": {
+    "id": 107,
+    "createdAt": "2026-09-16T15:45:30.000Z",
+    "currency": "EUR",
+    "extendedHours": false,
+    "filledQuantity": 2.5,
+    "initiatedFrom": "IOS",
+    "side": "SELL",
+    "status": "FILLED",
+    "strategy": "QUANTITY",
+    "ticker": "AAPL_US_EQ",
+    "type": "MARKET",
+    "timeInForce": "DAY",
+    "instrument": {
+     "ticker": "AAPL_US_EQ",
+     "name": "Apple",
+     "isin": "US0378331005",
+     "currency": "USD"
+    }
+   },
+   "fill": {
+    "id": 1007,
+    "filledAt": "2026-09-16T15:45:30.000Z",
+    "price": 196.0,
+    "quantity": 2.5,
+    "type": "TRADE",
+    "tradingMethod": "TOTV",
+    "walletImpact": {
+     "currency": "EUR",
+     "fxRate": 0.8896,
+     "netValue": 435.9,
+     "realisedProfitLoss": 0,
+     "taxes": [
+      {
+       "name": "CURRENCY_CONVERSION_FEE",
+       "quantity": 0.65,
+       "currency": "EUR",
+       "chargedAt": "2026-09-01T10:00:00Z"
+      },
+      {
+       "name": "FINRA_FEE",
+       "quantity": 0.01,
+       "currency": "EUR",
+       "chargedAt": "2026-09-01T10:00:00Z"
+      }
+     ]
+    }
+   }
+  }
+ ],
+ "nextPagePath": "/api/v0/equity/history/orders?limit=50&cursor=1757500000000"
+}

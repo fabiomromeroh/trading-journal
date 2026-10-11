@@ -66,7 +66,7 @@ def summarize(inserted: int, merged: int, before: dict, after: dict) -> str:
     return ", ".join(parts) + f"; {trades}."
 
 
-def execute_run(run_id: int, sources=None, send_reminders: bool = False) -> SyncRun:
+def execute_run(run_id: int, sources=None, send_reminders: bool = False, only: set[str] | None = None) -> SyncRun:
     if not _lock.acquire(blocking=False):
         db = dbmod.SessionLocal()
         run = db.get(SyncRun, run_id)
@@ -77,6 +77,8 @@ def execute_run(run_id: int, sources=None, send_reminders: bool = False) -> Sync
         run = db.get(SyncRun, run_id)
         ctx = SyncContext(trigger=run.trigger)
         sources = sources if sources is not None else all_sources()
+        if only:  # per-broker "Sync now"
+            sources = [s for s in sources if s.key in only]
         statuses, errors, used, touched = [], [], [], set()
         before = _trade_snapshot(db)
         for src in sources:
@@ -155,7 +157,7 @@ def execute_run(run_id: int, sources=None, send_reminders: bool = False) -> Sync
         _lock.release()
 
 
-def start_background(trigger: str = "manual") -> int:
+def start_background(trigger: str = "manual", only: set[str] | None = None) -> int:
     db = dbmod.SessionLocal()
     try:
         run, created = start_run(db, trigger)
@@ -163,7 +165,7 @@ def start_background(trigger: str = "manual") -> int:
     finally:
         db.close()
     if created:
-        threading.Thread(target=execute_run, args=(run_id,), daemon=True).start()
+        threading.Thread(target=execute_run, args=(run_id,), kwargs={"only": only} if only else {}, daemon=True).start()
     return run_id
 
 

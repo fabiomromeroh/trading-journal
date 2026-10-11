@@ -12,7 +12,9 @@ from app.sources.base import DataSource, SourceStatus, SyncContext, SourceResult
 def all_sources() -> list[DataSource]:
     from app.sources.schwab_api import SchwabApiSource
     from app.sources.snaptrade import SnapTradeSource
-    return [SnapTradeSource(), SchwabApiSource()]
+    from app.sources.trading212 import Trading212Source
+    # the two Schwab sources first (unchanged behaviour); broker adapters report "not configured" until a key is saved
+    return [SnapTradeSource(), SchwabApiSource(), Trading212Source()]
 
 
 def enabled_sources() -> list[DataSource]:

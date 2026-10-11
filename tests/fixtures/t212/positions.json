@@ -1,0 +1,14 @@
+[
+ {
+  "averagePricePaid": 742.0,
+  "currentPrice": 760.2,
+  "quantity": 3.0,
+  "createdAt": "2026-10-01T08:30:12Z",
+  "instrument": {
+   "ticker": "ASMLa_EQ",
+   "name": "ASML Holding",
+   "isin": "NL0010273215",
+   "currency": "EUR"
+  }
+ }
+]

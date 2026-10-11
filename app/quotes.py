@@ -39,6 +39,9 @@ def yahoo_symbol(t) -> str:
     if getattr(t, "asset_type", "STOCK") == "OPTION" and getattr(t, "expiration", None) and getattr(t, "strike", None):
         cp = "C" if (t.option_type or "").upper().startswith("C") else "P"
         return f"{t.underlying}{t.expiration:%y%m%d}{cp}{int(round(t.strike * 1000)):08d}"
+    inst = getattr(t, "instrument", None)
+    if inst is not None and inst.price_symbol:  # mapped non-US listing, e.g. VUSA.L
+        return inst.price_symbol
     return (getattr(t, "underlying", None) or t.symbol).replace(".", "-").replace("/", "-")
 
 
@@ -50,7 +53,7 @@ def _period(ts: int, tp: dict) -> str:
     return "closed"
 
 
-def parse_chart(symbol: str, data: dict, now: float | None = None) -> Quote | None:
+def parse_chart(symbol: str, data: dict, now: float | None = None, ccy: str | None = None) -> Quote | None:
     """Pick the freshest price out of a v8 chart response."""
     res = ((data or {}).get("chart") or {}).get("result") or []
     if not res:
@@ -68,9 +71,12 @@ def parse_chart(symbol: str, data: dict, now: float | None = None) -> Quote | No
     if best_px is None or best_ts is None:
         return None
     now = time.time() if now is None else now
-    return Quote(symbol=symbol, price=round(float(best_px), 4), at=datetime.fromtimestamp(best_ts, timezone.utc),
+    from app.markets import pence_factor
+    k = pence_factor(meta.get("currency"), ccy)
+    sc = lambda v: None if v is None else v * k  # noqa: E731
+    return Quote(symbol=symbol, price=round(float(best_px) * k, 4), at=datetime.fromtimestamp(best_ts, timezone.utc),
                  session=_period(int(best_ts), tp), market=_period(int(now), tp),
-                 regular_price=meta.get("regularMarketPrice"), prev_close=meta.get("chartPreviousClose"))
+                 regular_price=sc(meta.get("regularMarketPrice")), prev_close=sc(meta.get("chartPreviousClose")))
 
 
 def _fetch(ysym: str) -> dict:
@@ -82,10 +88,11 @@ def _fetch(ysym: str) -> dict:
 
 def get_quotes(trades, fetch=_fetch) -> dict[str, Quote]:
     """Quotes for the open trades' symbols (journal symbol -> Quote). Missing/failed symbols are omitted."""
-    want = {}
+    want, ccys = {}, {}
     for t in trades:
         if getattr(t, "status", "OPEN") == "OPEN":
             want[t.symbol] = yahoo_symbol(t)
+            ccys[t.symbol] = getattr(t, "native_currency", None) or getattr(t, "currency", None)
     out, todo, mono = {}, [], time.monotonic()
     with _lock:
         for sym, ysym in want.items():
@@ -99,7 +106,7 @@ def get_quotes(trades, fetch=_fetch) -> dict[str, Quote]:
     def one(item):
         sym, ysym = item
         try:
-            return sym, ysym, parse_chart(sym, fetch(ysym))
+            return sym, ysym, parse_chart(sym, fetch(ysym), ccy=ccys.get(sym))
         except Exception:
             return sym, ysym, None
 

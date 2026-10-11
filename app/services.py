@@ -16,9 +16,9 @@ from app.timeutil import ET, et_date, local_to_utc_naive
 from app.trade_builder import BuilderExec, build_trades
 
 # Higher number = more authoritative when the same fill arrives from several sources.
-SOURCE_QUALITY = {"demo": 0, "schwab_csv": 1, "snaptrade": 1, "tos_statement": 2, "tos_email": 2, "schwab_api": 3}
+SOURCE_QUALITY = {"demo": 0, "schwab_csv": 1, "snaptrade": 1, "tos_statement": 2, "tos_email": 2, "schwab_api": 3, "t212": 3, "ibkr_flex": 3}
 # Sources whose records can be corrected after the fact; a re-delivered record refreshes the row.
-REFRESHABLE_SOURCES = {"schwab_api", "snaptrade"}
+REFRESHABLE_SOURCES = {"schwab_api", "snaptrade", "t212", "ibkr_flex"}
 # Provisional fills (e.g. built from same-day SnapTrade orders: no fees yet). The authoritative record
 # from the linked source supersedes them; they are matched by shared id first, then like any fill.
 PROVISIONAL_SOURCES = {"snaptrade_order"}

@@ -1,8 +1,11 @@
 # Multi-broker design: Trading 212, Interactive Brokers, and "any broker"
 
-Status: **research + design only, nothing built.** Written 2026-10-11. All external facts below were read from the
-official pages linked in each section on that date; items marked **(verify)** are from third parties or experience and must be
-checked against a real sample from the user's account before coding.
+Status: **Phase 0 + A + B built** (2026-10-11). Phase 0 golden-master harness and Phase A schema /
+account switcher / USD·EUR display currency are on `main`. Phase B (Trading 212 official API adapter,
+Settings connect card, Yahoo/ISIN mapping, GBX scale, US-only auto-stop) is in this tree. Phase C
+(IBKR Flex) is not built; the Brokers card still shows it as coming soon. All external facts below
+were read from the official pages linked in each section on 2026-10-11; items marked **(verify)**
+must be checked against a real sample from the user's account (no live T212 key has been used yet).
 
 Goal: track the user's other investments (IBKR, Trading 212, later more) in the same journal **without changing any
 Schwab / SnapTrade / thinkorswim-email / CSV behaviour**.

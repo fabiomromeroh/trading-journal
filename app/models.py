@@ -165,6 +165,7 @@ class Trade(Base):
     is_demo: Mapped[bool] = mapped_column(Boolean, default=False)
     currency: Mapped[str | None] = mapped_column(String(3))      # instrument currency (None = the account's)
     instrument_id: Mapped[int | None] = mapped_column(ForeignKey("instruments.id", ondelete="SET NULL"))
+    instrument: Mapped["Instrument | None"] = relationship(foreign_keys=[instrument_id])
     # Journal fields (preserved across rebuilds)
     notes: Mapped[str | None] = mapped_column(Text)
     setup: Mapped[str | None] = mapped_column(String(80))

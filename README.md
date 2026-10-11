@@ -1,8 +1,9 @@
-# Trading Journal (Schwab edition)
+# Trading Journal
 
-A private, single-user trading journal in the spirit of TraderSync, built for a Charles Schwab account.
-You import your Schwab history, it groups fills into round-trip trades, and you get performance stats,
-per-trade pages with a price chart, and journal notes, tags, setups and ratings.
+A private, single-user trading journal in the spirit of TraderSync. It groups fills into round-trip
+trades and gives you performance stats, per-trade pages with a price chart, and journal notes, tags,
+setups and ratings. Schwab (CSV / SnapTrade / thinkorswim) is unchanged; Trading 212 connects through
+its official read-only API. Interactive Brokers Flex is next.
 
 ![Dashboard](screenshots/01-dashboard.png)
 
@@ -34,7 +35,10 @@ per-trade pages with a price chart, and journal notes, tags, setups and ratings.
   - Equity curve, daily P&L, and a P&L calendar heatmap.
   - P&L by symbol, by weekday, by hour of entry and by holding time.
   - Long vs short, stocks vs options, by setup and by tag.
-  - Date-range and account filters.
+  - Date-range and **account filter** (one account or All). Combined totals in a **display currency**
+    (USD or EUR) using ECB reference rates via the free Frankfurter API: each closed trade at the
+    rate of its close date, open positions at the latest rate (weekends use Friday). Tooltips and
+    the header banner document the method. R multiples and percentages are unaffected.
 - **Trades list**: sortable and filterable by symbol, side, status, outcome, asset type, setup and tag.
   Paginated.
 - **Trade detail page**:
@@ -44,10 +48,10 @@ per-trade pages with a price chart, and journal notes, tags, setups and ratings.
     picker (1m-1W), volume + MA(20) and indicators (SMA, EMA, VWAP, Bollinger, RSI, MACD, ATR).
   - Journal: notes, tags, setup, 1–5 star rating. These are kept when trades are rebuilt.
 - **Sync engine with pluggable data sources** (`app/sources/`). Syncing is manual: the "Sync now"
-  button (or `python -m app.sync` from a shell) runs every enabled source and then rebuilds trades.
+  button (or `python -m app.sync` from a shell) runs every connected source and then rebuilds trades.
   There is no scheduled sync. Sources: **Schwab via SnapTrade** (works with Schwab International
-  accounts) and an optional **Schwab Trader API** source (US accounts). Both are off unless their env
-  vars are set.
+  accounts), optional **Schwab Trader API** (US accounts), and **Trading 212** (official API, key +
+  secret entered in Settings → Brokers). SnapTrade/Schwab API stay off unless their env vars are set.
 - **Sample-data mode**: always labelled "Sample data", kept in its own account, and removable with one
   click in Settings.
 - **Single-user login**: argon2-hashed password (seeded from `APP_PASSWORD`, changeable with an emailed code), signed session cookie, simple brute-force
@@ -113,9 +117,9 @@ Neon's free plan only keeps about 6 hours of restore history, so the journal is 
   `TOKEN_ENCRYPTION_KEY` (`python -c "from app.backup import passphrase_from_key as p; print(p('<key>'))"`).
   Because the passphrase derives from the key you already keep in Render, nothing extra can get lost.
 - **What is in a backup:** every table (trades, fills, journal notes/tags/ratings, imports, settings such as widget layouts,
-  break-even range, the encrypted ingest token). **Not** in it: broker OAuth credentials, price cache, password hashes and
-  pending login codes. After a restore the login password is `APP_PASSWORD` again (or use "forgot password"), and Schwab (if used)
-  must be reconnected; SnapTrade is unaffected.
+  break-even range, the encrypted ingest token). **Not** in it: broker OAuth credentials, Trading 212 API keys (`cred:*`),
+  price cache, password hashes and pending login codes. After a restore the login password is `APP_PASSWORD` again
+  (or use "forgot password"), and Schwab / Trading 212 (if used) must be reconnected; SnapTrade is unaffected.
 - **Restore** (any machine with Python and `gpg` that can reach the database; Neon: use the *direct* host, `sslmode=require`):
   ```bash
   git clone https://github.com/fabiomromeroh/trading-journal && cd trading-journal && pip install -r requirements.txt
@@ -140,7 +144,8 @@ Neon's free plan only keeps about 6 hours of restore history, so the journal is 
   - `DATABASE_URL`: the Neon **direct** (non-pooled) connection string with `sslmode=require`. `postgres://` and
     `postgresql://` URLs are converted automatically.
   - `COOKIE_SECURE=true`.
-- Optional env vars: `SNAPTRADE_CLIENT_ID`, `SNAPTRADE_CONSUMER_KEY`, `TOKEN_ENCRYPTION_KEY`,
+- Optional env vars: `SNAPTRADE_CLIENT_ID`, `SNAPTRADE_CONSUMER_KEY`, `TOKEN_ENCRYPTION_KEY`
+  (required to store Trading 212 / Schwab OAuth credentials encrypted),
   `DISPLAY_TZ`, `PRICE_PROVIDER`, `POLYGON_API_KEY`, `SCHWAB_*`, `SMTP_*`.
 - **Neon free Postgres** does not expire, but suspends idle compute after 5 minutes (the first query after that waits a
   second or two; the app recycles connections and retries). Free plan = 100 compute-hours a month and only a short
@@ -195,6 +200,29 @@ session), Bollinger Bands, RSI, MACD and ATR in their own panes. The selection i
 browser's localStorage. "Open in TradingView" opens the symbol on tradingview.com.
 MFE/MAE is computed on the default timeframe; for multi-day trades it uses whole daily bars, so it is
 approximate.
+
+## Trading 212 (official API)
+
+Settings → Brokers → **Connect Trading 212**. The key and secret are stored encrypted with
+`TOKEN_ENCRYPTION_KEY` and are never written to backups or logs.
+
+1. In the Trading 212 app: Settings → API (Beta) → Generate. Tick **Account data**, **Portfolio**,
+   **History**, **History - Orders**, **Metadata**. Leave **Orders - Execute** (and every other
+   trading permission) **off**. Practice and live keys are separate; tick the Practice box in the
+   journal if you generated a demo key.
+2. Paste key + secret into Settings and press Connect (the app tests the key first). Press **Sync now**
+   (or **Sync Trading 212** on the card) to import fills. Later syncs re-read a few overlapping days
+   and skip fill ids already stored.
+3. Fills use the real `filledAt` time, ISIN, instrument currency and taxes/fees. Stock splits and
+   other non-trade fills are counted and skipped. LSE pence (GBX) prices are stored as pounds; Yahoo
+   symbols are derived from the ticker (`VUSAl_EQ` → `VUSA.L`, `SAPd_EQ` → `SAP.DE`, `AAPL_US_EQ` →
+   `AAPL`) and can be overridden on the card. The New York 5-minute auto-stop rule applies only to
+   US-listed instruments.
+
+No API key is required to run or test the journal; the adapter is covered by recorded fixtures.
+
+Interactive Brokers (Flex Web Service, token + query id) is not wired up yet; the Brokers card shows
+it as coming soon. CSV import remains available for any broker.
 
 ## Schwab via SnapTrade (recommended; works for Schwab International)
 [SnapTrade Personal](https://snaptrade.com/personal) is free for your own accounts.

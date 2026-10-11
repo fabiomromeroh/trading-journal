@@ -1,0 +1,34 @@
+[
+ {
+  "ticker": "VUSAl_EQ",
+  "shortName": "VUSA",
+  "isin": "IE00B3XXRP09",
+  "currencyCode": "GBX",
+  "type": "ETF",
+  "name": "Vanguard S&P 500 UCITS ETF"
+ },
+ {
+  "ticker": "ASMLa_EQ",
+  "shortName": "ASML",
+  "isin": "NL0010273215",
+  "currencyCode": "EUR",
+  "type": "STOCK",
+  "name": "ASML Holding"
+ },
+ {
+  "ticker": "SAPd_EQ",
+  "shortName": "SAP",
+  "isin": "DE0007164600",
+  "currencyCode": "EUR",
+  "type": "STOCK",
+  "name": "SAP SE"
+ },
+ {
+  "ticker": "AAPL_US_EQ",
+  "shortName": "AAPL",
+  "isin": "US0378331005",
+  "currencyCode": "USD",
+  "type": "STOCK",
+  "name": "Apple"
+ }
+]

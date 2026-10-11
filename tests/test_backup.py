@@ -82,7 +82,7 @@ def test_export_content_has_no_secrets_and_rate_limit(db, anon, seeded):
     assert data["tables"]["oauth_tokens"] == {"omitted": "credentials", "rows": 1}
     assert data["tables"]["price_cache"]["omitted"] == "cache"
     keys = {x["key"] for x in data["tables"]["app_state"]}
-    assert "layout:dashboard" in keys and not any(k.startswith(("auth:", "backup:")) for k in keys)
+    assert "layout:dashboard" in keys and not any(k.startswith(("auth:", "backup:", "cred:")) for k in keys)
     # second export right away: rate limited with Retry-After
     r2 = anon.get("/api/backup/export", headers=h)
     assert r2.status_code == 429 and int(r2.headers["retry-after"]) > 0

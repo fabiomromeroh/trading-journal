@@ -1,0 +1,211 @@
+{
+ "items": [
+  {
+   "order": {
+    "id": 106,
+    "side": "BUY",
+    "ticker": "TSLA_US_EQ",
+    "status": "CANCELLED",
+    "instrument": {
+     "ticker": "TSLA_US_EQ",
+     "name": "Tesla",
+     "isin": "US88160R1014",
+     "currency": "USD"
+    }
+   }
+  },
+  {
+   "order": {
+    "id": 105,
+    "createdAt": "2026-09-12T09:00:00Z",
+    "currency": "EUR",
+    "extendedHours": false,
+    "filledQuantity": 1.0,
+    "initiatedFrom": "IOS",
+    "side": "BUY",
+    "status": "FILLED",
+    "strategy": "QUANTITY",
+    "ticker": "NVDA_US_EQ",
+    "type": "MARKET",
+    "timeInForce": "DAY",
+    "instrument": {
+     "ticker": "NVDA_US_EQ",
+     "name": "NVIDIA",
+     "isin": "US67066G1040",
+     "currency": "USD"
+    }
+   },
+   "fill": {
+    "id": 1005,
+    "filledAt": "2026-09-12T09:00:00Z",
+    "price": 0.0,
+    "quantity": 1.0,
+    "type": "STOCK_SPLIT",
+    "tradingMethod": "TOTV",
+    "walletImpact": {
+     "currency": "EUR",
+     "fxRate": 0.89,
+     "netValue": 0.0,
+     "realisedProfitLoss": 0,
+     "taxes": []
+    }
+   }
+  },
+  {
+   "order": {
+    "id": 104,
+    "createdAt": "2026-09-10T09:15:00.000+02:00",
+    "currency": "EUR",
+    "extendedHours": false,
+    "filledQuantity": 8.0,
+    "initiatedFrom": "IOS",
+    "side": "BUY",
+    "status": "FILLED",
+    "strategy": "QUANTITY",
+    "ticker": "SAPd_EQ",
+    "type": "MARKET",
+    "timeInForce": "DAY",
+    "instrument": {
+     "ticker": "SAPd_EQ",
+     "name": "SAP SE",
+     "isin": "DE0007164600",
+     "currency": "EUR"
+    }
+   },
+   "fill": {
+    "id": 1004,
+    "filledAt": "2026-09-10T09:15:00.000+02:00",
+    "price": 201.5,
+    "quantity": 8.0,
+    "type": "TRADE",
+    "tradingMethod": "TOTV",
+    "walletImpact": {
+     "currency": "EUR",
+     "fxRate": 1.0,
+     "netValue": -1612.0,
+     "realisedProfitLoss": 0,
+     "taxes": []
+    }
+   }
+  },
+  {
+   "order": {
+    "id": 103,
+    "createdAt": "2026-09-02T14:31:05.000Z",
+    "currency": "EUR",
+    "extendedHours": false,
+    "filledQuantity": 2.5,
+    "initiatedFrom": "IOS",
+    "side": "BUY",
+    "status": "FILLED",
+    "strategy": "QUANTITY",
+    "ticker": "AAPL_US_EQ",
+    "type": "MARKET",
+    "timeInForce": "DAY",
+    "instrument": {
+     "ticker": "AAPL_US_EQ",
+     "name": "Apple",
+     "isin": "US0378331005",
+     "currency": "USD"
+    }
+   },
+   "fill": {
+    "id": 1003,
+    "filledAt": "2026-09-02T14:31:05.000Z",
+    "price": 188.4,
+    "quantity": 2.5,
+    "type": "TRADE",
+    "tradingMethod": "TOTV",
+    "walletImpact": {
+     "currency": "EUR",
+     "fxRate": 0.8896,
+     "netValue": -419.3,
+     "realisedProfitLoss": 0,
+     "taxes": [
+      {
+       "name": "CURRENCY_CONVERSION_FEE",
+       "quantity": 0.63,
+       "currency": "EUR",
+       "chargedAt": "2026-09-01T10:00:00Z"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "order": {
+    "id": 102,
+    "createdAt": "2026-09-02T07:05:00.000Z",
+    "currency": "EUR",
+    "extendedHours": false,
+    "filledQuantity": 4.0,
+    "initiatedFrom": "IOS",
+    "side": "BUY",
+    "status": "FILLED",
+    "strategy": "QUANTITY",
+    "ticker": "VUSAl_EQ",
+    "type": "MARKET",
+    "timeInForce": "DAY",
+    "instrument": {
+     "ticker": "VUSAl_EQ",
+     "name": "Vanguard S&P 500 UCITS ETF",
+     "isin": "IE00B3XXRP09",
+     "currency": "GBX"
+    }
+   },
+   "fill": {
+    "id": 1002,
+    "filledAt": "2026-09-02T07:05:00.000Z",
+    "price": 9650.0,
+    "quantity": 4.0,
+    "type": "TRADE",
+    "tradingMethod": "TOTV",
+    "walletImpact": {
+     "currency": "EUR",
+     "fxRate": 1.165,
+     "netValue": -449.7,
+     "realisedProfitLoss": 0,
+     "taxes": []
+    }
+   }
+  },
+  {
+   "order": {
+    "id": 102,
+    "createdAt": "2026-09-02T07:05:00.000Z",
+    "currency": "EUR",
+    "extendedHours": false,
+    "filledQuantity": 6.0,
+    "initiatedFrom": "IOS",
+    "side": "BUY",
+    "status": "FILLED",
+    "strategy": "QUANTITY",
+    "ticker": "VUSAl_EQ",
+    "type": "MARKET",
+    "timeInForce": "DAY",
+    "instrument": {
+     "ticker": "VUSAl_EQ",
+     "name": "Vanguard S&P 500 UCITS ETF",
+     "isin": "IE00B3XXRP09",
+     "currency": "GBX"
+    }
+   },
+   "fill": {
+    "id": 1001,
+    "filledAt": "2026-09-02T07:05:00.000Z",
+    "price": 9650.0,
+    "quantity": 6.0,
+    "type": "TRADE",
+    "tradingMethod": "TOTV",
+    "walletImpact": {
+     "currency": "EUR",
+     "fxRate": 1.165,
+     "netValue": -674.5,
+     "realisedProfitLoss": 0,
+     "taxes": []
+    }
+   }
+  }
+ ],
+ "nextPagePath": null
+}

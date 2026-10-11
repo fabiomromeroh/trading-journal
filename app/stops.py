@@ -103,7 +103,11 @@ def first_entry_time_known(t: Trade) -> bool:
 
 
 def eligible(t: Trade) -> bool:
-    return t.asset_type == "STOCK" and bool(t.entry_price) and t.direction in ("LONG", "SHORT")
+    """Stock trades listed in the US only: the rule is built on the New York regular session (09:30-16:00 ET).
+    Other exchanges (LSE, Xetra...) have other sessions, so they get no automatic stop (set one by hand)."""
+    from app import symbolmap
+    return (t.asset_type == "STOCK" and bool(t.entry_price) and t.direction in ("LONG", "SHORT")
+            and symbolmap.is_us(t))
 
 
 def can_5m(t: Trade, now: datetime) -> bool:

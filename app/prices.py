@@ -297,7 +297,8 @@ def _polygon(symbol: str, interval: str, start: datetime, end: datetime) -> list
              "volume": x.get("v") or 0} for x in r.json().get("results", [])]
 
 
-def _yahoo(symbol: str, interval: str, start: datetime, end: datetime, prepost: bool = False) -> list[dict]:
+def _yahoo(symbol: str, interval: str, start: datetime, end: datetime, prepost: bool = False,
+           ccy: str | None = None) -> list[dict]:
     r = httpx.get(f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}", params={
         "period1": _sec(start), "period2": _sec(end), "interval": interval,
         "includePrePost": "true" if prepost else "false"}, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
@@ -308,6 +309,8 @@ def _yahoo(symbol: str, interval: str, start: datetime, end: datetime, prepost: 
     q = res["indicators"]["quote"][0]
     vols = q.get("volume") or [0] * len(res["timestamp"])
     meta = res.get("meta") or {}
+    from app.markets import pence_factor
+    k = pence_factor(meta.get("currency"), ccy)  # LSE lines quoted in pence -> pounds when the trade is in GBP
     out = []
     n = len(res["timestamp"])
     for i, ts in enumerate(res["timestamp"]):
@@ -319,8 +322,8 @@ def _yahoo(symbol: str, interval: str, start: datetime, end: datetime, prepost: 
             h, l = max(h, c), min(l, c)
         if None in (o, h, l, c):
             continue
-        out.append({"time": ts, "open": round(o, 4), "high": round(h, 4), "low": round(l, 4),
-                    "close": round(c, 4), "volume": vols[i] or 0})
+        out.append({"time": ts, "open": round(o * k, 4), "high": round(h * k, 4), "low": round(l * k, 4),
+                    "close": round(c * k, 4), "volume": vols[i] or 0})
     return out
 
 
@@ -356,6 +359,9 @@ def _provider_order(trade: Trade) -> list[str]:
         return ["demo"]
     if s.price_provider in ("none", "off", ""):
         return []
+    from app import symbolmap
+    if not symbolmap.is_us(trade):  # Schwab / Polygon cover US listings only
+        return ["yahoo"] if s.price_provider in ("auto", "yahoo") else []
     if s.price_provider == "auto":
         return ["schwab", "polygon", "yahoo"]
     return [s.price_provider]
@@ -363,7 +369,8 @@ def _provider_order(trade: Trade) -> list[str]:
 
 def _fetch(db: Session, prov: str, trade: Trade, interval: str, start: datetime, end: datetime,
            now: datetime) -> list[dict]:
-    symbol = trade.underlying
+    from app import symbolmap
+    symbol = symbolmap.price_symbol(trade)
     if prov == "demo":
         return _demo(trade, interval, start, end)
     key = f"{CACHE_VERSION}|{prov}|{symbol}|{interval}|{start:%Y%m%d%H%M}|{end:%Y%m%d%H%M}"
@@ -378,7 +385,8 @@ def _fetch(db: Session, prov: str, trade: Trade, interval: str, start: datetime,
         return hit[1]
     candles = (_schwab(db, symbol, interval, start, end) if prov == "schwab" else
                _polygon(symbol, interval, start, end) if prov == "polygon" else
-               _yahoo(symbol, interval, start, end) if prov == "yahoo" else [])
+               _yahoo(symbol, interval, start, end, **({"ccy": trade.currency} if trade.currency else {}))
+               if prov == "yahoo" else [])
     if candles:
         if persistent:
             db.add(PriceCache(cache_key=key, provider=prov, payload=json.dumps(candles)))
@@ -528,7 +536,11 @@ def markers(trade: Trade, candles: list[dict], tf: str = "1D") -> tuple[list[dic
         elif how == "day":
             text += " (time n/a)"
         known = _fill_time_known(f)
-        at = utc_naive_to_tz(f.executed_at, ET).strftime("%Y-%m-%d %H:%M ET" if known else "%Y-%m-%d (time n/a)")
+        from app import symbolmap
+        tzname = symbolmap.market_tz(trade, "America/New_York")
+        local = utc_naive_to_tz(f.executed_at, tzname)
+        abbrev = "ET" if tzname == "America/New_York" else (local.tzname() or tzname)
+        at = local.strftime(f"%Y-%m-%d %H:%M {abbrev}" if known else "%Y-%m-%d (time n/a)")
         out.append({"time": times[i], "position": "belowBar" if buy else "aboveBar",
                     "color": "#22c55e" if buy else "#ef4444", "shape": "arrowUp" if buy else "arrowDown",
                     "text": text, "price": f.price, "kind": kind, "side": f.side, "qty": f.quantity, "at": at,

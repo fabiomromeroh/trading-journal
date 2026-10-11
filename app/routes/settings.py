@@ -81,7 +81,8 @@ def _settings_ctx(request, db, **kw):
     from app.routes.security import security_ctx as _security_ctx
     from app.routes.backup import settings_ctx as _backup_ctx
     from app import brokers
-    return base_context(request, db, nav="settings", broker_cards=brokers.cards(db), sources=sources, runs=runs, acct_rows=acct_rows,
+    from app.routes.brokers import settings_ctx as _brokers_ctx
+    return base_context(request, db, nav="settings", broker_cards=brokers.cards(db), **_brokers_ctx(db), sources=sources, runs=runs, acct_rows=acct_rows,
                         active_run=running_sync(db), s=s, snaptrade=_snaptrade_ctx(db), **_alias_ctx(db),
                         tos_email=_tos_email_ctx(request, db), **_security_ctx(db), keepawake=keepawake_ctx(), backups=_backup_ctx(request, db), journal_cfg=_journal_ctx(db), **kw)
 
