@@ -89,40 +89,57 @@
   window.addEventListener('scroll', hide, { passive: true }); window.addEventListener('resize', hide);
 })();
 
-/* Thin top bar on every same-origin navigation, plus skeleton lines on HTMX targets. */
+/* 2px top bar on full-page navigations and form submits.
+   HTMX only dims the swap target (aria-busy). It never paints a bar overlay on #page,
+   so headings, filters, and stat widgets stay visible. Every busy state is cleared. */
 (function () {
   const bar = document.getElementById('top-progress');
   if (!bar) return;
   let hideTimer = null;
+  let safety = null;
+  const busy = new Set();
   function start() {
     clearTimeout(hideTimer);
     bar.classList.remove('done');
     bar.classList.add('go');
+    clearTimeout(safety);
+    safety = setTimeout(clearAll, 15000);
   }
-  function finish() {
+  function finishBar() {
+    if (!bar.classList.contains('go')) return;
     bar.classList.remove('go');
     bar.classList.add('done');
     clearTimeout(hideTimer);
     hideTimer = setTimeout(() => bar.classList.remove('done'), 400);
   }
-  function showSkel(node) {
-    if (!node || node.querySelector(':scope > .skel-ph')) return;
-    node.classList.add('skel-host');
-    const ph = document.createElement('div');
-    ph.className = 'skel-ph';
-    ph.setAttribute('aria-hidden', 'true');
-    ph.innerHTML = '<div class="skel"></div><div class="skel"></div><div class="skel short"></div>';
-    node.prepend(ph);
+  function mark(node) {
+    if (!node || node === document.body || node === document.documentElement || node.id === 'page') return;
+    node.classList.add('hx-busy');
+    node.setAttribute('aria-busy', 'true');
+    busy.add(node);
   }
-  function clearSkel() {
-    document.querySelectorAll('.skel-ph').forEach((n) => n.remove());
-    document.querySelectorAll('.skel-host').forEach((n) => n.classList.remove('skel-host'));
+  function clearBusy() {
+    busy.forEach((node) => {
+      node.classList.remove('hx-busy');
+      node.removeAttribute('aria-busy');
+    });
+    busy.clear();
+    document.querySelectorAll('.hx-busy').forEach((n) => {
+      n.classList.remove('hx-busy');
+      n.removeAttribute('aria-busy');
+    });
+    document.querySelectorAll('form.is-loading').forEach((f) => f.classList.remove('is-loading'));
+  }
+  function clearAll() {
+    clearTimeout(safety);
+    safety = null;
+    clearBusy();
+    finishBar();
   }
   document.addEventListener('submit', (e) => {
     const form = e.target;
     if (!form || form.hasAttribute('hx-post') || form.hasAttribute('hx-get') || form.dataset.autofilter === 'swap') return;
     start();
-    showSkel(document.getElementById('page'));
   });
   document.addEventListener('click', (e) => {
     const a = e.target.closest && e.target.closest('a[href]');
@@ -133,19 +150,22 @@
     if (u.origin !== location.origin) return;
     if (u.pathname === location.pathname && u.search === location.search) return;
     start();
-    showSkel(document.getElementById('page'));
   });
   document.body.addEventListener('htmx:beforeRequest', (e) => {
     start();
-    const elt = e.detail && e.detail.elt;
+    const detail = e.detail || {};
+    const elt = detail.elt;
+    const target = detail.target;
+    if (target) mark(target);
     const ind = elt && elt.getAttribute && elt.getAttribute('hx-indicator');
-    const nodes = ind
-      ? ind.split(',').map((s) => document.querySelector(s.trim())).filter(Boolean)
-      : (e.detail && e.detail.target ? [e.detail.target] : []);
-    nodes.forEach(showSkel);
+    if (!ind) return;
+    ind.split(',').forEach((s) => {
+      const node = document.querySelector(s.trim());
+      if (node) mark(node);
+    });
   });
-  document.body.addEventListener('htmx:afterSettle', () => { clearSkel(); finish(); });
-  document.body.addEventListener('htmx:responseError', () => { clearSkel(); finish(); });
-  document.body.addEventListener('htmx:sendError', () => { clearSkel(); finish(); });
-  window.addEventListener('pageshow', () => { clearSkel(); finish(); });
+  ['htmx:afterSwap', 'htmx:afterSettle', 'htmx:afterRequest', 'htmx:responseError', 'htmx:sendError'].forEach((name) => {
+    document.body.addEventListener(name, clearAll);
+  });
+  window.addEventListener('pageshow', clearAll);
 })();
