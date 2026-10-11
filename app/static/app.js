@@ -88,3 +88,64 @@
   document.addEventListener('keydown', e => { if (e.key === 'Escape') hide(); });
   window.addEventListener('scroll', hide, { passive: true }); window.addEventListener('resize', hide);
 })();
+
+/* Thin top bar on every same-origin navigation, plus skeleton lines on HTMX targets. */
+(function () {
+  const bar = document.getElementById('top-progress');
+  if (!bar) return;
+  let hideTimer = null;
+  function start() {
+    clearTimeout(hideTimer);
+    bar.classList.remove('done');
+    bar.classList.add('go');
+  }
+  function finish() {
+    bar.classList.remove('go');
+    bar.classList.add('done');
+    clearTimeout(hideTimer);
+    hideTimer = setTimeout(() => bar.classList.remove('done'), 400);
+  }
+  function showSkel(node) {
+    if (!node || node.querySelector(':scope > .skel-ph')) return;
+    node.classList.add('skel-host');
+    const ph = document.createElement('div');
+    ph.className = 'skel-ph';
+    ph.setAttribute('aria-hidden', 'true');
+    ph.innerHTML = '<div class="skel"></div><div class="skel"></div><div class="skel short"></div>';
+    node.prepend(ph);
+  }
+  function clearSkel() {
+    document.querySelectorAll('.skel-ph').forEach((n) => n.remove());
+    document.querySelectorAll('.skel-host').forEach((n) => n.classList.remove('skel-host'));
+  }
+  document.addEventListener('submit', (e) => {
+    const form = e.target;
+    if (!form || form.hasAttribute('hx-post') || form.hasAttribute('hx-get') || form.dataset.autofilter === 'swap') return;
+    start();
+    showSkel(document.getElementById('page'));
+  });
+  document.addEventListener('click', (e) => {
+    const a = e.target.closest && e.target.closest('a[href]');
+    if (!a || a.target || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+    if (a.hasAttribute('hx-get') || a.hasAttribute('hx-post') || a.getAttribute('href').startsWith('#')) return;
+    let u;
+    try { u = new URL(a.href, location.href); } catch (err) { return; }
+    if (u.origin !== location.origin) return;
+    if (u.pathname === location.pathname && u.search === location.search) return;
+    start();
+    showSkel(document.getElementById('page'));
+  });
+  document.body.addEventListener('htmx:beforeRequest', (e) => {
+    start();
+    const elt = e.detail && e.detail.elt;
+    const ind = elt && elt.getAttribute && elt.getAttribute('hx-indicator');
+    const nodes = ind
+      ? ind.split(',').map((s) => document.querySelector(s.trim())).filter(Boolean)
+      : (e.detail && e.detail.target ? [e.detail.target] : []);
+    nodes.forEach(showSkel);
+  });
+  document.body.addEventListener('htmx:afterSettle', () => { clearSkel(); finish(); });
+  document.body.addEventListener('htmx:responseError', () => { clearSkel(); finish(); });
+  document.body.addEventListener('htmx:sendError', () => { clearSkel(); finish(); });
+  window.addEventListener('pageshow', () => { clearSkel(); finish(); });
+})();

@@ -1,0 +1,4 @@
+{# Out-of-band refresh of the three price widgets. First paint used SnapTrade prices only. #}
+{% for wid in ('unrealized', 'total_pnl', 'positions') %}
+<div id="live-{{ wid }}" hx-swap-oob="innerHTML">{% include "partials/dash_widget.html" %}</div>
+{% endfor %}

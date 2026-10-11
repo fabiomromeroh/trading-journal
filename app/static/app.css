@@ -78,6 +78,26 @@ form.is-loading { opacity: .7; }
 .stat-card { height: 96px; display: flex; flex-direction: column; overflow: hidden; }
 .stat-sub { font-size: 11px; line-height: 14px; color: #64748b; margin-top: 2px; overflow: hidden;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+
+/* top progress bar + skeleton placeholders (navigation and HTMX) */
+#top-progress { position: fixed; top: 0; left: 0; height: 2px; width: 0; z-index: 80; background: #818cf8; pointer-events: none; opacity: 1; }
+#top-progress.go { width: 72%; }
+#top-progress.done { width: 100%; opacity: 0; }
+.skel { height: .7rem; border-radius: .35rem; margin: .4rem 0; background: #1e293b; }
+.skel.short { width: 55%; }
+.skel-ph { padding: .25rem 0; }
+.skel-host { position: relative; }
+.skel-host > .skel-ph { position: absolute; left: 0; right: 0; top: 0; z-index: 3; background: rgba(11,15,23,.78); padding: .7rem .85rem; border-radius: .6rem; }
+@media (prefers-reduced-motion: no-preference) {
+  #top-progress.go { transition: width .45s ease; }
+  #top-progress.done { transition: width .12s linear, opacity .25s ease .12s; }
+  .skel { background: linear-gradient(90deg, #1e293b 25%, #334155 37%, #1e293b 63%); background-size: 400% 100%; animation: tj-skel 1.2s ease infinite; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #top-progress.go, #top-progress.done { transition: none; }
+  .skel { animation: none; }
+}
+@keyframes tj-skel { from { background-position: 100% 0; } to { background-position: 0 0; } }
 .tstat-card { height: 52px; overflow: hidden; }
 @media (max-width: 767px) { .kpi-card { height: 132px; } .kpi-card { padding: .75rem; } }
 /* tables of numbers: aligned columns */

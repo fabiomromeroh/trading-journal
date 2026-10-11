@@ -206,13 +206,17 @@ def test_positions_breakdown_uses_live_quotes_and_flags_mismatch(book, web, db, 
     monkeypatch.setattr(quotes, "get_quotes", lambda trades: {"YYY": quotes.Quote(
         "YYY", 58.0, datetime(2026, 10, 9, 15, 19, tzinfo=timezone.utc), "regular", "regular")})
     html = web.get("/").text
-    assert "+$24.00" in html and "+$15.00" in html
-    assert "Oct 9 16:19 IST" in html            # price time in Irish time
-    assert "qty differs: SnapTrade 4" in html
+    # First paint uses the SnapTrade price already on hand. Yahoo runs on /dashboard/live.
+    assert "+$15.00" in html and "qty differs: SnapTrade 4" in html and 'id="live-boot"' in html
+    assert "+$24.00" not in html
+    live = web.get("/dashboard/live").text
+    assert "+$24.00" in live and "+$15.00" in live
+    assert "Oct 9 16:19 IST" in live            # price time in Irish time
+    assert "qty differs: SnapTrade 4" in live
     # without live quotes the SnapTrade price is the fallback
     monkeypatch.setattr(quotes, "get_quotes", lambda trades: {})
-    html = web.get("/").text
-    assert "SnapTrade (last sync)" in html and "+$15.00" in html
+    live = web.get("/dashboard/live").text
+    assert "SnapTrade (last sync)" in live and "+$15.00" in live
 
 
 def test_irish_time_filter():

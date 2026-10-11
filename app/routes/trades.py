@@ -14,7 +14,7 @@ from app.db import get_db
 from app.models import Tag, Trade, TradeFill, TradeMistake
 from app.prices import excursion_basis, excursion_note, get_chart, update_trade_excursions
 from app.routes.reports import trade_extras
-from app.web import apply_trade_filters, base_context, parse_filters, templates
+from app.web import apply_trade_filters, base_context, load_trades, parse_filters, templates, trade_options
 
 router = APIRouter()
 PAGE = 50
@@ -38,7 +38,7 @@ def realized_on_day(db: Session, f, day) -> dict:
     from app.config import get_settings
     tz = get_settings().display_tz
     from app import currency
-    trades = currency.view(db, list(db.scalars(apply_trade_filters(select(Trade), replace(f, start=None, end=None)))))
+    trades = currency.view(db, load_trades(db, apply_trade_filters(select(Trade), replace(f, start=None, end=None))))
     per: dict[int, dict] = {}
     for e in rz.clip(rz.events(trades), tz, day, day):
         if not e.is_close and abs(e.fees) < 0.004:
@@ -119,11 +119,16 @@ def trades_list(request: Request, db: Session = Depends(get_db)):
     except ValueError:
         page = 1
     from app import currency
-    rows = list(db.scalars(stmt.offset((page - 1) * PAGE).limit(PAGE)))
+    rows = load_trades(db, stmt.offset((page - 1) * PAGE).limit(PAGE))
     if currency.needs_conversion(db):  # mixed currencies: convert each trade, then total in Python
-        rows = currency.view(db, rows)
+        if total <= PAGE and page == 1:
+            rows = currency.view(db, rows)
+            summed = rows
+        else:
+            rows = currency.view(db, rows)
+            summed = currency.view(db, load_trades(db, stmt.order_by(None)))
         by_status: dict[str, tuple[float, int]] = {}
-        for t in currency.view(db, list(db.scalars(stmt.order_by(None)))):
+        for t in summed:
             p_, n_ = by_status.get(t.status, (0.0, 0))
             by_status[t.status] = (p_ + (t.net_pnl or 0.0), n_ + 1)
     else:
@@ -154,7 +159,7 @@ def filter_options(db: Session):
 
 
 def _get_trade(db: Session, trade_id: int) -> Trade:
-    t = db.get(Trade, trade_id)
+    t = db.scalar(select(Trade).where(Trade.id == trade_id).options(*trade_options()))
     if t is None:
         raise HTTPException(404, "Trade not found")
     return t
@@ -172,7 +177,7 @@ def trade_detail(trade_id: int, request: Request, db: Session = Depends(get_db))
                                   Trade.status, Trade.net_pnl, Trade.time_known, Trade.is_demo)
     from app import currency
     if currency.needs_conversion(db):  # list amounts in the display currency (the page itself stays native)
-        nav_rows = currency.view(db, list(db.scalars(stmt.limit(SIDEBAR_LIMIT))))
+        nav_rows = currency.view(db, load_trades(db, stmt.limit(SIDEBAR_LIMIT)))
     else:
         nav_rows = db.execute(cols.limit(SIDEBAR_LIMIT)).all()
     ids = [r.id for r in nav_rows]
@@ -186,7 +191,9 @@ def trade_detail(trade_id: int, request: Request, db: Session = Depends(get_db))
         next_id = db.scalar(select(Trade.id).where(Trade.opened_at < t.opened_at).order_by(Trade.opened_at.desc()))
     filtered = any(k in q for k in LIST_KEYS if k not in ("sort", "dir"))
     native = currency.trade_ccy(t)
-    extras = trade_extras(db, t, live_price(t))
+    # A cached quote only. The page asks /r.json after paint so Yahoo is not on this response.
+    from app import quotes
+    extras = trade_extras(db, t, quotes.cached_price(t))
     fx = currency.presentation(db, t, extras["tm"])
     # A missing rate must not stamp the selected symbol on instrument-currency amounts.
     symbol_override = {} if fx.show or native == currency.get_display(db) else {"display_symbol": currency.symbol(native)}

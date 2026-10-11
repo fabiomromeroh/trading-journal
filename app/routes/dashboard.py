@@ -10,7 +10,7 @@ from app.db import get_db
 from app.models import Execution, ImportBatch, Trade
 from app.routes.reports import dashboard_extras
 from app.stats import compute
-from app.web import apply_trade_filters, base_context, parse_filters, realized_scope, templates
+from app.web import apply_trade_filters, base_context, load_trades, parse_filters, realized_scope, templates
 
 router = APIRouter()
 
@@ -26,10 +26,17 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
     tz = get_settings().display_tz
     stmt = apply_trade_filters(select(Trade), f)
     from app import currency
-    trades = currency.view(db, list(db.scalars(stmt)))
-    open_count = sum(1 for t in trades if t.status == "OPEN")
+    from app import quotes as qmod
     from app import realized as rz
-    evs, all_evs, _ = realized_scope(db, f)
+    trades = currency.view(db, load_trades(db, stmt))
+    open_count = sum(1 for t in trades if t.status == "OPEN")
+    # No date filter: this list is already every trade the calendar needs. A date filter still
+    # reloads the wider set so a partial exit inside the window counts.
+    if f.start or f.end:
+        evs, all_evs, _ = realized_scope(db, f)
+    else:
+        all_evs = rz.events(trades)
+        evs = all_evs
     st = compute(trades, tz, open_count=open_count, events=evs)
     all_days = rz.daily(all_evs, tz)  # calendar + daily bars navigate through every day
     has_any = db.scalar(select(func.count(Execution.id))) or 0
@@ -39,7 +46,10 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
     last_sync = db.scalar(select(SyncRun).where(SyncRun.status.in_(("success", "partial")), SyncRun.sources.is_not(None))
                           .order_by(SyncRun.id.desc()))
     recent = sorted([t for t in trades if t.status == "CLOSED"], key=lambda t: t.closed_at, reverse=True)[:8]
-    anchor = _anchor(db, f, trades, st)
+    # Open positions ignore the date filter. Without one, they are already in ``trades``.
+    opens = None if (f.start or f.end) else [t for t in trades if t.status == "OPEN"]
+    anchor = _anchor(db, f, trades, st, quotes=False, open_trades=opens)
+    quotes_on = bool(anchor) and qmod.enabled()
     from datetime import datetime
     from zoneinfo import ZoneInfo
     today = datetime.now(ZoneInfo(tz)).date()
@@ -60,10 +70,36 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
     return templates.TemplateResponse(request, "dashboard.html", base_context(
         request, db, nav="dashboard", f=f, st=st, charts=charts,
         recent=recent, has_any=has_any, last_import=last_import, n_all=len(trades),
-        last_sync=last_sync, anchor=anchor, **dashboard_extras(db, trades, tz, events=evs, cumulative=st.cumulative)))
+        last_sync=last_sync, anchor=anchor, quotes_on=quotes_on,
+        **dashboard_extras(db, trades, tz, events=evs, cumulative=st.cumulative)))
 
 
-def _anchor(db: Session, f, trades, st):
+@router.get("/dashboard/live")
+def dashboard_live(request: Request, db: Session = Depends(get_db)):
+    """Open-position prices after first paint. Same filters as the dashboard; Yahoo runs here, not on GET /."""
+    f = parse_filters(request)
+    from app import currency
+    from app import realized as rz
+    stmt = apply_trade_filters(select(Trade), f)
+    if f.start or f.end:
+        evs, _, _ = realized_scope(db, f)
+        trades = currency.view(db, load_trades(db, stmt))
+    else:
+        trades = currency.view(db, load_trades(db, stmt))
+        evs = rz.events(trades)
+    open_count = sum(1 for t in trades if t.status == "OPEN")
+    tz = get_settings().display_tz
+    st = compute(trades, tz, open_count=open_count, events=evs)
+    opens = None if (f.start or f.end) else [t for t in trades if t.status == "OPEN"]
+    anchor = _anchor(db, f, trades, st, quotes=True, open_trades=opens)
+    display = currency.get_display(db)
+    return templates.TemplateResponse(request, "partials/dash_live.html", {
+        "request": request, "anchor": anchor, "st": st,
+        "display_currency": display, "display_symbol": currency.symbol(display),
+    })
+
+
+def _anchor(db: Session, f, trades, st, *, quotes: bool = True, open_trades=None):
     """Unrealized P&L of the open positions at the freshest free price (Yahoo incl. pre/after-hours,
     SnapTrade's last-sync price as fallback), a per-position breakdown compared with SnapTrade's positions,
     and the account check (value - net deposits vs journal realized + unrealized, unfiltered view only).
@@ -76,8 +112,10 @@ def _anchor(db: Session, f, trades, st):
     from app.symbols import canonical_symbol, load_aliases
     from app import quotes as qmod
     from app import currency
-    open_trades = currency.view(db, list(db.scalars(apply_trade_filters(select(Trade).where(Trade.status == "OPEN"),
-                                                                        replace(f, start=None, end=None)))))
+    if open_trades is None:
+        from app.web import load_trades
+        open_trades = currency.view(db, load_trades(db, apply_trade_filters(
+            select(Trade).where(Trade.status == "OPEN"), replace(f, start=None, end=None))))
     usd_fx = currency.RateBook(db).rate("USD", currency.get_display(db), datetime.now().date()) or 1.0
     accts = [a.id for a in db.scalars(select(Account).where(Account.is_demo.is_(False)))
              if not f.account_id or a.id == f.account_id]
@@ -86,7 +124,7 @@ def _anchor(db: Session, f, trades, st):
         return None
     aliases = load_aliases(db)
     snap = {canonical_symbol(sym, aliases): p for sym, p in (port["positions"].items() if port else [])}
-    live = qmod.get_quotes(open_trades) if qmod.enabled() else {}
+    live = qmod.get_quotes(open_trades) if quotes and qmod.enabled() else {}
     snap_as_of = _utc(port["as_of"]) if port and port.get("as_of") else None
     rows, total, total_snap, seen = [], 0.0, 0.0, set()
     for t in sorted(open_trades, key=lambda t: t.symbol):

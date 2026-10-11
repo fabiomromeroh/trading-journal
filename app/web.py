@@ -9,10 +9,10 @@ from fastapi import Request
 from fastapi.templating import Jinja2Templates
 from jinja2 import pass_context
 from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.config import get_settings
-from app.models import Account, Trade
+from app.models import Account, Trade, TradeFill
 from app.stats import fmt_td
 from app.timeutil import local_to_utc_naive, utc_naive_to_tz
 
@@ -132,6 +132,19 @@ def parse_filters(request: Request) -> Filters:
     return f
 
 
+def trade_options():
+    """Fills, their executions (broker FX), account and instrument in a handful of queries, not one per row."""
+    return (
+        selectinload(Trade.fills).selectinload(TradeFill.execution),
+        selectinload(Trade.account),
+        selectinload(Trade.instrument),
+    )
+
+
+def load_trades(db: Session, stmt) -> list:
+    return list(db.scalars(stmt.options(*trade_options())))
+
+
 def realized_scope(db: Session, f: Filters, extra=None):
     """Realized events for a view: built from every trade matching the non-date filters, then cut to
     the date range by fill date (so a partial exit inside the range counts even if the trade opened or
@@ -143,7 +156,7 @@ def realized_scope(db: Session, f: Filters, extra=None):
     if extra:
         stmt = extra(stmt)
     from app import currency
-    trades = currency.view(db, list(db.scalars(stmt)))  # display-currency view (no-op for same-currency data)
+    trades = currency.view(db, load_trades(db, stmt))  # display-currency view (no-op for same-currency data)
     evs = rz.events(trades)
     return rz.clip(evs, get_settings().display_tz, f.start, f.end), evs, trades
 

@@ -150,6 +150,19 @@ def get_quotes(trades, fetch=None) -> dict[str, Quote]:
     return out
 
 
+def cached_price(t) -> float | None:
+    """Last quote already in memory (no HTTP). First paint uses this; a later request fills the cache."""
+    if getattr(t, "status", None) != "OPEN" or not enabled():
+        return None
+    ysym = yahoo_symbol(t)
+    mono = time.monotonic()
+    with _lock:
+        hit = _cache.get(ysym)
+    if hit and mono - hit[0] < TTL and hit[1]:
+        return hit[1].price
+    return None
+
+
 def enabled() -> bool:
     import os
     return os.environ.get("QUOTE_PROVIDER", "yahoo").lower() not in ("none", "off", "0", "")

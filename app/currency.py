@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import bisect
 import json
+import threading
 import time
 import urllib.request
 from datetime import date, datetime, timedelta
@@ -32,6 +33,16 @@ CHOICES = ("USD", "EUR")
 API = "https://api.frankfurter.dev/v1"
 CHUNK_DAYS = 80          # Frankfurter returns weekly points for ranges over ~90 days
 _last_try: dict[str, float] = {}
+_FX_TTL = 60.0           # in-memory copy of fx_rates; a row-count/max-day stamp drops it when new rates land
+_fx_lock = threading.Lock()
+_fx_mem: dict[str, tuple] = {}
+
+
+def _fx_key(db: Session) -> str:
+    try:
+        return str(db.get_bind().url)
+    except Exception:  # noqa: BLE001
+        return "fx"
 
 
 def symbol(ccy: str | None) -> str:
@@ -96,12 +107,24 @@ class RateBook:
         self._load()
 
     def _load(self):
+        key = _fx_key(self.db)
+        n, last = self.db.execute(select(func.count(), func.max(FxRate.day))).one()
+        stamp = (int(n or 0), last)
+        now = time.monotonic()
+        with _fx_lock:
+            hit = _fx_mem.get(key)
+            if hit and hit[0] == stamp and now - hit[2] < _FX_TTL:
+                self.data = hit[1]
+                return
         rows = self.db.execute(select(FxRate.quote, FxRate.day, FxRate.rate).order_by(FxRate.quote, FxRate.day)).all()
-        self.data = {}
+        data: dict[str, tuple[list[date], list[float]]] = {}
         for q, d, r in rows:
-            days, rates = self.data.setdefault(q, ([], []))
+            days, rates = data.setdefault(q, ([], []))
             days.append(d)
             rates.append(r)
+        with _fx_lock:
+            _fx_mem[key] = (stamp, data, time.monotonic())
+        self.data = data
 
     def covers(self, ccy: str, start: date, end: date) -> bool:
         if ccy == "EUR":

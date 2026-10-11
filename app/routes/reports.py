@@ -14,7 +14,7 @@ from app.config import get_settings
 from app.db import get_db
 from app.models import Tag, Trade, TradeMistake
 from app.services import get_state, set_state
-from app.web import apply_trade_filters, base_context, parse_filters, templates
+from app.web import apply_trade_filters, base_context, load_trades, parse_filters, templates
 
 router = APIRouter()
 DEFAULT_RISK_STATE = "risk:default_per_trade"
@@ -63,7 +63,7 @@ def filtered_trades(request: Request, db: Session):
     f = parse_filters(request)
     stmt = apply_extra_filters(apply_trade_filters(select(Trade), f), request.query_params)
     from app import currency
-    return f, currency.view(db, list(db.scalars(stmt)))
+    return f, currency.view(db, load_trades(db, stmt))
 
 
 def _series(rows, key="net"):
@@ -115,8 +115,12 @@ def reports(request: Request, db: Session = Depends(get_db)):
         tab = "overview"
     tz = get_settings().display_tz
     risk = default_risk(db)
-    from app.web import realized_scope
-    evs, _, _ = realized_scope(db, f, lambda st: apply_extra_filters(st, request.query_params))
+    if f.start or f.end:
+        from app.web import realized_scope
+        evs, _, _ = realized_scope(db, f, lambda st: apply_extra_filters(st, request.query_params))
+    else:
+        from app import realized as rz
+        evs = rz.events(trades)
     data = report_data(trades, tz, risk, events=evs)
     q = request.query_params
     from app.routes.trades import filter_options
