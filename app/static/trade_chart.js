@@ -425,6 +425,8 @@
     if (off.length) notes.push(`${off.map((o) => o.tf).join(', ')} unavailable: ${off[0].reason}.`);
     if (inds.some((i) => i.type === 'VWAP') && !data.intraday) notes.push('VWAP shows on intraday timeframes only.');
     const n = $('chart-note'); n.textContent = notes.join(' '); n.classList.toggle('hidden', !notes.length);
+    const warn = $('price-warn');
+    if (warn) warn.classList.toggle('hidden', !data.price_mismatch);
     $('chart-src').textContent = data.provider_label ? `${data.provider_label}` : '';
   }
 

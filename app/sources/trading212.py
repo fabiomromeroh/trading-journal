@@ -909,8 +909,9 @@ class Trading212Source(DataSource):
     description = ("Official API (read-only key + secret): fills with execution times, ISIN, instrument currency, fees and "
                    "FX per fill. Manual sync only; history is fetched once, later syncs only re-read the last few days.")
 
-    def __init__(self, transport: httpx.BaseTransport | None = None, sleep=None):
+    def __init__(self, transport: httpx.BaseTransport | None = None, sleep=None, split_fetch=None):
         self._transport, self._sleep = transport, sleep or _time.sleep
+        self.split_fetch = split_fetch
 
     def is_configured(self) -> bool:
         from app.config import get_settings
@@ -999,6 +1000,7 @@ class Trading212Source(DataSource):
             res.inserted, res.merged = stats.inserted, stats.merged
             if newest:
                 set_state(db, CURSOR_STATE, max(newest, parse_ts(cursor) if cursor else newest).isoformat())
+            split_notes = self._listing_splits(db, acct.id)
             rebuild_trades(db, [acct.id])
             held = self._positions(cl)
             recon_before = self.reconcile(db, cl, acct, positions=held)
@@ -1012,6 +1014,8 @@ class Trading212Source(DataSource):
             res.message = f"Trading 212: {len(recs)} fills read, {stats.inserted} new" + (f"; skipped {sk} (not trades)" if sk else "")
             if adjustments:
                 res.message += f"; {len(adjustments)} reconciliation adjustment(s)"
+            if split_notes:
+                res.message += "; " + "; ".join(split_notes)
             if extra_note:
                 res.message += "; " + extra_note
             if full:
@@ -1177,6 +1181,26 @@ class Trading212Source(DataSource):
         set_state(db, EXPORT_STATE, "done:" + report_id)
         return parsed.records, f"CSV export {len(parsed.records)} rows"
 
+    def _listing_splits(self, db: Session, account_id: int) -> list[str]:
+        """Pull split events for the listing the fills used. Tests skip the network unless a fetch is injected."""
+        import os
+
+        from app.corporate import import_listing_splits
+        from app.prices import yahoo_split_events
+
+        def fetch(symbol, start, end):
+            if os.environ.get("PYTEST_CURRENT_TEST"):
+                return []
+            try:
+                return yahoo_split_events(symbol, start, end)
+            except Exception:  # noqa: BLE001
+                return []
+
+        try:
+            return import_listing_splits(db, account_id, self.split_fetch or fetch)
+        except Exception:  # noqa: BLE001
+            return []
+
     def apply_adjustments(self, db: Session, acct: Account, positions: list[dict] | None) -> list[str]:
         """Book or refresh one estimated adjustment per symbol whose quantity still differs.
 
@@ -1186,8 +1210,12 @@ class Trading212Source(DataSource):
         import json as _json
         from collections import defaultdict
 
-        from app.corporate import is_estimated, open_state, plan_adjustment, transfer_matching_basis, user_edited
-        from app.models import Execution
+        from app.corporate import (
+            adjustment_when, group_symbols, is_estimated, open_state, plan_adjustment,
+            transfer_matching_basis, user_edited,
+        )
+        from app.models import Execution, Instrument
+        from app.symbols import load_aliases
 
         if positions is None:
             return []
@@ -1198,9 +1226,17 @@ class Trading212Source(DataSource):
         seen: dict = state.get("seen") or {}
         dismissed = set(state.get("dismissed") or [])
         execs = list(db.scalars(select(Execution).where(Execution.account_id == acct.id)))
+        inst_ids = {e.instrument_id for e in execs if e.instrument_id}
+        instruments = {i.id: i for i in db.scalars(select(Instrument).where(Instrument.id.in_(inst_ids or [-1])))}
+        grouped = group_symbols(execs, instruments, load_aliases(db))
         groups: dict[str, list] = defaultdict(list)
         for e in execs:
-            groups[_recon_key(e)].append(e)
+            groups[(grouped.get(e.id) or _recon_key(e)).upper()].append(e)
+        # Fills and the broker position for one instrument must share a key, including after a rename.
+        inst_group = {}
+        for e in execs:
+            if e.instrument_id and e.id in grouped and not str(e.external_id or "").startswith("recon:"):
+                inst_group[e.instrument_id] = grouped[e.id]
         broker: dict[str, tuple[float, Instrument | None, str]] = {}
         for p in positions:
             ii = p.get("instrument") or {}
@@ -1211,9 +1247,12 @@ class Trading212Source(DataSource):
                                                           Instrument.broker_symbol == ticker))
                 if inst is None:
                     inst = symbolmap.upsert_t212(db, ticker, ii.get("isin"), ii.get("name"), ii.get("currency"))
+                    if inst is not None:
+                        instruments[inst.id] = inst
             parsed = markets.parse_t212_ticker(ticker, ii.get("isin")).symbol if ticker else None
-            # The journal symbol on the instrument (what new fills are stored under), not its id.
-            sym = (inst.symbol if inst else None) or parsed or "?"
+            # The symbol the fills are grouped under (current instrument symbol, or the history ticker
+            # when the user kept it). New fills are stored under the instrument symbol.
+            sym = (inst_group.get(inst.id) if inst is not None else None) or (inst.symbol if inst else None) or parsed or "?"
             key = (sym or "?").upper()
             qty, prev, _prev_sym = broker.get(key, (0.0, inst, sym))
             broker[key] = (qty + float(p.get("quantity") or 0.0), inst or prev, sym)
@@ -1239,6 +1278,15 @@ class Trading212Source(DataSource):
                 lines.append(f"{p['symbol']}: gap left (adjustment removed by you)")
                 continue
             seen.setdefault(p["key"], now.isoformat())
+            when = adjustment_when(groups.get(p["key"], []), p["side"], p["kind"], now)
+            if p["instrument_id"] is None:
+                for src_row in groups.get(p["key"], []):
+                    if src_row.instrument_id and src_row.instrument_id in instruments:
+                        p["instrument_id"] = src_row.instrument_id
+                        inst = instruments[src_row.instrument_id]
+                        if not p.get("currency") and inst.currency:
+                            p["currency"] = inst.currency
+                        break
             ext = "recon:" + p["key"]
             row = next((e for e in groups.get(p["key"], []) if e.external_id == ext and e.source == SOURCE_KEY), None)
             raw = {}
@@ -1250,16 +1298,16 @@ class Trading212Source(DataSource):
             if row is not None and user_edited(raw):
                 lines.append(f"{p['symbol']}: estimated adjustment kept (you edited it)")
                 continue
-            when = datetime.fromisoformat(seen[p["key"]])
             payload = {"estimated": True, "note": p["note"], "journal_qty": p["journal"], "t212_qty": p["broker"],
-                       "known_on": seen[p["key"]]}
+                       "known_on": seen[p["key"]], "applied_at": when.isoformat()}
             if row is None:
                 row = Execution(
                     account_id=acct.id, source=SOURCE_KEY, external_id=ext, symbol=p["symbol"],
                     underlying=p["symbol"], asset_type="STOCK", side=p["side"], quantity=p["quantity"],
                     price=p["price"], fees=0.0, executed_at=when, time_known=False,
                     currency=p.get("currency") or acct.currency,
-                    instrument_id=p["instrument_id"], position_effect="RATIO" if p["ratio"] else None,
+                    instrument_id=p["instrument_id"],
+                    position_effect="RATIO" if p["ratio"] else ("OPEN" if p["side"] == "BUY" else "CLOSE"),
                     kind=p["kind"], description=p["note"][:300], multiplier=1.0,
                 )
                 db.add(row)
@@ -1267,8 +1315,10 @@ class Trading212Source(DataSource):
                 row.symbol = row.underlying = p["symbol"]
                 row.side, row.quantity, row.price = p["side"], p["quantity"], p["price"]
                 row.kind = p["kind"]
-                row.position_effect = "RATIO" if p["ratio"] else None
+                row.position_effect = "RATIO" if p["ratio"] else ("OPEN" if p["side"] == "BUY" else "CLOSE")
                 row.instrument_id = p["instrument_id"] or row.instrument_id
+                if p.get("currency"):
+                    row.currency = p["currency"]
                 row.description = p["note"][:300]
                 row.executed_at = when
             row.raw = _json.dumps(payload)

@@ -297,6 +297,16 @@ def _polygon(symbol: str, interval: str, start: datetime, end: datetime) -> list
              "volume": x.get("v") or 0} for x in r.json().get("results", [])]
 
 
+def yahoo_split_events(symbol: str, start: datetime, end: datetime) -> list[tuple[datetime, float]]:
+    """Listing splits from Yahoo's chart events: ``[(ex-date UTC naive, new/old)]``. No API key."""
+    from app.corporate import parse_yahoo_splits
+    r = httpx.get(f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}", params={
+        "period1": _sec(start), "period2": _sec(end), "interval": "1d", "events": "split",
+    }, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+    r.raise_for_status()
+    return parse_yahoo_splits(r.json())
+
+
 def _yahoo(symbol: str, interval: str, start: datetime, end: datetime, prepost: bool = False,
            ccy: str | None = None, price_scale: float | None = None) -> list[dict]:
     r = httpx.get(f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}", params={
@@ -444,13 +454,18 @@ def get_chart(db: Session, trade: Trade, tf: str | None = None, now: datetime | 
                 mk, hidden = markers(trade, candles, cur)
                 if hidden:
                     notes.append(f"{hidden} fill(s) fall outside the {cur} chart window.")
+                off = chart_price_off(trade, candles, cur)
+                if off:
+                    notes.append("Some fills are more than 25% off the candle on that date. "
+                                 "The price symbol may be a different listing or currency.")
                 if cur not in DAILYISH and any(not _fill_time_known(f) for f in trade.fills):
                     notes.append("Some fills have a date but no time of day; each is drawn at the first bar "
                                  "that traded at its price that day, marked \"time est.\".")
                 return {**base, "tf": cur, "interval": cur, "intraday": cur not in DAILYISH,
                         "candles": candles, "markers": mk, "focus": focus(trade, candles, cur),
                         "focus_bars": [spec.focus_before, spec.focus_after], "provider": prov,
-                        "provider_label": PROVIDER_LABEL.get(prov, prov), "notes": notes + wnotes}
+                        "provider_label": PROVIDER_LABEL.get(prov, prov), "notes": notes + wnotes,
+                        "price_mismatch": bool(off), "price_off": off[:8]}
     return {**base, "candles": [], "markers": [], "provider": None, "notes": notes, "errors": errors}
 
 
@@ -525,6 +540,33 @@ def fill_kinds(trade: Trade) -> list[str]:
             out.append("exit")
         else:
             out.append("partial")
+    return out
+
+
+def chart_price_off(trade: Trade, candles: list[dict], tf: str, threshold: float = 0.25) -> list[dict]:
+    """Fills that sit off the candle and are more than ``threshold`` away from that bar's close.
+
+    A fill inside the bar's high/low is on the candle. Splits and estimated adjustments are not
+    compared (their price is a ratio or a placeholder). Price 0 is not a market print.
+    """
+    out = []
+    for f, i, _how in place_fills(trade, candles, tf):
+        if i is None or not f.price or f.price <= 0:
+            continue
+        ex = getattr(f, "execution", None)
+        kind = (ex.kind if ex is not None else None) or "TRADE"
+        if kind in ("SPLIT", "ADJUST") or f.role == "ADJUST":
+            continue
+        bar = candles[i]
+        lo, hi, close = bar.get("low"), bar.get("high"), bar.get("close")
+        if close in (None, 0) or lo is None or hi is None:
+            continue
+        if lo <= f.price <= hi:
+            continue
+        gap = abs(f.price - close) / abs(close)
+        if gap > threshold:
+            out.append({"fill": f.price, "close": close, "gap": round(gap, 4),
+                        "at": f.executed_at.date().isoformat()})
     return out
 
 

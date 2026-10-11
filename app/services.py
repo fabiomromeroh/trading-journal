@@ -513,9 +513,20 @@ def _expiry_close_utc(d):
     return local_to_utc_naive(d, time(16, 0), ET)
 
 
+def account_long_only(acct: Account) -> bool:
+    """Invest, ISA and cash accounts cannot borrow shares. Margin (and Schwab) still can."""
+    kind = (acct.kind or "").lower()
+    if kind in {"invest", "isa", "cash"}:
+        return True
+    broker = (acct.broker or "").lower()
+    return broker in {"trading212", "t212"} and kind != "margin"
+
+
 def rebuild_trades(db: Session, account_ids: list[int] | None = None) -> int:
     """Rebuild all trades for the given accounts from executions, preserving journal fields."""
-    from app.symbols import canonical_symbol, canonical_ticker, load_aliases
+    from app.corporate import group_symbols
+    from app.models import Instrument
+    from app.symbols import canonical_ticker, load_aliases
     if account_ids is None:
         account_ids = list(db.scalars(select(Account.id)))
     aliases = load_aliases(db)
@@ -526,7 +537,9 @@ def rebuild_trades(db: Session, account_ids: list[int] | None = None) -> int:
             continue
         execs = list(db.scalars(select(Execution).where(Execution.account_id == acct_id)))
         by_id = {e.id: e for e in execs}
-        canon = {e.id: canonical_symbol(e.symbol, aliases) for e in execs}
+        inst_ids = {e.instrument_id for e in execs if e.instrument_id}
+        instruments = {i.id: i for i in db.scalars(select(Instrument).where(Instrument.id.in_(inst_ids or [-1])))}
+        canon = group_symbols(execs, instruments, aliases)
         bexecs = [BuilderExec(
             id=e.id, account_id=e.account_id, symbol=canon[e.id], side=e.side, quantity=e.quantity,
             price=e.price, executed_at=e.executed_at, fees=e.fees or 0.0, multiplier=e.multiplier or 1.0,
@@ -534,7 +547,8 @@ def rebuild_trades(db: Session, account_ids: list[int] | None = None) -> int:
         ) for e in execs]
         expirations = {canon[e.id]: _expiry_close_utc(e.expiration) for e in execs
                        if e.asset_type == "OPTION" and e.expiration}
-        result = build_trades(bexecs, expirations=expirations, as_of=utcnow())
+        result = build_trades(bexecs, expirations=expirations, as_of=utcnow(),
+                              long_only=account_long_only(acct))
 
         existing = {t.key: t for t in db.scalars(select(Trade).where(Trade.account_id == acct_id))}
         old_execs = _journal_exec_sets(db, existing.values())

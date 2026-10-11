@@ -186,6 +186,249 @@ def user_edited(raw: dict | None) -> bool:
     return bool(raw and raw.get("user_edited"))
 
 
+def adjustment_when(rows, side: str, kind: str, now: datetime) -> datetime:
+    """When an estimated adjustment should hit the position.
+
+    A buy that covers shares already sold is placed one second before the first sell that would
+    otherwise go short, so it extends the long instead of closing a phantom short later.
+    A sell is placed one second after the last real fill (after the buys it offsets).
+    A split is placed just after the last buy it should rescale. ``now`` is only a fallback when
+    the symbol has no fills yet. The 'first seen' sync time is not an execution time.
+    """
+    from datetime import timedelta
+
+    real = [e for e in rows if not str(getattr(e, "external_id", "") or "").startswith("recon:")]
+    real.sort(key=lambda e: (e.executed_at, getattr(e, "id", 0) or 0))
+    fills = [e for e in real if e.kind != "SPLIT"]
+    if kind == "SPLIT":
+        buys = [e.executed_at for e in fills if e.side == "BUY"]
+        return (max(buys) + timedelta(seconds=1)) if buys else now
+    if side == "SELL":
+        return (max(e.executed_at for e in fills) + timedelta(seconds=1)) if fills else now
+    pos = 0.0
+    for e in real:
+        if e.kind == "SPLIT" and e.position_effect == "RATIO" and e.quantity and abs(e.quantity - 1.0) > 1e-9:
+            if pos > 1e-8:
+                pos *= float(e.quantity)
+            continue
+        q = abs(e.quantity or 0.0)
+        if e.side == "BUY":
+            pos += q
+        elif e.side == "SELL" and pos - q < -1e-6:
+            return e.executed_at - timedelta(seconds=1)
+        elif e.side == "SELL":
+            pos -= q
+    return max(e.executed_at for e in fills) if fills else now
+
+
+def group_symbols(execs, instruments: dict, aliases: dict) -> dict[int, str]:
+    """One position key per execution.
+
+    Fills that share an ISIN but were stored under two tickers build as one trade, named with the
+    symbol those fills actually used (the execution listing). A catalogue ticker that no longer
+    matches the fills (T212 ``SNII`` while the Nasdaq line and the orders are ``RGTI``) is not
+    adopted. A built-in alias still folds the old ticker into the current one (FB → META).
+    Reconciliation rows follow that name. A user override is left alone.
+    """
+    from collections import defaultdict
+
+    from app.symbols import canonical_symbol
+
+    def base(e) -> str:
+        return canonical_symbol(e.symbol or "", aliases) or (e.symbol or "")
+
+    real_by_isin: dict[str, set[str]] = defaultdict(set)
+    isin_counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for e in execs:
+        if str(e.external_id or "").startswith("recon:"):
+            continue
+        inst = instruments.get(e.instrument_id) if e.instrument_id else None
+        if inst is not None and inst.isin and (e.kind or "TRADE") == "TRADE":
+            name = base(e).upper()
+            real_by_isin[inst.isin].add(name)
+            isin_counts[inst.isin][name] += 1
+    majority: dict[str, str] = {}
+    for isin, counts in isin_counts.items():
+        if len(real_by_isin.get(isin, ())) > 1:
+            majority[isin] = max(counts.items(), key=lambda kv: (kv[1], kv[0]))[0]
+    out: dict[int, str] = {}
+    renamed: dict[str, str] = {}
+    for e in execs:
+        b = base(e)
+        inst = instruments.get(e.instrument_id) if e.instrument_id else None
+        chosen = b
+        if (inst is not None and inst.isin and not inst.user_override
+                and inst.isin in majority
+                and not str(e.external_id or "").startswith("recon:")):
+            chosen = majority[inst.isin]
+        out[e.id] = chosen
+        if chosen.upper() != (e.symbol or "").upper() and not str(e.external_id or "").startswith("recon:"):
+            renamed[(e.symbol or "").upper()] = chosen
+    for e in execs:
+        if not str(e.external_id or "").startswith("recon:"):
+            continue
+        alt = renamed.get((e.symbol or "").upper())
+        if alt:
+            out[e.id] = alt
+    return out
+
+
+def parse_yahoo_splits(payload: dict) -> list[tuple[datetime, float]]:
+    """``[(ex-date UTC naive, new/old)]`` from a Yahoo v8 chart body. Cash dividends are ignored."""
+    from datetime import timezone
+    res = ((payload or {}).get("chart") or {}).get("result") or [None]
+    res = res[0] if res else None
+    if not res:
+        return []
+    out = []
+    for ev in ((res.get("events") or {}).get("splits") or {}).values():
+        try:
+            num, den = float(ev["numerator"]), float(ev["denominator"])
+            when = datetime.fromtimestamp(int(ev["date"]), timezone.utc).replace(tzinfo=None)
+        except (KeyError, TypeError, ValueError, OSError):
+            continue
+        if den <= 0 or num <= 0:
+            continue
+        ratio = num / den
+        if abs(ratio - 1.0) <= 1e-6 or ratio > 1000 or ratio < 0.001:
+            continue
+        out.append((when, ratio))
+    out.sort(key=lambda t: t[0])
+    return out
+
+
+def select_listing_splits(rows, splits: list[tuple[datetime, float]]) -> list[tuple[datetime, float]]:
+    """Listing splits that land while this symbol is long, skipping ones already stored.
+
+    ``rows`` are executions for one instrument. Reconciliation rows are ignored: they are the
+    guess this split replaces. A split after the position is flat is not inserted (it would be
+    an orphan and must not rescale a later, unrelated trade).
+    """
+    real = [e for e in rows if not str(e.external_id or "").startswith(("recon:", "ysplit:"))]
+    existing: list[tuple[datetime, float | None]] = []
+    events: list[tuple[datetime, str, float]] = []
+    for e in real:
+        if e.kind == "SPLIT" and e.position_effect == "RATIO" and e.quantity and abs(e.quantity - 1.0) > 1e-6:
+            existing.append((e.executed_at, float(e.quantity)))
+            events.append((e.executed_at, "SPLIT", float(e.quantity)))
+        elif e.kind == "SPLIT":
+            existing.append((e.executed_at, None))
+        elif e.side in ("BUY", "SELL"):
+            events.append((e.executed_at, e.side, abs(e.quantity or 0.0)))
+    for when, ratio in splits:
+        events.append((when, "NEW", float(ratio)))
+    events.sort(key=lambda t: (t[0], {"BUY": 0, "NEW": 1, "SPLIT": 1, "SELL": 2}.get(t[1], 1)))
+    pos = 0.0
+    keep: list[tuple[datetime, float]] = []
+    for when, kind, val in events:
+        if kind == "BUY":
+            pos += val
+        elif kind == "SELL":
+            pos -= val
+        elif kind in ("SPLIT", "NEW") and pos > 1e-6:
+            if kind == "NEW":
+                covered = any(
+                    abs((when - ew).total_seconds()) < 7 * 86400 and (er is None or abs(er - val) / val < 0.02)
+                    for ew, er in existing)
+                if not covered:
+                    keep.append((when, val))
+            pos *= val
+    return keep
+
+
+def needs_split_check(rows) -> bool:
+    """True when a symbol already has an estimated row, or a sell runs past the shares we hold."""
+    pos = 0.0
+    for e in sorted(rows, key=lambda e: (e.executed_at, e.id or 0)):
+        if str(e.external_id or "").startswith("recon:"):
+            return True
+        if e.kind == "SPLIT":
+            if e.position_effect == "RATIO" and e.quantity and pos > 0:
+                pos *= float(e.quantity)
+            continue
+        q = abs(e.quantity or 0.0)
+        if e.side == "BUY":
+            pos += q
+        elif e.side == "SELL":
+            if q > pos + 1e-4:
+                return True
+            pos -= q
+    return False
+
+
+def import_listing_splits(db, account_id: int, fetch) -> list[str]:
+    """Insert one SPLIT row per listing split (Yahoo or ``fetch``) that the broker feed missed.
+
+    Idempotent on ``ysplit:<symbol>:<date>``. An unedited estimated split on that symbol is removed
+    when a listing split is inserted, so the position is not scaled twice. Journal notes live on
+    trades and are untouched. ``fetch(symbol, start, end) -> [(datetime, ratio)]``; failures skip
+    that symbol.
+    """
+    import json
+    from collections import defaultdict
+    from datetime import timedelta
+
+    from sqlalchemy import select
+
+    from app.models import Execution, Instrument
+
+    execs = list(db.scalars(select(Execution).where(Execution.account_id == account_id)))
+    by_inst: dict[int, list] = defaultdict(list)
+    for e in execs:
+        if e.instrument_id:
+            by_inst[e.instrument_id].append(e)
+    if not by_inst:
+        return []
+    instruments = {i.id: i for i in db.scalars(select(Instrument).where(Instrument.id.in_(list(by_inst))))}
+    lines = []
+    for iid, rows in by_inst.items():
+        inst = instruments.get(iid)
+        if inst is None or not inst.price_symbol or not needs_split_check(rows):
+            continue
+        start = min(e.executed_at for e in rows) - timedelta(days=7)
+        end = max(e.executed_at for e in rows) + timedelta(days=2)
+        try:
+            found = list(fetch(inst.price_symbol, start, end) or [])
+        except Exception:  # noqa: BLE001 — a quote miss must not abort the sync
+            continue
+        keep = select_listing_splits(rows, found)
+        if not keep:
+            continue
+        symbol = next((e.symbol for e in rows if e.symbol and not str(e.external_id).startswith("recon:")), inst.symbol)
+        removed = False
+        for e in rows:
+            if e.kind != "SPLIT" or not str(e.external_id or "").startswith("recon:"):
+                continue
+            try:
+                raw = json.loads(e.raw or "{}")
+            except ValueError:
+                raw = {}
+            if is_estimated(raw) and not user_edited(raw):
+                db.delete(e)
+                removed = True
+        for when, ratio in keep:
+            day = when.date().isoformat()
+            ext = f"ysplit:{symbol}:{day}"
+            if any(e.external_id == ext and e.source == "t212" for e in rows):
+                continue
+            row = Execution(
+                account_id=account_id, source="t212", external_id=ext, symbol=symbol, underlying=symbol,
+                asset_type="STOCK", side="BUY", quantity=ratio, price=0.0, fees=0.0,
+                executed_at=when, time_known=True, currency=inst.currency, instrument_id=inst.id,
+                position_effect="RATIO", kind="SPLIT", multiplier=1.0,
+                description=f"Split ×{ratio:.6g} ({inst.price_symbol} listing)",
+                match_key=f"{day}|{symbol}|BUY|{ratio:.6f}|0|SPLIT",
+                raw=json.dumps({"listing_split": True, "price_symbol": inst.price_symbol, "ratio": ratio}),
+            )
+            db.add(row)
+            lines.append(f"{symbol}: split ×{ratio:.6g} on {day}")
+        if removed and not lines:
+            lines.append(f"{symbol}: estimated split replaced")
+    if lines:
+        db.flush()
+    return lines
+
+
 def omit_duplicate_corporate(db, account_id: int, records: list) -> list:
     """Drop a CSV corporate row when that symbol already has the same kind on the same day.
 
@@ -223,6 +466,16 @@ def _yahoo_base(price_symbol: str | None, exchange: str | None) -> str:
     return ps
 
 
+def _majority_fill_symbol(counts: dict[str, int] | None) -> str | None:
+    """The ticker the orders used, when one symbol has strictly more fills than the rest."""
+    if not counts:
+        return None
+    top, n = max(counts.items(), key=lambda kv: (kv[1], kv[0]))
+    if n <= sum(counts.values()) - n:
+        return None
+    return top
+
+
 def audit_instruments(db, *, fix: bool = False) -> list[dict]:
     """List instruments whose symbol, ISIN, currency or exchange disagree.
 
@@ -231,11 +484,21 @@ def audit_instruments(db, *, fix: bool = False) -> list[dict]:
     differs from the journal symbol) is kept: the chart follows the new ticker. A user override
     is never changed. Conflicting ISIN country vs an explicit ticker market is reported only.
     """
-    from sqlalchemy import select
+    from collections import defaultdict
+
+    from sqlalchemy import func, select
 
     from app import markets
-    from app.models import Instrument
+    from app.models import Execution, Instrument
 
+    fill_counts: dict[int, dict[str, int]] = defaultdict(dict)
+    for iid, sym, n in db.execute(select(Execution.instrument_id, Execution.symbol, func.count()).where(
+            Execution.instrument_id.is_not(None),
+            Execution.kind == "TRADE",
+            ~Execution.external_id.like("recon:%"),
+            ~Execution.external_id.like("ysplit:%")).group_by(Execution.instrument_id, Execution.symbol)):
+        if iid and sym:
+            fill_counts[iid][sym.upper()] = int(n)
     out = []
     rows = list(db.scalars(select(Instrument).order_by(Instrument.symbol)))
     for inst in rows:
@@ -281,6 +544,16 @@ def audit_instruments(db, *, fix: bool = False) -> list[dict]:
             notes.append("currency still GBX")
         if inst.symbol and info.symbol and inst.symbol.upper() != info.symbol.upper() and not inst.user_override:
             notes.append(f"symbol {inst.symbol} != ticker base {info.symbol}")
+        # The orders name the listing that was traded. A later catalogue ticker (SNII, XPOA, FB)
+        # must not move the chart off that line. A user override (DMYI charted as IONQ) stays.
+        fill_top = _majority_fill_symbol(fill_counts.get(inst.id))
+        if fill_top and not inst.user_override and inst.exchange:
+            y = markets.yahoo_symbol_for(fill_top, inst.exchange)
+            if y and (inst.price_symbol or "").upper() != y.upper():
+                notes.append(f"fills are {fill_top}; chart {inst.price_symbol or '—'} does not match")
+                if fix:
+                    inst.price_symbol = y
+                    fixed.append(f"chart {y} from fills")
         if notes or fixed:
             out.append({"id": inst.id, "symbol": inst.symbol, "broker_symbol": inst.broker_symbol,
                         "isin": inst.isin, "exchange": inst.exchange, "price_symbol": inst.price_symbol,

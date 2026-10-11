@@ -124,28 +124,49 @@ class BuildResult:
 
 
 def sort_key(e: BuilderExec):
-    # For date-only rows (CSV without times) put explicit opens before ambiguous before closes,
-    # and position events (expirations etc.) last, so same-day round trips build correctly.
+    # Date-only rows have no reliable clock, so every buy on that day is applied before every sell
+    # (and a split sits between them). Estimated adjustments carry a synthetic second so a buy lands
+    # before the sell it covers; on an exact tie the buy still sorts first.
+    if e.kind == "ADJUST":
+        rank = -1 if e.side == "BUY" else 4
+        return (e.executed_at, rank, e.seq, e.id)
+    # A split keeps its clock. An estimated split is dated one second after the last buy; collapsing
+    # that to midnight would run it before the same-day fills and leave the position unscaled.
+    if e.kind == "SPLIT":
+        return (e.executed_at, 2, e.seq, e.id)
     if e.time_known:
+        return (e.executed_at, 0, e.seq, e.id)
+    at = e.executed_at.replace(hour=0, minute=0, second=0, microsecond=0)
+    if e.kind in CLOSING_KINDS:
+        rank = 5
+    elif e.kind == "SPLIT":
+        rank = 2
+    elif e.side == "BUY" or e.position_effect == "OPEN":
         rank = 0
+    elif e.side == "SELL" or e.position_effect == "CLOSE":
+        rank = 3
     else:
-        rank = 3 if e.kind in CLOSING_KINDS else _EFFECT_RANK.get(e.position_effect, 1)
-    return (e.executed_at, rank, e.seq, e.id)
+        rank = 1
+    return (at, rank, e.seq, e.id)
 
 
 def build_trades(executions: list[BuilderExec],
                  expirations: dict[str, datetime] | None = None,
-                 as_of: datetime | None = None) -> BuildResult:
+                 as_of: datetime | None = None,
+                 long_only: bool = False) -> BuildResult:
     """expirations: option symbol -> expiry close time (UTC). Option trades still open after
     their expiry (as of `as_of`) are closed at 0 with close_reason EXPIRATION (inferred), which
-    covers sources that don't report expirations (e.g. thinkorswim trade history)."""
+    covers sources that don't report expirations (e.g. thinkorswim trade history).
+
+    ``long_only`` (Trading 212 Invest / ISA) never opens a short: a sell larger than the long
+    is clamped and the excess is flagged as an orphan instead of a second trade."""
     groups: dict[tuple[int, str], list[BuilderExec]] = defaultdict(list)
     for e in executions:
         groups[(e.account_id, e.symbol)].append(e)
     trades: list[BuiltTrade] = []
     orphans: list[Orphan] = []
     for (_acct, _sym), execs in sorted(groups.items(), key=lambda kv: (kv[0][0], kv[0][1])):
-        t, o = _build_symbol(sorted(execs, key=sort_key))
+        t, o = _build_symbol(sorted(execs, key=sort_key), long_only=long_only)
         exp_at = (expirations or {}).get(_sym)
         if exp_at is not None and as_of is not None and exp_at < as_of:
             for tr in t:
@@ -157,7 +178,7 @@ def build_trades(executions: list[BuilderExec],
     return BuildResult(trades=trades, orphans=orphans)
 
 
-def _build_symbol(execs: list[BuilderExec]) -> tuple[list[BuiltTrade], list[Orphan]]:
+def _build_symbol(execs: list[BuilderExec], long_only: bool = False) -> tuple[list[BuiltTrade], list[Orphan]]:
     trades: list[BuiltTrade] = []
     orphans: list[Orphan] = []
     pos = 0.0  # signed position
@@ -237,6 +258,10 @@ def _build_symbol(execs: list[BuilderExec]) -> tuple[list[BuiltTrade], list[Orph
                 continue
             if abs(pos) <= EPS and e.position_effect == "CLOSE":
                 orphans.append(Orphan(e.id, e.symbol, remaining, "closing fill with no open position"))
+                continue
+            if long_only and sgn < 0:
+                orphans.append(Orphan(e.id, e.symbol, remaining,
+                                      "long-only account: sell would open a short"))
                 continue
             if cur is None:
                 part = ":flip" if remaining < qty - EPS else ""

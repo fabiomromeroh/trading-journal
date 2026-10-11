@@ -17,6 +17,7 @@
   <a href="/trades{{ '?' ~ list_qs if list_qs }}" class="text-slate-400 hover:text-white text-sm">← Trades</a>
   <h1 class="text-xl font-semibold text-white">{{ t.symbol }}{% if t.company and t.company.name %} <span class="font-normal text-slate-300">- {{ t.company.name }}</span>{% endif %}</h1>
   {% if listing %}<span class="text-xs text-slate-400" title="Exchange · chart ticker · currency">{{ listing }}</span>{% endif %}
+  <a id="price-warn" href="/settings#instruments" class="hidden pill bg-amber-500/20 text-amber-200" title="These fills are more than 25% off the candle on that date. Open Instruments and set the Yahoo symbol for this listing.">Chart price looks wrong</a>
   {% if t.company and (t.company.sector or t.company.industry) %}<span class="text-xs text-slate-400" title="Sector · industry">{{ t.company.sector or '—' }}{% if t.company.industry %} · {{ t.company.industry }}{% endif %}</span>{% endif %}
   <span class="pill {{ 'bg-emerald-500/15 text-emerald-300' if t.direction == 'LONG' else 'bg-rose-500/15 text-rose-300' }}">{{ t.direction }}</span>
   <span class="pill bg-slate-700/60 text-slate-300">{{ 'Option' if t.asset_type == 'OPTION' else 'Stock' }}</span>
@@ -166,7 +167,7 @@ window.TJ_CHART = { tradeId: {{ t.id }}, symbol: {{ chart_symbol|tojson }}, tz: 
   rLevels: {{ r_cfg.levels|tojson }}, showR: {{ r_cfg.show|tojson }}, stopAuto: {{ (t.stop_auto or false)|tojson }}, open: {{ 'true' if t.status == 'OPEN' else 'false' }} };
 </script>
 <script src="/static/journal.js?v=2"></script>
-<script src="/static/trade_chart.js?v=14"></script>
+<script src="/static/trade_chart.js?v=15"></script>
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js"></script>
 <script src="/static/widgets.js?v=1"></script>
 <script>WidgetEditor({ grid: '#trade-stats', toolbar: '#trade-page' });</script>

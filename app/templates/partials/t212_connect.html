@@ -44,7 +44,7 @@
     </div>
     <div id="t212-sync"></div>
     {% if t212.instruments %}
-    <details class="text-xs"><summary class="cursor-pointer text-slate-400">Instruments &amp; price symbols ({{ t212.instruments|length }})</summary>
+    <details id="instruments" class="text-xs"><summary class="cursor-pointer text-slate-400">Instruments &amp; price symbols ({{ t212.instruments|length }})</summary>
       <div class="text-slate-500 my-1">Yahoo price symbol per instrument (e.g. VUSA.L, SAP.DE). Leave both fields empty and press Save to restore the automatic mapping. Mapping is derived from the Trading 212 ticker; check any marked “no price symbol”.</div>
       <table class="w-full tbl"><thead><tr><th>Symbol</th><th>ISIN</th><th>Market</th><th>Ccy</th><th>Price symbol</th><th></th></tr></thead><tbody>
       {% for i in t212.instruments %}<tr><td colspan="6" class="p-0"><form method="post" action="/settings/brokers/instruments/{{ i.id }}" class="flex items-center gap-2 py-1">
