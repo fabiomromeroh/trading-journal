@@ -1,0 +1,91 @@
+/* Settings page: full-width hash tabs. Panels stay in the HTML; the hash picks one.
+   No script: reload keeps the tab, and an old anchor (#brokers, #security, …) opens its panel. */
+#settings-page { width: 100%; max-width: none; min-width: 0; }
+#settings-page .stab { display: none; }
+#settings-page .stab:target,
+#settings-page .stab:has(:target) { display: block; }
+#settings-page:not(:has(.stab:target)):not(:has(.stab :target)) .stab-default { display: block; }
+
+#settings-page .stab,
+#settings-page .stab [id] { scroll-margin-top: 4.25rem; }
+
+.set-nav {
+  display: flex; flex-wrap: wrap; gap: .4rem;
+  position: sticky; top: 0; z-index: 25;
+  padding: .15rem 0 .75rem; margin: 0 0 .25rem;
+  background: #0b0f17;
+}
+.set-tab {
+  flex: 1 1 auto; text-align: center; text-decoration: none;
+  border-radius: .55rem; padding: .45rem .7rem;
+  font-size: .8rem; line-height: 1.25; font-weight: 500;
+  color: #94a3b8; background: #111827;
+  border: 1px solid rgba(51,65,85,.75);
+  min-width: 0; max-width: 100%;
+}
+.set-tab:hover { color: #fff; border-color: #475569; }
+.set-tab:focus-visible { outline: 2px solid #818cf8; outline-offset: 2px; }
+
+#settings-page:not(:has(.stab:target)):not(:has(.stab :target)) .set-tab[href="#accounts"],
+#settings-page:has(#accounts:target) .set-tab[href="#accounts"],
+#settings-page:has(#accounts :target) .set-tab[href="#accounts"],
+#settings-page:has(#sync:target) .set-tab[href="#sync"],
+#settings-page:has(#sync :target) .set-tab[href="#sync"],
+#settings-page:has(#display:target) .set-tab[href="#display"],
+#settings-page:has(#display :target) .set-tab[href="#display"],
+#settings-page:has(#rules:target) .set-tab[href="#rules"],
+#settings-page:has(#rules :target) .set-tab[href="#rules"],
+#settings-page:has(#data:target) .set-tab[href="#data"],
+#settings-page:has(#data :target) .set-tab[href="#data"],
+#settings-page:has(#security:target) .set-tab[href="#security"],
+#settings-page:has(#security :target) .set-tab[href="#security"] {
+  background: #4f46e5; color: #fff; border-color: #4f46e5;
+}
+
+.set-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 12.5rem), 1fr));
+  gap: .65rem .75rem;
+  align-items: start;
+}
+.set-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: .75rem 1rem;
+}
+.set-field { display: flex; flex-direction: column; gap: .25rem; min-width: 0; }
+.set-field > .inp,
+.set-field > select,
+.set-field > textarea { width: 100%; max-width: 100%; }
+.set-inline { display: flex; flex-wrap: wrap; gap: .5rem; align-items: end; min-width: 0; }
+.set-inline > .set-field { flex: 1 1 12rem; }
+.set-cards { display: grid; gap: .75rem; grid-template-columns: minmax(0, 1fr); }
+.set-scroll { overflow-x: auto; max-width: 100%; -webkit-overflow-scrolling: touch; }
+#settings-page .card,
+#settings-page .stab,
+#settings-page form { min-width: 0; max-width: 100%; }
+#settings-page .inp,
+#settings-page select,
+#settings-page textarea { max-width: 100%; min-width: 0; }
+#settings-page code,
+#settings-page .break-all { overflow-wrap: anywhere; word-break: break-word; }
+#settings-page .tbl { width: 100%; max-width: 100%; }
+#settings-page .tbl th,
+#settings-page .tbl td { white-space: normal; overflow-wrap: anywhere; }
+@media (max-width: 1023px) {
+  /* app.css turns every table into a sideways scroller; settings tables wrap instead */
+  #settings-page table.tbl { display: table; overflow: visible; }
+}
+
+@media (min-width: 800px) {
+  .set-pair { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (min-width: 1280px) {
+  .set-cards.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 767px) {
+  .set-nav { top: 3.25rem; }
+  .set-tab { flex: 1 1 calc(50% - .4rem); }
+  #settings-page .stab,
+  #settings-page .stab [id] { scroll-margin-top: 8.5rem; }
+}

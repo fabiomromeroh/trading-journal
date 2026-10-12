@@ -1,20 +1,69 @@
 {% extends "base.html" %}
 {% block title %}Settings · Trading Journal{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="/static/settings.css?v=2">
+{% endblock %}
 {% block content %}
-<div class="max-w-[1500px]">
+<div id="settings-page">
 <h1 class="text-2xl font-semibold text-white mb-4">Settings & sync</h1>
 {% if flash %}<div class="card border-indigo-500/40 bg-indigo-500/10 text-indigo-100 p-3 mb-4 text-sm">{{ flash }}</div>{% endif %}
 
-<div class="grid grid-cols-1 xl:grid-cols-2 gap-4 mb-4">
-  <div class="card p-5">
-    <div class="flex items-center justify-between mb-3">
+<nav class="set-nav" aria-label="Settings sections">
+  <a class="set-tab" href="#accounts">Accounts &amp; brokers</a>
+  <a class="set-tab" href="#sync">Sync &amp; corporate actions</a>
+  <a class="set-tab" href="#display">Display &amp; currency</a>
+  <a class="set-tab" href="#rules">Trading rules</a>
+  <a class="set-tab" href="#data">Data &amp; backup</a>
+  <a class="set-tab" href="#security">Security</a>
+</nav>
+
+<section id="accounts" class="stab stab-default">
+{% include "partials/brokers_settings.html" %}
+
+<div class="card p-5 mb-4">
+  <div class="card-h mb-3">Accounts</div>
+  {% if acct_rows %}
+  <div class="set-cards cols-2">
+    {% for row in acct_rows %}{% set a = row.a %}
+    <article class="rounded-lg border border-slate-700/70 p-4 min-w-0">
+      <div class="flex flex-wrap items-center gap-2 mb-3 text-sm">
+        <span class="text-white font-medium">{{ a.broker }}</span>
+        {% if a.is_demo %}<span class="pill bg-amber-500/20 text-amber-300">sample</span>{% endif %}
+        <span class="text-slate-400">{{ a.account_number_masked or '—' }}</span>
+        <span class="text-slate-500 text-xs sm:ml-auto">{{ row.executions }} fills · {{ row.trades }} trades</span>
+      </div>
+      <form method="post" action="/settings/accounts/{{ a.id }}" class="set-inline">
+        <label class="set-field"><span class="card-h">Name</span><input name="name" value="{{ a.name }}" class="inp" aria-label="Account name"></label>
+        <button class="btn btn-s text-xs">Rename</button>
+      </form>
+      <p class="text-slate-400 text-xs mt-3">{% if row.orphans %}<span class="text-amber-300">{{ row.orphans|length }}</span> fills closed positions opened before your imported history{% for o in row.orphans[:4] %} · {{ o.symbol }} {{ o.quantity|qty }}{% endfor %}{% if row.orphans|length > 4 %} …{% endif %}. Import older history to match them.{% else %}Unmatched closes: —{% endif %}</p>
+      {% if not a.is_demo %}
+      <form method="post" action="/settings/accounts/{{ a.id }}/delete" class="set-inline mt-3" onsubmit="return confirm('Delete this account and ALL its fills and trades?')">
+        <label class="set-field"><span class="card-h">Delete</span><input name="confirm" class="inp" placeholder="type name" aria-label="Type the account name to confirm delete"></label>
+        <button class="text-xs text-rose-300">Delete</button>
+      </form>
+      {% endif %}
+    </article>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="text-slate-500 text-sm">No accounts yet — they're created on first import.</p>
+  {% endif %}
+  <p class="text-xs text-slate-500 mt-3">Currency, time zone and market are on <a class="underline" href="#display">Display &amp; currency</a>. Auto stop is on <a class="underline" href="#rules">Trading rules</a>.</p>
+</div>
+</section>
+
+<section id="sync" class="stab">
+<div class="grid grid-cols-1 xl:grid-cols-2 gap-4 mb-4 min-w-0">
+  <div class="card p-5 min-w-0">
+    <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
       <div class="card-h">Automated data sources</div>
       <button hx-post="/sync" hx-target="#sync-panel" class="btn btn-p text-xs">Sync now</button>
     </div>
     <div id="sync-panel" class="mb-3">{% if active_run %}{% with run = active_run %}{% include "partials/sync_status.html" %}{% endwith %}{% endif %}</div>
     {% for src, st in sources %}
-    <div class="rounded-lg border border-slate-700/70 p-4 mb-3">
-      <div class="flex items-center gap-2">
+    <div class="rounded-lg border border-slate-700/70 p-4 mb-3 min-w-0">
+      <div class="flex flex-wrap items-center gap-2">
         <span class="h-2.5 w-2.5 rounded-full {{ 'bg-emerald-400' if st.ready else 'bg-amber-400' if st.configured else 'bg-slate-600' }}"></span>
         <span class="text-white font-medium">{{ src.name }}</span>
         <span class="pill {{ 'bg-emerald-500/15 text-emerald-300' if st.ready else 'bg-slate-700 text-slate-300' }}">{{ 'enabled' if st.configured else 'disabled' }}</span>
@@ -58,8 +107,9 @@
         <a href="/auth/schwab/connect" class="btn btn-p text-xs">{{ 'Reconnect' if st.expires_in_seconds is not none else 'Connect' }} Schwab</a>
         {% if st.expires_in_seconds is not none %}<form method="post" action="/auth/schwab/disconnect"><button class="btn btn-d text-xs">Disconnect</button></form>{% endif %}
       </div>
-      <form method="post" action="/auth/schwab/paste" class="mt-3 flex gap-2">
-        <input name="redirect_url" class="inp flex-1 text-xs" placeholder="Using https://127.0.0.1:8182? Paste the full redirected URL here">
+      <form method="post" action="/auth/schwab/paste" class="mt-3 set-inline">
+        <label class="set-field"><span class="card-h">Redirect URL</span>
+          <input name="redirect_url" class="inp text-xs" placeholder="Using https://127.0.0.1:8182? Paste the full redirected URL here" aria-label="Schwab redirect URL"></label>
         <button class="btn btn-s text-xs">Submit</button>
       </form>
       <div class="text-xs text-slate-500 mt-1">Callback URL: <code>{{ s.schwab_callback_url }}</code></div>
@@ -69,105 +119,31 @@
     <div class="text-xs text-slate-500">CSV import is always available on the <a href="/import" class="underline">Import</a> page. Automated sources plug into <code>app/sources/</code>; “Sync now” runs every enabled source, then rebuilds trades. There is no scheduled sync.</div>
   </div>
 
-  <div class="card p-5">
+  <div class="card p-5 min-w-0">
     <div class="card-h mb-3">Sync history</div>
-    <div id="sync-runs" hx-get="/sync/runs" hx-trigger="sync-finished from:body">{% include "partials/sync_runs.html" %}</div>
+    <div id="sync-runs" class="set-scroll" hx-get="/sync/runs" hx-trigger="sync-finished from:body">{% include "partials/sync_runs.html" %}</div>
   </div>
 </div>
-
-{% include "partials/brokers_settings.html" %}
-
-<div class="card p-5 mb-4 overflow-x-auto" id="accounts">
-  <div class="card-h mb-3">Accounts</div>
-  <table class="w-full text-sm tbl">
-    <thead><tr><th>Name</th><th>Broker</th><th>Account</th><th title="Account currency, time zone and home market. Existing Schwab accounts are USD / New York / US.">Currency · time zone · market</th><th class="text-right">Fills</th><th class="text-right">Trades</th><th>Unmatched closes</th><th></th></tr></thead>
-    <tbody>
-    {% for row in acct_rows %}{% set a = row.a %}
-    <tr>
-      <td><form method="post" action="/settings/accounts/{{ a.id }}" class="flex gap-2"><input name="name" value="{{ a.name }}" class="inp text-xs w-56"><button class="text-xs text-indigo-300">Rename</button></form></td>
-      <td class="text-slate-400">{{ a.broker }}{% if a.is_demo %} <span class="pill bg-amber-500/20 text-amber-300">sample</span>{% endif %}</td>
-      <td class="text-slate-400">{{ a.account_number_masked or '—' }}</td>
-      <td><form method="post" action="/settings/accounts/{{ a.id }}/meta" class="flex flex-wrap gap-1 items-center">
-        <select name="currency" class="inp text-xs">{% for c in ['USD','EUR','GBP'] %}<option {{ 'selected' if a.currency == c }}>{{ c }}</option>{% endfor %}</select>
-        <input name="timezone" value="{{ a.timezone }}" class="inp text-xs w-36" aria-label="Time zone">
-        <select name="market" class="inp text-xs">{% for m in ['US','UK','DE','EU'] %}<option {{ 'selected' if a.market == m }}>{{ m }}</option>{% endfor %}</select>
-        <button class="text-xs text-indigo-300">Save</button></form>
-        <form method="post" action="/settings/accounts/{{ a.id }}/auto-stop" class="mt-1">
-          <label class="text-[11px] text-slate-300 inline-flex items-center gap-1">
-            <input type="checkbox" name="auto_stop" value="1" {% if a.auto_stop %}checked{% endif %} onchange="this.form.submit()">
-            Auto stop (5m low of day before entry)
-          </label>
-        </form></td>
-      <td class="text-right">{{ row.executions }}</td><td class="text-right">{{ row.trades }}</td>
-      <td class="text-slate-400 text-xs whitespace-normal max-w-[320px]">{% if row.orphans %}<span class="text-amber-300">{{ row.orphans|length }}</span> fills closed positions opened before your imported history{% for o in row.orphans[:4] %} · {{ o.symbol }} {{ o.quantity|qty }}{% endfor %}{% if row.orphans|length > 4 %} …{% endif %}. Import older history to match them.{% else %}—{% endif %}</td>
-      <td>{% if not a.is_demo %}<form method="post" action="/settings/accounts/{{ a.id }}/delete" class="flex gap-1" onsubmit="return confirm('Delete this account and ALL its fills and trades?')"><input name="confirm" class="inp text-xs w-28" placeholder="type name"><button class="text-xs text-rose-300">Delete</button></form>{% endif %}</td>
-    </tr>
-    {% else %}<tr><td colspan="8" class="text-slate-500">No accounts yet — they're created on first import.</td></tr>{% endfor %}
-    </tbody>
-  </table>
-</div>
-
-{% include "partials/journal_settings.html" %}
 
 {% include "partials/tos_email_settings.html" %}
+</section>
 
-{% include "partials/backup_settings.html" %}
-
-
-{% set ber = be_range() %}
-<div class="card p-5 mb-4" id="break-even">
-  <div class="card-h mb-2">Break-even range</div>
-  <p class="text-sm text-slate-400 mb-3">A closed trade whose net P&amp;L (after fees) is between these amounts counts as <b class="text-slate-200">break-even (BE)</b>:
-    it is left out of wins and losses, win %, gross profit/loss, profit factor and average win/loss, but its P&amp;L still counts in net P&amp;L,
-    expectancy and every total. Days inside the range are shown neutral on the calendar. Default 0 / 0 (only exactly $0.00 is BE).</p>
-  <form method="post" action="/settings/break-even" class="flex flex-wrap items-end gap-3">
-    <label><span class="card-h block mb-1">Lower ($, ≤ 0)</span><input name="lower" type="number" step="0.01" max="0" value="{{ '%.2f'|format(ber[0]) }}" class="inp w-28" inputmode="decimal"></label>
-    <label><span class="card-h block mb-1">Upper ($, ≥ 0)</span><input name="upper" type="number" step="0.01" min="0" value="{{ '%.2f'|format(ber[1]) }}" class="inp w-28" inputmode="decimal"></label>
-    <button class="btn btn-s text-xs">Save</button>
-    <span class="text-xs text-slate-500">Now: {{ be_text() }}</span>
-  </form>
-</div>
-
-<div class="card p-5 mb-4" id="aliases">
-  <div class="card-h mb-2">Ticker renames</div>
-  <p class="text-sm text-slate-400 mb-3">Some brokers keep the old ticker for past trades while thinkorswim shows the new one
-    (e.g. EchoStar SATS → ECHO on 2026-06-24). Fills under either ticker are treated as one symbol, shown under the new ticker.
-    Renames are also detected automatically when an import's fills match synced fills exactly except for the ticker.</p>
-  <table class="w-full text-sm tbl mb-3"><thead><tr><th>Old</th><th>New</th><th>Source</th><th>Note</th></tr></thead><tbody>
-  {% for r in alias_rows %}<tr class="{{ 'opacity-50 line-through' if r.disabled }}"><td class="text-white">{{ r.old }}</td><td class="text-white">{{ r.new }}</td><td class="text-slate-400">{{ r.origin }}</td><td class="text-slate-500">{{ r.note }}</td></tr>
-  {% else %}<tr><td colspan="4" class="text-slate-500">No renames.</td></tr>{% endfor %}
-  </tbody></table>
-  <form method="post" action="/settings/aliases" class="flex flex-col md:flex-row gap-2 md:items-end">
-    <label class="flex-1"><span class="card-h block mb-1">Your aliases (one per line, OLD=NEW; "OLD=" turns off a built-in/detected one)</span>
-      <textarea name="aliases" rows="3" class="inp w-full font-mono text-xs" placeholder="SATS=ECHO">{{ alias_text }}</textarea></label>
-    <button class="btn btn-s text-xs">Save &amp; rebuild</button>
-  </form>
-</div>
-
-{% include "partials/security_settings.html" %}
-{% include "partials/install_app.html" %}
-
-<div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-  <div class="card p-5">
-    <div class="card-h mb-2">Sample data</div>
-    <p class="text-sm text-slate-400 mb-3">Generated demo trades for previewing the UI. Always labelled “Sample data” and kept in a separate account.</p>
-    <div class="flex gap-2">
-      <form method="post" action="/settings/demo/load"><button class="btn btn-s text-xs">Load sample data</button></form>
-      {% if has_demo %}<form method="post" action="/settings/demo/clear"><button class="btn btn-d text-xs">Clear sample data</button></form>{% endif %}
-    </div>
+<section id="display" class="stab">
+<div class="grid grid-cols-1 xl:grid-cols-2 gap-4 mb-4 min-w-0">
+  <div class="card p-5 min-w-0">
+    <div class="card-h mb-2">Display currency</div>
+    <p class="text-sm text-slate-400 mb-3">Show every total in one currency. Converted at the rate on each trade date; open positions at the latest rate. The same switch is in the sidebar.</p>
+    <form method="post" action="/prefs" class="set-inline">
+      <input type="hidden" name="next" value="/settings">
+      <div class="inline-flex flex-wrap rounded-lg overflow-hidden border border-slate-700" role="group" aria-label="Display currency">
+        {% for c in currency_choices %}
+        <button name="currency" value="{{ c }}" class="px-3 py-1.5 text-sm min-h-[38px] {{ 'bg-indigo-600 text-white' if display_currency == c else 'text-slate-400 hover:text-white hover:bg-slate-800' }}">{{ c }}</button>
+        {% endfor %}
+      </div>
+    </form>
+    <p class="text-xs text-slate-500 mt-2">Now showing {{ display_currency }} ({{ display_symbol|trim }}).</p>
   </div>
-  <div class="card p-5">
-    <div class="card-h mb-2">Maintenance</div>
-    <p class="text-sm text-slate-400 mb-3">Rebuild all round-trip trades from stored fills (journal notes, tags and ratings are kept).</p>
-    <div class="flex flex-wrap gap-2">
-      <form method="post" action="/settings/rebuild"><button class="btn btn-s text-xs">Rebuild trades</button></form>
-      <a href="/settings/backup.json" class="btn btn-s text-xs">Download backup (JSON)</a>
-      <form method="post" action="/settings/recompute-excursions"><button class="btn btn-s text-xs" title="Best / worst running P&amp;L during each trade, from the finest available price bars">Recompute MFE/MAE</button></form>
-      <form method="post" action="/settings/companies/refresh"><button class="btn btn-s text-xs" title="Fill company name, sector and industry for symbols that are missing or older than 90 days">Refresh company info</button></form>
-    </div>
-    <p class="text-xs text-slate-500 mt-2" id="company-info">{{ company_stats.cached }} cached, {{ company_stats.missing }} missing (of {{ company_stats.symbols }}). Fetched in the background, kept 90 days. Trading 212 name when the instrument has one, otherwise Yahoo; sector and industry from Yahoo.</p>
-  </div>
-  <div class="card p-5 text-sm text-slate-400">
+  <div class="card p-5 text-sm text-slate-400 min-w-0">
     <div class="card-h mb-2">Environment</div>
     <div>Display timezone: <span class="text-slate-200">{{ s.display_tz }}</span></div>
     <div>Price charts: <span class="text-slate-200">{{ s.price_provider }}</span>{% if s.polygon_api_key %} (Polygon key set){% endif %}</div>
@@ -183,5 +159,119 @@
     <div>Database: <span class="text-slate-200">{{ 'PostgreSQL' if s.database_url.startswith('postgresql') else 'SQLite' }}</span></div>
   </div>
 </div>
+
+<div class="card p-5 mb-4">
+  <div class="card-h mb-2">Account currency, time zone and market</div>
+  <p class="text-sm text-slate-400 mb-3">Each account keeps its own currency, time zone and home market. Existing Schwab accounts are USD / New York / US. Existing trades keep the currency stored on them.</p>
+  {% if acct_rows %}
+  <div class="set-cards">
+    {% for row in acct_rows %}{% set a = row.a %}
+    <form method="post" action="/settings/accounts/{{ a.id }}/meta" class="rounded-lg border border-slate-700/70 p-4 min-w-0">
+      <div class="text-sm text-white mb-2">{{ a.name }} <span class="text-slate-500 text-xs">{{ a.broker }}</span></div>
+      <div class="set-grid">
+        <label class="set-field"><span class="card-h">Currency</span>
+          <select name="currency" class="inp" aria-label="Currency">{% for c in ['USD','EUR','GBP'] %}<option {{ 'selected' if a.currency == c }}>{{ c }}</option>{% endfor %}</select></label>
+        <label class="set-field"><span class="card-h">Time zone</span>
+          <input name="timezone" value="{{ a.timezone }}" class="inp" aria-label="Time zone"></label>
+        <label class="set-field"><span class="card-h">Market</span>
+          <select name="market" class="inp" aria-label="Market">{% for m in ['US','UK','DE','EU'] %}<option {{ 'selected' if a.market == m }}>{{ m }}</option>{% endfor %}</select></label>
+        <div class="set-field"><span class="card-h">Save</span><button class="btn btn-s text-xs">Save</button></div>
+      </div>
+    </form>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="text-slate-500 text-sm">No accounts yet — they're created on first import.</p>
+  {% endif %}
+</div>
+
+{% include "partials/install_app.html" %}
+</section>
+
+<section id="rules" class="stab">
+<div class="card p-5 mb-4">
+  <div class="card-h mb-1">Auto stop</div>
+  <p class="text-sm text-slate-400 mb-3">Per account. A stop you type on a trade always wins. Turning this off clears automatic stops only.</p>
+  {% if acct_rows %}
+  <div class="set-cards cols-2">
+    {% for row in acct_rows %}{% set a = row.a %}
+    <form method="post" action="/settings/accounts/{{ a.id }}/auto-stop" class="rounded-lg border border-slate-700/70 p-3 min-w-0">
+      <div class="text-sm text-white mb-1">{{ a.name }} <span class="text-slate-500 text-xs">{{ a.broker }}</span></div>
+      <label class="text-sm text-slate-300 inline-flex items-start gap-2">
+        <input type="checkbox" name="auto_stop" value="1" class="mt-1" {% if a.auto_stop %}checked{% endif %} onchange="this.form.submit()">
+        <span>Auto stop (5m low of day before entry)</span>
+      </label>
+    </form>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="text-slate-500 text-sm">No accounts yet.</p>
+  {% endif %}
+</div>
+
+{% include "partials/journal_settings.html" %}
+
+{% set ber = be_range() %}
+<div class="card p-5 mb-4" id="break-even">
+  <div class="card-h mb-2">Break-even range</div>
+  <p class="text-sm text-slate-400 mb-3">A closed trade whose net P&amp;L (after fees) is between these amounts counts as <b class="text-slate-200">break-even (BE)</b>:
+    it is left out of wins and losses, win %, gross profit/loss, profit factor and average win/loss, but its P&amp;L still counts in net P&amp;L,
+    expectancy and every total. Days inside the range are shown neutral on the calendar. Default 0 / 0 (only exactly $0.00 is BE).</p>
+  <form method="post" action="/settings/break-even" class="set-grid">
+    <label class="set-field"><span class="card-h">Lower ($, ≤ 0)</span><input name="lower" type="number" step="0.01" max="0" value="{{ '%.2f'|format(ber[0]) }}" class="inp" inputmode="decimal"></label>
+    <label class="set-field"><span class="card-h">Upper ($, ≥ 0)</span><input name="upper" type="number" step="0.01" min="0" value="{{ '%.2f'|format(ber[1]) }}" class="inp" inputmode="decimal"></label>
+    <div class="set-field"><span class="card-h">Save</span><button class="btn btn-s text-xs">Save</button></div>
+    <p class="text-xs text-slate-500 self-end">Now: {{ be_text() }}</p>
+  </form>
+</div>
+</section>
+
+<section id="data" class="stab">
+{% include "partials/backup_settings.html" %}
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4 min-w-0">
+  <div class="card p-5 min-w-0">
+    <div class="card-h mb-2">Sample data</div>
+    <p class="text-sm text-slate-400 mb-3">Generated demo trades for previewing the UI. Always labelled “Sample data” and kept in a separate account.</p>
+    <div class="flex flex-wrap gap-2">
+      <form method="post" action="/settings/demo/load"><button class="btn btn-s text-xs">Load sample data</button></form>
+      {% if has_demo %}<form method="post" action="/settings/demo/clear"><button class="btn btn-d text-xs">Clear sample data</button></form>{% endif %}
+    </div>
+  </div>
+  <div class="card p-5 min-w-0">
+    <div class="card-h mb-2">Maintenance</div>
+    <p class="text-sm text-slate-400 mb-3">Rebuild all round-trip trades from stored fills (journal notes, tags and ratings are kept).</p>
+    <div class="flex flex-wrap gap-2">
+      <form method="post" action="/settings/rebuild"><button class="btn btn-s text-xs">Rebuild trades</button></form>
+      <a href="/settings/backup.json" class="btn btn-s text-xs">Download backup (JSON)</a>
+      <form method="post" action="/settings/recompute-excursions"><button class="btn btn-s text-xs" title="Best / worst running P&amp;L during each trade, from the finest available price bars">Recompute MFE/MAE</button></form>
+      <form method="post" action="/settings/companies/refresh"><button class="btn btn-s text-xs" title="Fill company name, sector and industry for symbols that are missing or older than 90 days">Refresh company info</button></form>
+    </div>
+    <p class="text-xs text-slate-500 mt-2" id="company-info">{{ company_stats.cached }} cached, {{ company_stats.missing }} missing (of {{ company_stats.symbols }}). Fetched in the background, kept 90 days. Trading 212 name when the instrument has one, otherwise Yahoo; sector and industry from Yahoo.</p>
+  </div>
+</div>
+
+<div class="card p-5 mb-4" id="aliases">
+  <div class="card-h mb-2">Ticker renames</div>
+  <p class="text-sm text-slate-400 mb-3">Some brokers keep the old ticker for past trades while thinkorswim shows the new one
+    (e.g. EchoStar SATS → ECHO on 2026-06-24). Fills under either ticker are treated as one symbol, shown under the new ticker.
+    Renames are also detected automatically when an import's fills match synced fills exactly except for the ticker.</p>
+  <div class="set-scroll mb-3">
+  <table class="w-full text-sm tbl"><thead><tr><th>Old</th><th>New</th><th>Source</th><th>Note</th></tr></thead><tbody>
+  {% for r in alias_rows %}<tr class="{{ 'opacity-50 line-through' if r.disabled }}"><td class="text-white">{{ r.old }}</td><td class="text-white">{{ r.new }}</td><td class="text-slate-400">{{ r.origin }}</td><td class="text-slate-500">{{ r.note }}</td></tr>
+  {% else %}<tr><td colspan="4" class="text-slate-500">No renames.</td></tr>{% endfor %}
+  </tbody></table>
+  </div>
+  <form method="post" action="/settings/aliases" class="set-grid">
+    <label class="set-field" style="grid-column: 1 / -1"><span class="card-h">Your aliases (one per line, OLD=NEW; "OLD=" turns off a built-in/detected one)</span>
+      <textarea name="aliases" rows="3" class="inp w-full font-mono text-xs" placeholder="SATS=ECHO">{{ alias_text }}</textarea></label>
+    <div class="set-field"><button class="btn btn-s text-xs">Save &amp; rebuild</button></div>
+  </form>
+</div>
+</section>
+
+<section id="security" class="stab">
+{% include "partials/security_settings.html" %}
+</section>
 </div>
 {% endblock %}

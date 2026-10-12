@@ -312,13 +312,13 @@ def account_meta(account_id: int, request: Request, currency: str = Form("USD"),
         ZoneInfo(tz)
     except Exception:  # noqa: BLE001
         request.session["flash"] = f"Unknown time zone “{tz}” (use e.g. Europe/Dublin)."
-        return RedirectResponse("/settings#accounts", status_code=303)
+        return RedirectResponse("/settings#display", status_code=303)
     if currency.upper() in ("USD", "EUR", "GBP"):
         a.currency = currency.upper()
     a.timezone, a.market = tz, market.upper()[:8]
     db.commit()
     request.session["flash"] = f"{a.name}: {a.currency}, {a.timezone}, market {a.market}. Existing trades keep their stored currency."
-    return RedirectResponse("/settings#accounts", status_code=303)
+    return RedirectResponse("/settings#display", status_code=303)
 
 
 @router.post("/settings/accounts/{account_id}/auto-stop")
@@ -326,7 +326,7 @@ def account_auto_stop(account_id: int, request: Request, auto_stop: str = Form("
     """Per-account 5-minute auto stop. An unchecked box is omitted from the form, which means off."""
     a = db.get(Account, account_id)
     if a is None:
-        return RedirectResponse("/settings#accounts", status_code=303)
+        return RedirectResponse("/settings#rules", status_code=303)
     on = (auto_stop or "").strip().lower() in ("1", "on", "true", "yes")
     a.auto_stop = on
     from app import stops
@@ -338,7 +338,7 @@ def account_auto_stop(account_id: int, request: Request, auto_stop: str = Form("
         n = stops.clear_auto_stops(db, a.id)
         db.commit()
         request.session["flash"] = f"{a.name}: auto stop off. Cleared {n} automatic stop{'s' if n != 1 else ''}."
-    return RedirectResponse("/settings#accounts", status_code=303)
+    return RedirectResponse("/settings#rules", status_code=303)
 
 
 @router.post("/settings/accounts/{account_id}/delete")

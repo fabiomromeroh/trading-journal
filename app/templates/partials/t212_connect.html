@@ -46,13 +46,18 @@
     {% if t212.instruments %}
     <details id="instruments" class="text-xs"><summary class="cursor-pointer text-slate-400">Instruments &amp; price symbols ({{ t212.instruments|length }})</summary>
       <div class="text-slate-500 my-1">Yahoo price symbol per instrument (e.g. VUSA.L, SAP.DE). Leave both fields empty and press Save to restore the automatic mapping. Mapping is derived from the Trading 212 ticker; check any marked “no price symbol”.</div>
-      <table class="w-full tbl"><thead><tr><th>Symbol</th><th>ISIN</th><th>Market</th><th>Ccy</th><th>Price symbol</th><th></th></tr></thead><tbody>
-      {% for i in t212.instruments %}<tr><td colspan="6" class="p-0"><form method="post" action="/settings/brokers/instruments/{{ i.id }}" class="flex items-center gap-2 py-1">
-        <input name="symbol" value="{{ i.symbol if i.user_override else '' }}" placeholder="{{ i.symbol }}" class="inp text-xs w-24">
-        <span class="text-slate-500 w-28 truncate" title="{{ i.name }}">{{ i.isin or '—' }}</span><span class="w-12">{{ i.exchange or '?' }}</span><span class="w-10">{{ i.currency or '' }}</span>
-        <input name="price_symbol" value="{{ i.price_symbol or '' }}" placeholder="{{ 'no price symbol' if not i.price_symbol }}" class="inp text-xs w-28 {{ 'border-amber-500/60' if not i.price_symbol }}">
-        <button class="text-indigo-300">Save</button></form></td></tr>{% endfor %}
-      </tbody></table></details>
+      {% for i in t212.instruments %}
+      <form method="post" action="/settings/brokers/instruments/{{ i.id }}" class="set-grid py-2 border-b border-slate-800/80">
+        <label class="set-field"><span class="card-h">Symbol</span>
+          <input name="symbol" value="{{ i.symbol if i.user_override else '' }}" placeholder="{{ i.symbol }}" class="inp text-xs" aria-label="Symbol"></label>
+        <div class="set-field"><span class="card-h">ISIN · market · ccy</span>
+          <span class="text-slate-400 break-all" title="{{ i.name }}">{{ i.isin or '—' }} · {{ i.exchange or '?' }} · {{ i.currency or '' }}</span></div>
+        <label class="set-field"><span class="card-h">Price symbol</span>
+          <input name="price_symbol" value="{{ i.price_symbol or '' }}" placeholder="{{ 'no price symbol' if not i.price_symbol }}" class="inp text-xs {{ 'border-amber-500/60' if not i.price_symbol }}" aria-label="Price symbol"></label>
+        <div class="set-field"><span class="card-h">Save</span><button class="text-indigo-300 text-left">Save</button></div>
+      </form>
+      {% endfor %}
+      </details>
     {% endif %}
   {% else %}
     {% if not t212.enc_key %}<div class="text-xs text-amber-300">Set TOKEN_ENCRYPTION_KEY on the server before connecting (keys are stored encrypted).</div>{% endif %}

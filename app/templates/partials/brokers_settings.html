@@ -1,9 +1,9 @@
 <div class="card p-5 mb-4" id="brokers">
-  <div class="flex items-center justify-between mb-3"><div class="card-h">Brokers</div>
+  <div class="flex flex-wrap items-center justify-between gap-2 mb-3"><div class="card-h">Brokers</div>
     <span class="text-xs text-slate-500">One journal for every account · switch account and currency in the header</span></div>
-  <div class="grid grid-cols-1 lg:grid-cols-3 gap-3">
+  <div class="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3 min-w-0">
     {% for b in broker_cards %}
-    <div class="rounded-lg border border-slate-700/70 p-4" data-broker="{{ b.key }}">
+    <div class="rounded-lg border border-slate-700/70 p-4 min-w-0" data-broker="{{ b.key }}">
       <div class="flex items-center gap-2">
         <span class="h-2.5 w-2.5 rounded-full {{ 'bg-emerald-400' if b.state == 'connected' else 'bg-amber-400' if b.state == 'needs_login' else 'bg-slate-600' }}"></span>
         <span class="text-white font-medium">{{ b.name }}</span>

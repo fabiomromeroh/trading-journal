@@ -1,7 +1,7 @@
 <div id="journal-settings" class="card p-5 mb-4">
   <div class="card-h mb-1">Journal, stops &amp; R levels</div>
   <p class="text-sm text-slate-400 mb-4">Defaults for the trade page. A stop you type on a trade always wins.</p>
-  <form method="post" action="/settings/journal/save" class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+  <form method="post" action="/settings/journal/save" class="set-pair mb-4">
     <div>
       <label class="text-sm text-slate-300" for="stop_rule">Default stop rule</label>
       <select id="stop_rule" name="stop_rule" class="inp w-full mt-1">
@@ -17,14 +17,14 @@
     </div>
     <div>
       <label class="text-sm text-slate-300" for="buf_value">Stop buffer</label>
-      <div class="flex gap-2 mt-1">
-        <input id="buf_value" name="buf_value" inputmode="decimal" class="inp w-28" value="{{ journal_cfg.buffer.value }}">
-        <select name="buf_mode" class="inp"><option value="usd" {{ 'selected' if journal_cfg.buffer.mode == 'usd' }}>$ below the low</option><option value="pct" {{ 'selected' if journal_cfg.buffer.mode == 'pct' }}>% of the low</option></select>
+      <div class="set-inline mt-1">
+        <input id="buf_value" name="buf_value" inputmode="decimal" class="inp" style="flex:1 1 6rem" value="{{ journal_cfg.buffer.value }}" aria-label="Stop buffer">
+        <select name="buf_mode" class="inp" style="flex:2 1 10rem" aria-label="Buffer mode"><option value="usd" {{ 'selected' if journal_cfg.buffer.mode == 'usd' }}>$ below the low</option><option value="pct" {{ 'selected' if journal_cfg.buffer.mode == 'pct' }}>% of the low</option></select>
       </div>
       <label class="flex items-center gap-2 text-sm text-slate-300 mt-2"><input type="checkbox" name="premarket" {{ 'checked' if journal_cfg.premarket }}> Include premarket bars (default: regular session only)</label>
       <p class="text-[11px] text-slate-500 mt-1">Changing the buffer or premarket recomputes all auto stops; manual stops are never touched.</p>
     </div>
-    <div class="md:col-span-2 flex flex-wrap gap-2"><button class="btn btn-p text-xs">Save</button></div>
+    <div class="set-field" style="grid-column: 1 / -1"><button class="btn btn-p text-xs">Save</button></div>
   </form>
   <form method="get" action="/settings/stops/preview" class="mb-5 flex flex-wrap items-center gap-3">
     <button class="btn btn-s text-xs" {{ 'disabled' if journal_cfg.stop_rule == 'manual' }}>Recompute stops…</button>
@@ -36,8 +36,8 @@
     <div class="space-y-1.5">
       <template x-for="(q, i) in rows" :key="i">
         <div class="flex flex-wrap items-center gap-2">
-          <input x-model="q.label" class="inp flex-1 min-w-[12rem]" aria-label="Question" placeholder="Question">
-          <select x-model="q.type" class="inp text-xs" aria-label="Type"><option value="text">Text box</option><option value="plan">Yes / Partly / No + note</option></select>
+          <input x-model="q.label" class="inp flex-1 min-w-0 basis-full sm:basis-48" aria-label="Question" placeholder="Question">
+          <select x-model="q.type" class="inp text-xs min-w-0 max-w-full" aria-label="Type"><option value="text">Text box</option><option value="plan">Yes / Partly / No + note</option></select>
           <button type="button" class="btn btn-s !px-2 text-xs" @click="up(i)" aria-label="Move up">↑</button>
           <button type="button" class="btn btn-d !px-2 text-xs" @click="del(i)" aria-label="Remove question">✕</button>
         </div>

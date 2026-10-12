@@ -244,7 +244,7 @@ def test_settings_auto_stop_toggle(db):
     assert page.status_code == 200
     assert "Auto stop (5m low of day before entry)" in page.text
     off = c.post(f"/settings/accounts/{t212.id}/auto-stop", data={}, follow_redirects=False)
-    assert off.status_code == 303 and off.headers["location"].endswith("#accounts")
+    assert off.status_code == 303 and off.headers["location"].endswith("#rules")
     db.expire_all()
     assert db.get(Account, t212.id).auto_stop is False
     assert db.get(Trade, auto.id).initial_stop is None

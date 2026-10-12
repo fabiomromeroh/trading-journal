@@ -26,21 +26,21 @@
   {% if t.status.recent %}
   <details class="mb-3 text-xs">
     <summary class="text-slate-400 cursor-pointer">Recent emails</summary>
-    <table class="w-full tbl mt-2"><thead><tr><th>Received</th><th>Status</th><th class="text-right">Fills</th><th>Subject</th><th></th></tr></thead><tbody>
+    <div class="set-scroll"><table class="w-full tbl mt-2"><thead><tr><th>Received</th><th>Status</th><th class="text-right">Fills</th><th>Subject</th><th></th></tr></thead><tbody>
     {% for e in t.status.recent %}<tr>
       <td class="whitespace-nowrap">{{ e.received_at|local_dt('%Y-%m-%d %H:%M:%S') }}</td>
       <td class="{{ 'text-amber-300' if e.status == 'error' else 'text-slate-400' }}">{{ e.status }}</td>
       <td class="text-right">{{ e.fills }}</td>
-      <td class="text-slate-400 truncate max-w-[340px]" title="{{ (e.body or '')[:400] }}">{{ e.subject or '—' }}</td>
+      <td class="text-slate-400 break-all" title="{{ (e.body or '')[:400] }}">{{ e.subject or '—' }}</td>
       <td>{% if e.status == 'fills' %}<form method="post" action="/settings/tos-email/{{ e.id }}/discard" onsubmit="return confirm('Remove the fills this email added (if not yet confirmed by the broker)?')"><button class="text-rose-300">Discard</button></form>{% endif %}</td>
     </tr>{% endfor %}
-    </tbody></table>
+    </tbody></table></div>
   </details>
   {% endif %}
   <div class="text-xs text-slate-500 mb-3">Endpoint: <code>{{ t.url }}</code>
     {% if t.has_token %}· token <code>{{ t.token_hint }}</code> (stored encrypted){% else %}· no token yet{% endif %}</div>
 
-  <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+  <div class="grid grid-cols-1 xl:grid-cols-2 gap-4 min-w-0">
     <div class="text-sm text-slate-300">
       <div class="card-h mb-1">1 · Turn on fill emails in thinkorswim (desktop)</div>
       <ol class="list-decimal ml-5 space-y-0.5 text-slate-400 mb-3">

@@ -1,5 +1,5 @@
 {# Settings > Security. Context: email, email_masked, mail, min_len, default_email #}
-<div id="security" class="card p-5 mb-4 scroll-mt-4">
+<div class="card p-5 mb-4">
   <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
     <div class="card-h">Security</div>
     {% if mail.configured %}<span class="pill bg-emerald-500/15 text-emerald-300" title="{{ mail.note }}">email: {{ mail.provider }}</span>
@@ -14,8 +14,8 @@
   {% elif mail.provider == 'resend' and 'resend.dev' in (mail.sender or '') %}
   <p class="text-xs text-slate-500 mb-3">Sending from Resend's test address: codes only reach the email your Resend account was created with.</p>
   {% endif %}
-  <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-    <form method="post" action="/settings/security/password" class="space-y-2 max-w-md" autocomplete="off">
+  <div class="set-grid">
+    <form method="post" action="/settings/security/password" class="space-y-2 min-w-0" autocomplete="off">
       <div class="text-sm text-white font-medium">Change password</div>
       <p class="text-xs text-slate-500">We email a 6-digit code to <span class="text-slate-300">{{ email_masked }}</span> to confirm. Other sessions are signed out.</p>
       <input type="password" name="current_password" required autocomplete="current-password" placeholder="Current password" class="inp w-full" {{ 'disabled' if not mail.configured }}>
@@ -23,7 +23,7 @@
       <input type="password" name="confirm_password" required minlength="{{ min_len }}" autocomplete="new-password" placeholder="Confirm new password" class="inp w-full" {{ 'disabled' if not mail.configured }}>
       <button class="btn btn-p text-xs" {{ 'disabled' if not mail.configured }}>Email me a code</button>
     </form>
-    <div class="space-y-4 max-w-md">
+    <div class="space-y-4 min-w-0">
       <form method="post" action="/settings/security/email" class="space-y-2">
         <div class="text-sm text-white font-medium">Security email</div>
         <p class="text-xs text-slate-500">Codes for password changes and “Forgot password” go here.</p>
