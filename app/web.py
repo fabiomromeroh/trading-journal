@@ -174,6 +174,11 @@ def apply_trade_filters(stmt, f: Filters):
     return stmt
 
 
+def _attention_marks(db: Session) -> set[str]:
+    from app.adjustments import attention_marks
+    return attention_marks(db)
+
+
 def provisional_trade_ids(db: Session) -> set[int]:
     """Trades containing provisional fills (same-day orders or thinkorswim fill emails whose
     fees haven't posted yet)."""
@@ -218,7 +223,8 @@ def base_context(request: Request, db: Session, **kw) -> dict:
     ctx = {"display_currency": display, "display_symbol": currency.symbol(display), "active_account": cur_f.account_id, "fx_note": fx_note,
            "currency_choices": currency.CHOICES,
            "request": request, "accounts": accounts, "has_demo": has_demo, "banners": banners,
-           "nav": kw.pop("nav", ""), "presets": PRESETS, "provisional_trades": provisional_trade_ids(db)}
+           "nav": kw.pop("nav", ""), "presets": PRESETS, "provisional_trades": provisional_trade_ids(db),
+           "attention_marks": _attention_marks(db)}
     ctx.update(kw)
     return ctx
 

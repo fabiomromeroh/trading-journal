@@ -421,6 +421,10 @@ def import_listing_splits(db, account_id: int, fetch) -> list[str]:
                 raw=json.dumps({"listing_split": True, "price_symbol": inst.price_symbol, "ratio": ratio}),
             )
             db.add(row)
+            from app.adjustments import remember_split
+            remember_split(db, account_id, symbol, when, ratio, source="yahoo",
+                           external_key=f"yahoo:{symbol}:{day}:{ratio:.8g}",
+                           note=f"Split ×{ratio:.6g} ({inst.price_symbol} listing)")
             lines.append(f"{symbol}: split ×{ratio:.6g} on {day}")
         if removed and not lines:
             lines.append(f"{symbol}: estimated split replaced")

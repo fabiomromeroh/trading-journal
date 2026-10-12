@@ -1058,6 +1058,9 @@ class Trading212Source(DataSource):
             div_note = self._import_dividends(db, cl, acct, full)
             recs.extend(extra_api)
             res.fetched = len(recs)
+            from app.adjustments import record_payload
+            record_payload(db, acct.id, SOURCE_KEY, {"history": items, "extra": len(extra_api)},
+                           run_id=ctx.run_id)
             stats = ingest_records(db, acct.id, SOURCE_KEY, recs)
             if csv_recs:
                 from app.corporate import omit_duplicate_corporate
@@ -1067,9 +1070,12 @@ class Trading212Source(DataSource):
             res.inserted, res.merged = stats.inserted, stats.merged
             if newest:
                 set_state(db, CURSOR_STATE, max(newest, parse_ts(cursor) if cursor else newest).isoformat())
-            split_notes = self._listing_splits(db, acct.id)
-            rebuild_trades(db, [acct.id])
             held = self._positions(cl)
+            from app.adjustments import detect_and_apply, t212_positions
+            corp = detect_and_apply(db, acct.id, fetch=self.split_fetch, positions=t212_positions(db, held))
+            split_notes = self._listing_splits(db, acct.id)
+            split_notes = corp + split_notes
+            rebuild_trades(db, [acct.id])
             recon_before = self.reconcile(db, cl, acct, positions=held)
             adjustments = self.apply_adjustments(db, acct, held)
             # The new gap is often the missing split (WMT 3-for-1, CGC 1-for-10). Fetch again

@@ -123,10 +123,14 @@ def commit(batch_id: int, db: Session = Depends(get_db)):
         raise HTTPException(404)
     result = parse(batch.content, batch.file_format)
     records = _csv_records(db, batch, result.records)
+    from app.adjustments import detect_and_apply, record_payload
+    record_payload(db, batch.account_id, batch.file_format, batch.content or "", kind="csv",
+                   filename=batch.filename)
     stats = ingest_records(db, batch.account_id, batch.file_format, records, batch_id=batch.id)
     if getattr(result, "dividends", None):
         from app.dividends import ingest as ingest_divs
         ingest_divs(db, batch.account_id, batch.file_format, result.dividends)
+    detect_and_apply(db, batch.account_id)
     batch.inserted, batch.merged, batch.duplicates = stats.inserted, stats.merged, stats.duplicates
     batch.status, batch.committed_at, batch.content = "committed", utcnow(), None
     if result.warnings:

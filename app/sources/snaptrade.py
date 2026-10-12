@@ -681,9 +681,12 @@ class SnapTradeSource(DataSource):
             _record_cashflows(db, acct.id, acts)
             _snapshot_portfolio(db, client, acct.id, sa, ctx)
             records, ignored = parse_activities(acts)
+            from app.adjustments import detect_and_apply, events_from_activities, record_payload
             from app.dividends import ingest as ingest_divs
+            record_payload(db, acct.id, self.key, acts, run_id=ctx.run_id)
             ingest_divs(db, acct.id, self.key, parse_dividends(acts))
             stats = ingest_records(db, acct.id, self.key, records)
+            corp = detect_and_apply(db, acct.id, broker_events=events_from_activities(acts))
             res.fetched += len(acts)
             res.inserted += stats.inserted
             res.merged += stats.merged
@@ -715,6 +718,8 @@ class SnapTradeSource(DataSource):
                           f"{f' ({o_new} new)' if o_new else ''}, provisional until fees post tomorrow")
             if o_pruned:
                 extra += f"; removed {o_pruned} provisional fill(s) the activity feed did not confirm"
+            if corp:
+                extra += "; " + "; ".join(corp)
             ctx.info(f"{acct.name}: {len(records)} fills fetched ({scope}), {stats.inserted} new, "
                      f"{stats.merged} merged with imports{extra}. "
                      f"SnapTrade data through {through or '?'}.")

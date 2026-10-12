@@ -20,6 +20,7 @@ class SourceStatus:
 class SyncContext:
     trigger: str = "manual"
     log: list[str] = field(default_factory=list)
+    run_id: int | None = None
 
     def info(self, msg: str) -> None:
         self.log.append(msg)

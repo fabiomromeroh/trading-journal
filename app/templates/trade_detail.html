@@ -21,6 +21,7 @@
   {% if t.company and (t.company.sector or t.company.industry) %}<span class="text-xs text-slate-400" title="Sector · industry">{{ t.company.sector or '—' }}{% if t.company.industry %} · {{ t.company.industry }}{% endif %}</span>{% endif %}
   <span class="pill {{ 'bg-emerald-500/15 text-emerald-300' if t.direction == 'LONG' else 'bg-rose-500/15 text-rose-300' }}">{{ t.direction }}</span>
   <span class="pill bg-slate-700/60 text-slate-300">{{ 'Option' if t.asset_type == 'OPTION' else 'Stock' }}</span>
+  {% if (t.account_id ~ ':' ~ t.symbol) in attention_marks %}<a href="/settings#sync-attention" class="pill bg-amber-500/15 text-amber-300">Needs attention</a>{% endif %}
   {% if t.status == 'OPEN' %}<span class="pill bg-sky-500/15 text-sky-300">OPEN</span>{% else %}
   <span class="pill {{ {'WIN': 'bg-emerald-500/15 text-emerald-300', 'LOSS': 'bg-rose-500/15 text-rose-300'}.get(outcome_label(t), 'bg-slate-500/20 text-slate-300') }}" title="{{ be_text() }}">{{ 'BREAK-EVEN' if outcome_label(t) == 'BE' else outcome_label(t) }}</span>{% endif %}
   {% if t.is_demo %}<span class="pill bg-amber-500/20 text-amber-300">SAMPLE DATA</span>{% endif %}
@@ -128,6 +129,9 @@
           <td class="text-right text-slate-400">{% if fx and fx.show %}{{ fx.fill_amount(f, f.fees)|money }} <span class="text-[10px] text-slate-500">({{ f.fees|money(sym=native_symbol) }})</span>{% else %}{{ f.fees|money }}{% endif %}</td>
           <td class="text-xs text-slate-500">{% if f.execution and f.execution.source == 'snaptrade_order' %}<span class="pill bg-amber-500/15 text-amber-300" title="From today's executed order; fees and the final record arrive with tomorrow's SnapTrade transaction">provisional (fees pending)</span>{% else %}{{ f.execution.source if f.execution else '—' }}{% endif %}</td>
         </tr>
+        {% if f.execution and f.execution.kind == 'SPLIT' and not adjustments.get(f.execution.id) %}
+        <tr><td colspan="8" class="text-xs text-slate-400 pb-2">Split ×{{ f.execution.quantity|qty }} on this date. Quantities and prices before the split are adjusted; cost basis is unchanged.</td></tr>
+        {% endif %}
         {% if f.execution and adjustments.get(f.execution.id) %}{% set raw = adjustments[f.execution.id] %}
         <tr><td colspan="8" class="text-xs text-slate-400 pb-2">
           {{ raw.note }}

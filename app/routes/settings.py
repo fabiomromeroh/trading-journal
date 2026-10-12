@@ -68,7 +68,10 @@ def _settings_ctx(request, db, **kw):
             except Exception:  # pragma: no cover - shown as status error instead
                 db.rollback()
     sources = [(s, s.status(db)) for s in all_sources()]
+    from app.adjustments import attention_rows, payload_index
     runs = list(db.scalars(select(SyncRun).order_by(SyncRun.id.desc()).limit(15)))
+    payloads = payload_index(db)
+    attention = attention_rows(db)
     accounts = list(db.scalars(select(Account).order_by(Account.name)))
     acct_rows = []
     for a in accounts:
@@ -82,7 +85,7 @@ def _settings_ctx(request, db, **kw):
     from app.routes.backup import settings_ctx as _backup_ctx
     from app import brokers, companies
     from app.routes.brokers import settings_ctx as _brokers_ctx
-    return base_context(request, db, nav="settings", broker_cards=brokers.cards(db), **_brokers_ctx(db), sources=sources, runs=runs, acct_rows=acct_rows,
+    return base_context(request, db, nav="settings", broker_cards=brokers.cards(db), **_brokers_ctx(db), sources=sources, runs=runs, payloads=payloads, attention=attention, acct_rows=acct_rows,
                         company_stats=companies.stats(db),
                         active_run=running_sync(db), s=s, snaptrade=_snaptrade_ctx(db), **_alias_ctx(db),
                         tos_email=_tos_email_ctx(request, db), **_security_ctx(db), keepawake=keepawake_ctx(), backups=_backup_ctx(request, db), journal_cfg=_journal_ctx(db), **kw)
@@ -130,8 +133,52 @@ def sync_status(run_id: int, request: Request, db: Session = Depends(get_db)):
 
 @router.get("/sync/runs")
 def sync_runs(request: Request, db: Session = Depends(get_db)):
+    from app.adjustments import attention_rows, payload_index
     runs = list(db.scalars(select(SyncRun).order_by(SyncRun.id.desc()).limit(15)))
-    return templates.TemplateResponse(request, "partials/sync_runs.html", {"request": request, "runs": runs})
+    return templates.TemplateResponse(request, "partials/sync_runs.html", {
+        "request": request, "runs": runs, "payloads": payload_index(db), "attention": attention_rows(db),
+        "accounts": list(db.scalars(select(Account).order_by(Account.name)))})
+
+
+@router.get("/settings/sync-payloads/{payload_id}")
+def download_payload(payload_id: int, db: Session = Depends(get_db)):
+    from fastapi import HTTPException
+    from fastapi.responses import Response
+    from app.adjustments import payload_body
+    from app.models import SyncPayload
+    row = db.get(SyncPayload, payload_id)
+    if row is None:
+        raise HTTPException(404, "Sync file not found")
+    body = payload_body(row)
+    return Response(body, media_type=row.content_type, headers={
+        "Content-Disposition": f'attachment; filename="{row.filename}"'})
+
+
+@router.post("/settings/adjustments")
+def add_adjustment(request: Request, account_id: str = Form(""), kind: str = Form("split"),
+                  symbol: str = Form(""), ratio: str = Form(""), new_symbol: str = Form(""),
+                  when: str = Form(""), db: Session = Depends(get_db)):
+    from app.adjustments import ratio_text, save_manual
+    from app.corporate import parse_csv_time
+    acct = db.get(Account, int(account_id)) if account_id.isdigit() else None
+    if acct is None or acct.is_demo:
+        request.session["flash"] = "Pick an account for the adjustment."
+        return RedirectResponse("/settings#sync-attention", status_code=303)
+    parsed = parse_csv_time(when) or parse_csv_time(when + " 12:00:00")
+    try:
+        if parsed is None:
+            raise ValueError("Enter the date.")
+        if kind == "rename":
+            msg = save_manual(db, acct.id, "rename", symbol, parsed, new_symbol=new_symbol)
+        else:
+            msg = save_manual(db, acct.id, "split", symbol, parsed, ratio=ratio_text(ratio))
+    except ValueError as exc:
+        request.session["flash"] = str(exc)
+        return RedirectResponse("/settings#sync-attention", status_code=303)
+    rebuild_trades(db, [acct.id])
+    db.commit()
+    request.session["flash"] = msg
+    return RedirectResponse("/settings#sync-attention", status_code=303)
 
 
 # ---------------------------------------------------------------- Schwab OAuth (optional source)

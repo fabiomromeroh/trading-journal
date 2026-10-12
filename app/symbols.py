@@ -43,6 +43,17 @@ def parse_alias_text(text: str) -> dict[str, str]:
     return out
 
 
+def _stored_renames(db) -> dict[str, str]:
+    """Renames stored on corporate_adjustments (manual and detected)."""
+    from sqlalchemy import select
+    from app.models import CorporateAdjustment
+    rows = db.execute(select(CorporateAdjustment.symbol, CorporateAdjustment.new_symbol).where(
+        CorporateAdjustment.kind == "RENAME",
+        CorporateAdjustment.status == "applied",
+        CorporateAdjustment.new_symbol.is_not(None))).all()
+    return {(old or "").upper(): (new or "").upper() for old, new in rows if old and new}
+
+
 def load_aliases(db) -> dict[str, str]:
     from app.services import get_state
     table = {old: new for old, (new, _d, _n) in BUILTIN.items()}
@@ -51,6 +62,8 @@ def load_aliases(db) -> dict[str, str]:
             table[old] = v["to"] if isinstance(v, dict) else v
     except ValueError:
         pass
+    for old, new in _stored_renames(db).items():
+        table[old] = new
     try:
         for old, new in json.loads(get_state(db, USER_STATE) or "{}").items():
             if new:
@@ -107,6 +120,9 @@ def describe(db) -> list[dict]:
                      "disabled": old in user and not user[old]})
     for old, v in auto.items():
         rows.append({"old": old, "new": v.get("to"), "origin": "detected", "note": v.get("evidence", ""),
+                     "disabled": old in user and not user[old]})
+    for old, new in _stored_renames(db).items():
+        rows.append({"old": old, "new": new, "origin": "corporate action", "note": "applied on sync",
                      "disabled": old in user and not user[old]})
     for old, new in user.items():
         if new:

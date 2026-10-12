@@ -306,6 +306,7 @@ class SchwabApiSource(DataSource):
                                                  s.schwab_chunk_days)))
                 backfill = True
             records: list[ExecRecord] = []
+            raw_txs: list[dict] = []
             earliest = None
             for start, end in windows:
                 try:
@@ -317,9 +318,13 @@ class SchwabApiSource(DataSource):
                     raise
                 earliest = start
                 res.fetched += len(txs)
+                raw_txs.extend(txs)
                 for tx in txs:
                     records.extend(parse_transaction(tx))
+            from app.adjustments import detect_and_apply, events_from_schwab, record_payload
+            record_payload(db, acct.id, self.key, raw_txs, run_id=ctx.run_id)
             stats = ingest_records(db, acct.id, self.key, records)
+            corp = detect_and_apply(db, acct.id, broker_events=events_from_schwab(raw_txs))
             res.inserted += stats.inserted
             res.merged += stats.merged
             st.synced_through = now
@@ -327,7 +332,8 @@ class SchwabApiSource(DataSource):
             if backfill and earliest:
                 st.earliest_reached = earliest
             res.accounts.append(acct.id)
-            ctx.info(f"{acct.name}: {len(records)} executions ({stats.inserted} new, {stats.merged} merged)")
+            extra = ("; " + "; ".join(corp)) if corp else ""
+            ctx.info(f"{acct.name}: {len(records)} executions ({stats.inserted} new, {stats.merged} merged){extra}")
             db.commit()
         return res
 

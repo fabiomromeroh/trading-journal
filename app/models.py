@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 
 from sqlalchemy import (
-    Boolean, Column, Date, DateTime, Float, ForeignKey, Integer, String, Table, Text,
+    Boolean, Column, Date, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Table, Text,
     UniqueConstraint, Index, event, false as sa_false,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -308,6 +308,47 @@ class TradeFill(Base):
     executed_at: Mapped[datetime] = mapped_column(DateTime)
     trade: Mapped[Trade] = relationship(back_populates="fills")
     execution: Mapped[Execution | None] = relationship()
+
+
+class CorporateAdjustment(Base):
+    """A split or ticker rename. Trades are rebuilt from these rows; they are not extra buys or sells.
+
+    ``external_key`` is unique per account, so a later sync updates nothing and never applies twice.
+    ``status`` ``needs_attention`` is a flag, not an adjustment: the ratio or the new ticker is unknown.
+    """
+    __tablename__ = "corporate_adjustments"
+    __table_args__ = (
+        UniqueConstraint("account_id", "external_key", name="uq_cadj_key"),
+        Index("ix_cadj_account_symbol", "account_id", "symbol"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"))
+    symbol: Mapped[str] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(16))  # SPLIT | RENAME | CHECK
+    ratio: Mapped[float | None] = mapped_column(Float)  # new/old shares; 3.0 is a 3-for-1
+    new_symbol: Mapped[str | None] = mapped_column(String(64))
+    effective_on: Mapped[datetime | None] = mapped_column(DateTime)
+    source: Mapped[str] = mapped_column(String(20))  # yahoo | broker | manual
+    external_key: Mapped[str] = mapped_column(String(200))
+    status: Mapped[str] = mapped_column(String(20), default="applied")  # applied | needs_attention
+    note: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class SyncPayload(Base):
+    """Raw records from one sync for one account. Only the latest 50 rows per account are kept."""
+    __tablename__ = "sync_payloads"
+    __table_args__ = (Index("ix_sync_payload_account", "account_id", "id"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"))
+    sync_run_id: Mapped[int | None] = mapped_column(ForeignKey("sync_runs.id", ondelete="SET NULL"))
+    source: Mapped[str] = mapped_column(String(30))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    filename: Mapped[str] = mapped_column(String(120))
+    content_type: Mapped[str] = mapped_column(String(40))
+    gzipped: Mapped[bool] = mapped_column(Boolean, default=False)
+    nbytes: Mapped[int] = mapped_column(Integer, default=0)  # size before compression
+    body: Mapped[bytes] = mapped_column(LargeBinary)
 
 
 class SyncRun(Base):

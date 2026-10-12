@@ -75,7 +75,7 @@ def execute_run(run_id: int, sources=None, send_reminders: bool = False, only: s
     db = dbmod.SessionLocal()
     try:
         run = db.get(SyncRun, run_id)
-        ctx = SyncContext(trigger=run.trigger)
+        ctx = SyncContext(trigger=run.trigger, run_id=run.id)
         sources = sources if sources is not None else all_sources()
         if only:  # per-broker "Sync now"
             sources = [s for s in sources if s.key in only]
