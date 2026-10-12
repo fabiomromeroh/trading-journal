@@ -30,8 +30,24 @@
 <div id="sync-attention" class="mt-4">
   <div class="card-h mb-2">Needs attention</div>
   {% if attention %}
-  <ul class="text-sm text-amber-200/90 space-y-1 mb-3">
-    {% for a in attention %}<li>{{ a.note or a.symbol }}</li>{% endfor %}
+  <ul class="text-sm text-amber-200/90 space-y-2 mb-3">
+    {% for a in attention %}
+    <li>
+      <div>{{ a.note or a.symbol }}</div>
+      {% if a.candidate %}
+      <form method="post" action="/settings/adjustments" class="set-grid text-xs mt-1">
+        <input type="hidden" name="account_id" value="{{ a.account_id }}">
+        <input type="hidden" name="kind" value="{{ a.candidate.kind }}">
+        <input type="hidden" name="symbol" value="{{ a.candidate.symbol }}">
+        <input type="hidden" name="ratio" value="{{ a.candidate.ratio }}">
+        <input type="hidden" name="new_symbol" value="{{ a.candidate.new_symbol }}">
+        <input type="hidden" name="when" value="{{ a.candidate.when }}">
+        <span class="text-slate-400">{{ a.candidate.source }}, {{ a.candidate.when }}</span>
+        <button class="btn btn-s text-xs">Save</button>
+      </form>
+      {% endif %}
+    </li>
+    {% endfor %}
   </ul>
   {% else %}
   <p class="text-xs text-slate-500 mb-3">No ticker is waiting on a split or a rename.</p>

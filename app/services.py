@@ -331,6 +331,9 @@ def ingest_records(db: Session, account_id: int, source: str, records: list[Exec
                             row.currency = rec.currency
                         if rec.raw is not None:
                             row.raw = json.dumps(rec.raw, default=str)
+                    elif source in ("snaptrade", "schwab_api") and rec.raw is not None:
+                        # Keep CUSIP / FIGI / symbol id on the fill so a later sync can see a rename.
+                        row.raw = json.dumps(rec.raw, default=str)
             if row_ := db.scalar(select(Execution).where(
                     Execution.account_id == account_id, Execution.source == source,
                     Execution.external_id == rec.external_id)):

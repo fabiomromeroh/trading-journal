@@ -68,10 +68,10 @@ def _settings_ctx(request, db, **kw):
             except Exception:  # pragma: no cover - shown as status error instead
                 db.rollback()
     sources = [(s, s.status(db)) for s in all_sources()]
-    from app.adjustments import attention_rows, payload_index
+    from app.adjustments import attention_view, payload_index
     runs = list(db.scalars(select(SyncRun).order_by(SyncRun.id.desc()).limit(15)))
     payloads = payload_index(db)
-    attention = attention_rows(db)
+    attention = attention_view(db)
     accounts = list(db.scalars(select(Account).order_by(Account.name)))
     acct_rows = []
     for a in accounts:
@@ -133,10 +133,10 @@ def sync_status(run_id: int, request: Request, db: Session = Depends(get_db)):
 
 @router.get("/sync/runs")
 def sync_runs(request: Request, db: Session = Depends(get_db)):
-    from app.adjustments import attention_rows, payload_index
+    from app.adjustments import attention_view, payload_index
     runs = list(db.scalars(select(SyncRun).order_by(SyncRun.id.desc()).limit(15)))
     return templates.TemplateResponse(request, "partials/sync_runs.html", {
-        "request": request, "runs": runs, "payloads": payload_index(db), "attention": attention_rows(db),
+        "request": request, "runs": runs, "payloads": payload_index(db), "attention": attention_view(db),
         "accounts": list(db.scalars(select(Account).order_by(Account.name)))})
 
 

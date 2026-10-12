@@ -110,21 +110,30 @@ def save_auto(db, detected: dict[str, tuple[str, str]]) -> None:
 
 
 def describe(db) -> list[dict]:
-    """Rows for the Settings page."""
+    """Rows for the Settings page. The same old → new pair is listed once."""
     from app.services import get_state
     user = json.loads(get_state(db, USER_STATE) or "{}")
     auto = json.loads(get_state(db, AUTO_STATE) or "{}")
     rows = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(row: dict) -> None:
+        key = (row["old"], row["new"] or "")
+        if key in seen:
+            return
+        seen.add(key)
+        rows.append(row)
+
     for old, (new, eff, note) in BUILTIN.items():
-        rows.append({"old": old, "new": new, "origin": "built-in", "note": f"{note} (from {eff})",
-                     "disabled": old in user and not user[old]})
+        add({"old": old, "new": new, "origin": "built-in", "note": f"{note} (from {eff})",
+             "disabled": old in user and not user[old]})
     for old, v in auto.items():
-        rows.append({"old": old, "new": v.get("to"), "origin": "detected", "note": v.get("evidence", ""),
-                     "disabled": old in user and not user[old]})
+        add({"old": old, "new": v.get("to"), "origin": "detected", "note": v.get("evidence", ""),
+             "disabled": old in user and not user[old]})
     for old, new in _stored_renames(db).items():
-        rows.append({"old": old, "new": new, "origin": "corporate action", "note": "applied on sync",
-                     "disabled": old in user and not user[old]})
+        add({"old": old, "new": new, "origin": "corporate action", "note": "applied on sync",
+             "disabled": old in user and not user[old]})
     for old, new in user.items():
         if new:
-            rows.append({"old": old, "new": new, "origin": "settings", "note": "", "disabled": False})
+            add({"old": old, "new": new, "origin": "settings", "note": "", "disabled": False})
     return rows

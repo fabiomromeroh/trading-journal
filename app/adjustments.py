@@ -195,10 +195,99 @@ def _clear_flag(db: Session, account_id: int, symbol: str, code: str) -> None:
 def _held_rows(execs) -> dict[str, list]:
     groups: dict[str, list] = {}
     for e in execs:
-        if (e.asset_type or "STOCK") == "OPTION" or " " in (e.symbol or ""):
+        if not _is_stock(e):
             continue
         groups.setdefault((e.symbol or "").upper(), []).append(e)
     return groups
+
+
+def _is_stock(e) -> bool:
+    return (getattr(e, "asset_type", None) or "STOCK") != "OPTION" and " " not in (getattr(e, "symbol", None) or "")
+
+
+def _as_view(e, symbol: str):
+    """Same fill, read as ``symbol``, so a renamed ticker shares one open quantity."""
+    return SimpleNamespace(
+        id=e.id, account_id=e.account_id, external_id=e.external_id, symbol=symbol,
+        side=e.side, quantity=e.quantity, price=e.price, executed_at=e.executed_at,
+        fees=e.fees or 0.0, multiplier=e.multiplier or 1.0, position_effect=e.position_effect,
+        kind=e.kind or "TRADE", time_known=bool(e.time_known), seq=e.seq or 0,
+        instrument_id=e.instrument_id, source=getattr(e, "source", None),
+        description=getattr(e, "description", None), asset_type=getattr(e, "asset_type", "STOCK"),
+        raw=getattr(e, "raw", None))
+
+
+def _canonical_groups(execs, aliases) -> tuple[dict[str, list], dict[str, set[str]]]:
+    from app.symbols import canonical_symbol
+    groups: dict[str, list] = {}
+    members: dict[str, set[str]] = {}
+    for e in execs:
+        if not _is_stock(e):
+            continue
+        raw = (e.symbol or "").upper()
+        canon = canonical_symbol(raw, aliases).upper()
+        groups.setdefault(canon, []).append(_as_view(e, canon))
+        members.setdefault(canon, set()).add(raw)
+    return groups, members
+
+
+def _remap_positions(positions: dict[str, float] | None, aliases) -> dict[str, float] | None:
+    """One broker quantity per current ticker. The larger figure wins when both names were reported."""
+    if positions is None:
+        return None
+    from app.symbols import canonical_symbol
+    out: dict[str, float] = {}
+    for key, qty in positions.items():
+        canon = canonical_symbol((key or "").upper(), aliases).upper()
+        if not canon or canon == "?" or " " in canon:
+            continue
+        out[canon] = max(out.get(canon, 0.0), float(qty))
+    return out
+
+
+def _apply_identity_renames(db: Session, account_id: int, execs) -> list[str]:
+    """Store a rename when the broker identifiers and a real effective date agree."""
+    from app.renames import lookup_rename, detect_pairs
+    lines = []
+    pairs, ambiguous = detect_pairs(db, execs)
+    for item in ambiguous:
+        if _flag(db, account_id, item.symbol, "rename", item.note):
+            lines.append(item.note)
+    for pair in pairs:
+        if pair.isin_conflict or _manual_blocks(db, account_id, pair.old, "RENAME"):
+            continue
+        found = lookup_rename(pair.old, pair.new, proven=pair.proven, db=db)
+        if found is None:
+            # An alias already merges the fills. A catalogue name with no fills and no date is not a guess.
+            if pair.already_aliased or not pair.both_fills:
+                continue
+            note = (f"{pair.old}: same security as {pair.new} ({pair.via}), but no effective date "
+                    f"was found. Enter the date to merge them.")
+            if _flag(db, account_id, pair.old, "rename", note):
+                lines.append(note)
+            continue
+        when, source = found
+        _, created = upsert(
+            db, account_id, key=f"rename:{pair.old}:{pair.new}", symbol=pair.old, kind="RENAME",
+            status="applied", source=source[:20], new_symbol=pair.new, when=when,
+            note=f"{pair.old} renamed to {pair.new} ({source})")
+        if created:
+            lines.append(f"{pair.old} → {pair.new}")
+        _clear_flag(db, account_id, pair.old, "rename")
+    return lines
+
+
+def _buy_totals(execs, aliases) -> dict[str, float]:
+    from app.symbols import canonical_symbol
+    totals: dict[str, float] = {}
+    for e in execs:
+        if str(getattr(e, "external_id", "") or "").startswith("recon:"):
+            continue
+        if not _is_stock(e) or (getattr(e, "kind", None) or "TRADE") != "TRADE" or e.side != "BUY":
+            continue
+        key = canonical_symbol((e.symbol or "").upper(), aliases).upper()
+        totals[key] = totals.get(key, 0.0) + abs(e.quantity or 0.0)
+    return totals
 
 
 def _price_symbol(db: Session, rows) -> str:
@@ -429,14 +518,18 @@ def detect_and_apply(db: Session, account_id: int, *, fetch=None, positions: dic
                 lines.append(f"{sym}: split ×{_ratio_key(ratio)} on {_day_key(when)}")
                 _clear_flag(db, account_id, sym, "ratio")
 
+    lines.extend(_apply_identity_renames(db, account_id, execs))
     lines.extend(materialize(db, account_id))
+    from app.symbols import canonical_symbol, load_aliases
+    aliases = load_aliases(db)
+    positions = _remap_positions(positions, aliases)
     execs = list(db.scalars(select(Execution).where(Execution.account_id == account_id)))
-    groups = _held_rows(execs)
-    wanted = {s.upper() for s in symbols} if symbols is not None else None
+    groups, members = _canonical_groups(execs, aliases)
+    wanted = ({canonical_symbol(s, aliases).upper() for s in symbols} if symbols is not None else None)
     for sym, rows in groups.items():
         if wanted is not None and sym not in wanted:
             continue
-        if not rows or _manual_blocks(db, account_id, sym, "SPLIT"):
+        if not rows or any(_manual_blocks(db, account_id, raw, "SPLIT") for raw in members.get(sym, {sym})):
             continue
         start = min(e.executed_at for e in rows) - timedelta(days=7)
         end = max(e.executed_at for e in rows) + timedelta(days=2)
@@ -458,7 +551,8 @@ def detect_and_apply(db: Session, account_id: int, *, fetch=None, positions: dic
                 # The listing split does not explain the broker quantity. Don't apply it.
                 if abs(journal - broker) > _tol(journal, broker):
                     note = (f"{sym}: a {_ratio_key(ratio)}-for-1 on {_day_key(when)} does not match "
-                            f"the broker ({_fmt(journal)} in the journal, {_fmt(broker)} at the broker).")
+                            f"the broker ({_fmt(journal)} in the journal, {_fmt(broker)} at the broker). "
+                            f"Suggest: split {_ratio_key(ratio)} on {_day_key(when)} (yahoo).")
                     if _flag(db, account_id, sym, "ratio", note):
                         lines.append(note)
                 continue
@@ -471,22 +565,34 @@ def detect_and_apply(db: Session, account_id: int, *, fetch=None, positions: dic
             if created or made is not None:
                 lines.append(f"{sym}: split ×{_ratio_key(ratio)} on {_day_key(when)}")
                 journal = trial
-                _clear_flag(db, account_id, sym, "ratio")
+                for raw in members.get(sym, {sym}):
+                    _clear_flag(db, account_id, raw, "ratio")
 
     if positions is not None:
+        from app.renames import explain_gap
         execs = list(db.scalars(select(Execution).where(Execution.account_id == account_id)))
-        groups = _held_rows(execs)
-        keys = set(groups) | {k.upper() for k in positions}
+        aliases = load_aliases(db)
+        groups, members = _canonical_groups(execs, aliases)
+        bought = _buy_totals(execs, aliases)
+        keys = set(groups) | set(positions)
         for sym in keys:
             if not sym or sym == "?" or " " in sym:
                 continue
-            journal = _open_qty(groups.get(sym, []))
+            rows = groups.get(sym, [])
+            journal = _open_qty(rows)
             broker = float(positions.get(sym, 0.0))
+            raws = members.get(sym, set()) | {sym}
             if abs(journal - broker) <= _tol(journal, broker):
-                _clear_flag(db, account_id, sym, "qty")
+                for raw in raws:
+                    _clear_flag(db, account_id, raw, "qty")
                 continue
-            note = (f"{sym}: quantity still does not match the broker "
-                    f"({_fmt(journal)} in the journal, {_fmt(broker)} at the broker).")
+            raw_groups = _held_rows(execs)
+            comps = [(raw, _open_qty(raw_groups.get(raw, []))) for raw in sorted(members.get(sym) or {sym})]
+            others = {k: v for k, v in bought.items() if k != sym}
+            note = explain_gap(sym, journal, broker, comps, others)
+            for raw in raws:
+                if raw != sym:
+                    _clear_flag(db, account_id, raw, "qty")
             if _flag(db, account_id, sym, "qty", note):
                 lines.append(note)
     db.flush()
@@ -537,10 +643,103 @@ def attention_rows(db: Session) -> list[CorporateAdjustment]:
             CorporateAdjustment.symbol, CorporateAdjustment.id)))
 
 
+_SUGGEST_RENAME = re.compile(
+    r"Suggest: rename ([A-Z0-9.]+) -> ([A-Z0-9.]+) on (\d{4}-\d{2}-\d{2}) \(([^)]+)\)")
+_SUGGEST_SPLIT = re.compile(r"Suggest: split (\S+) on (\d{4}-\d{2}-\d{2}) \(([^)]+)\)")
+_BROKER_QTY = re.compile(r"\(([-0-9.eE+]+) in the journal, ([-0-9.eE+]+) at the broker\)")
+
+
+def _candidate(note: str | None, symbol: str) -> dict | None:
+    m = _SUGGEST_RENAME.search(note or "")
+    if m:
+        return {"kind": "rename", "symbol": m.group(1), "new_symbol": m.group(2), "ratio": "",
+                "when": m.group(3), "source": m.group(4)}
+    m = _SUGGEST_SPLIT.search(note or "")
+    if m:
+        return {"kind": "split", "symbol": symbol, "new_symbol": "", "ratio": m.group(1),
+                "when": m.group(2), "source": m.group(3)}
+    return None
+
+
+def unresolved_attention(db: Session) -> list:
+    """Flags still true after aliases, renames and splits. Reading this does not write.
+
+    Quantity flags on the old and new ticker are one row. When the merged journal quantity
+    matches the broker figure in the note, the row is left out (the sync deletes it later).
+    """
+    from app.renames import explain_gap
+    from app.symbols import canonical_symbol, load_aliases
+
+    rows = attention_rows(db)
+    if not rows:
+        return []
+    aliases = load_aliases(db)
+    qty, other = [], []
+    for row in rows:
+        code = (row.external_key or "").rsplit(":", 1)[-1]
+        (qty if code == "qty" else other).append(row)
+    by_account: dict[int, list] = {}
+    if qty:
+        ids = {r.account_id for r in qty}
+        for aid in ids:
+            by_account[aid] = list(db.scalars(select(Execution).where(Execution.account_id == aid)))
+    grouped: dict[tuple[int, str], list] = {}
+    for row in qty:
+        canon = canonical_symbol(row.symbol or "", aliases).upper()
+        grouped.setdefault((row.account_id, canon), []).append(row)
+    shown = []
+    for (aid, canon), flags in grouped.items():
+        execs = by_account.get(aid, [])
+        groups, members = _canonical_groups(execs, aliases)
+        journal = _open_qty(groups.get(canon, []))
+        brokers = []
+        notes = []
+        for flag in flags:
+            notes.append(flag.note or "")
+            m = _BROKER_QTY.search(flag.note or "")
+            if m:
+                brokers.append(float(m.group(2)))
+        if brokers and abs(journal - max(brokers)) <= _tol(journal, max(brokers)):
+            continue
+        broker = max(brokers) if brokers else 0.0
+        raws = members.get(canon) or {canon}
+        raw_groups = _held_rows(execs)
+        comps = [(raw, _open_qty(raw_groups.get(raw, []))) for raw in sorted(raws)]
+        bought = _buy_totals(execs, aliases)
+        others = {k: v for k, v in bought.items() if k != canon}
+        note = explain_gap(canon, journal, broker, comps, others) if brokers else (flags[0].note or "")
+        blob = " ".join(notes)
+        extra = ""
+        cand = _candidate(blob, canon)
+        if cand and "Suggest:" not in note:
+            if cand["kind"] == "rename":
+                extra = (f" Suggest: rename {cand['symbol']} -> {cand['new_symbol']} "
+                         f"on {cand['when']} ({cand['source']}).")
+            else:
+                extra = f" Suggest: split {cand['ratio']} on {cand['when']} ({cand['source']})."
+        shown.append(SimpleNamespace(
+            note=note + extra, symbol=canon, account_id=aid, candidate=cand, also=sorted(raws),
+            kind="CHECK", status="needs_attention"))
+    for row in other:
+        cand = _candidate(row.note, row.symbol)
+        shown.append(SimpleNamespace(
+            note=row.note, symbol=row.symbol, account_id=row.account_id, candidate=cand, also=[row.symbol],
+            kind=row.kind, status=row.status))
+    shown.sort(key=lambda r: (r.symbol or "", r.account_id or 0))
+    return shown
+
+
+def attention_view(db: Session) -> list:
+    return unresolved_attention(db)
+
+
 def attention_marks(db: Session) -> set[str]:
-    rows = db.execute(select(CorporateAdjustment.account_id, CorporateAdjustment.symbol).where(
-        CorporateAdjustment.status == "needs_attention")).all()
-    return {f"{a}:{s}" for a, s in rows if s}
+    marks = set()
+    for row in unresolved_attention(db):
+        marks.add(f"{row.account_id}:{row.symbol}")
+        for raw in getattr(row, "also", None) or []:
+            marks.add(f"{row.account_id}:{raw}")
+    return marks
 
 
 def t212_positions(db: Session, positions: list[dict] | None) -> dict[str, float] | None:

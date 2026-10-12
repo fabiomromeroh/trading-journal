@@ -216,11 +216,21 @@ def _option(a: dict):
 
 def _slim(a: dict) -> dict:
     o = a.get("option_symbol") if isinstance(a.get("option_symbol"), dict) else {}
-    return {"snaptrade_id": a.get("id"), "external_reference_id": a.get("external_reference_id"),
-            "type": a.get("type"), "option_type": a.get("option_type"), "description": a.get("description"),
-            "symbol": _ticker(a), "option": o.get("ticker"), "units": a.get("units"), "price": a.get("price"),
-            "amount": a.get("amount"), "fee": a.get("fee"), "trade_date": a.get("trade_date"),
-            "settlement_date": a.get("settlement_date")}
+    sym = a.get("symbol") if isinstance(a.get("symbol"), dict) else {}
+    out = {"snaptrade_id": a.get("id"), "external_reference_id": a.get("external_reference_id"),
+           "type": a.get("type"), "option_type": a.get("option_type"), "description": a.get("description"),
+           "symbol": _ticker(a), "option": o.get("ticker"), "units": a.get("units"), "price": a.get("price"),
+           "amount": a.get("amount"), "fee": a.get("fee"), "trade_date": a.get("trade_date"),
+           "settlement_date": a.get("settlement_date")}
+    # Identifiers that survive a ticker change. Absent on older payloads; never invent them.
+    figi = sym.get("figi_code") or sym.get("figi")
+    if figi:
+        out["figi"] = figi
+    if sym.get("cusip"):
+        out["cusip"] = sym.get("cusip")
+    if sym.get("id"):
+        out["symbol_id"] = sym.get("id")
+    return out
 
 
 def parse_activities(activities: list[dict]) -> tuple[list[ExecRecord], Counter]:
