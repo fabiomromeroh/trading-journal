@@ -217,7 +217,6 @@ def test_listing_splits_are_idempotent_and_keep_the_journal(db):
 
 
 def test_adjustment_for_an_oversell_does_not_become_a_short(db):
-    """A missing receipt stays a gap. The sell is not paired with an invented buy, and it does not open a short."""
     acct = Account(name="Trading 212", broker="trading212", currency="EUR", source_key="t212",
                    market="EU", kind="invest")
     db.add(acct)
@@ -234,14 +233,19 @@ def test_adjustment_for_an_oversell_does_not_become_a_short(db):
     db.flush()
     src = t212.Trading212Source(sleep=lambda *_a, **_k: None)
     lines = src.apply_adjustments(db, acct, [])  # broker is flat; the receipt is missing
-    assert db.scalar(select(Execution).where(Execution.external_id == "recon:SOLV")) is None
-    assert not any("kept" in ln for ln in lines)
+    assert any(ln.startswith("SOLV:") for ln in lines)
+    adj = db.scalar(select(Execution).where(Execution.external_id == "recon:SOLV"))
+    assert adj.side == "BUY" and adj.executed_at < sell_at
     rebuild_trades(db, [acct.id])
-    assert db.scalar(select(Trade)) is None
+    trade = db.scalar(select(Trade))
+    assert trade.direction == "LONG" and trade.status == "CLOSED"
+    assert trade.symbol == "SOLV" and trade.currency == "USD"
+    assert adj.currency == "USD" and adj.instrument_id == inst.id
 
 
-def test_one_rescan_does_not_invent_a_split_for_a_quantity_gap(db):
-    """Broker holds more shares than the fills. A re-scan must not book a Yahoo split or an estimated buy."""
+def test_one_rescan_replaces_a_forward_split_gap_with_the_listing_split(db):
+    """Broker holds the post-split shares and no recon row exists yet. One pass must not
+    leave a zero-cost buy; the listing split is inserted and the estimate is removed."""
     acct = Account(name="Trading 212", broker="trading212", currency="EUR", source_key="t212",
                    market="EU", kind="invest")
     db.add(acct)
@@ -256,16 +260,19 @@ def test_one_rescan_does_not_invent_a_split_for_a_quantity_gap(db):
         currency="USD", instrument_id=inst.id))
     db.flush()
     held = [{"quantity": 3, "instrument": {"ticker": "WMT_US_EQ", "isin": "US9311421039", "currency": "USD"}}]
-    src = t212.Trading212Source(sleep=lambda *_a, **_k: None, split_fetch=lambda *_a, **_k: [(datetime(2024, 2, 26, 14, 30), 3.0)])
-    assert src.apply_adjustments(db, acct, held) == []
+    fetch = lambda *_a, **_k: [(datetime(2024, 2, 26, 14, 30), 3.0)]
+    src = t212.Trading212Source(sleep=lambda *_a, **_k: None, split_fetch=fetch)
+    assert src._listing_splits(db, acct.id) == []
+    src.apply_adjustments(db, acct, held)
+    assert src._listing_splits(db, acct.id)
+    src.apply_adjustments(db, acct, held)
     assert db.scalar(select(Execution).where(Execution.external_id == "recon:WMT")) is None
-    assert db.scalar(select(func.count()).select_from(Execution).where(Execution.kind == "SPLIT")) == 0
+    assert db.scalar(select(func.count()).select_from(Execution).where(Execution.kind == "SPLIT")) == 1
     rebuild_trades(db, [acct.id])
     trade = db.scalar(select(Trade))
     assert trade.symbol == "WMT" and trade.status == "OPEN"
-    assert trade.open_quantity == pytest.approx(1)
-    gaps = src.reconcile(db, None, acct, positions=held)
-    assert any(g.startswith("WMT: missing 2 sh vs Trading 212") for g in gaps)
+    assert trade.open_quantity == pytest.approx(3)
+    assert trade.entry_price == pytest.approx(30)
 
 
 def test_chart_price_off_flags_a_different_scale_only():

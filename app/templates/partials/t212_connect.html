@@ -22,23 +22,8 @@
     {% endif %}
     {% if last.error %}<div class="text-xs text-rose-300 whitespace-pre-line">{{ last.error }}</div>{% endif %}
     {% if last.warning %}<div class="text-xs text-amber-300">{{ last.warning }}</div>{% endif %}
-    {% if t212.broker_qty_known and t212.gaps %}
-    <div class="text-xs text-amber-300">Positions still differ from Trading 212 (not booked as fills):
-      <ul class="list-disc ml-5">
-      {% for g in t212.gaps %}
-        <li>{{ g.symbol }}: {{ g.text }}
-          <form method="post" action="/settings/brokers/t212/find" class="inline" hx-post="/settings/brokers/t212/find" hx-target="#t212-hunt" hx-swap="outerHTML">
-            <input type="hidden" name="symbol" value="{{ g.symbol }}">
-            <button class="text-indigo-300">Find missing executions for {{ g.symbol }}</button>
-          </form>
-        </li>
-      {% endfor %}
-      </ul>
-    </div>
-    {% elif last.reconcile %}
-    <div class="text-xs text-amber-300">Positions still differ from Trading 212:<ul class="list-disc ml-5">{% for r in last.reconcile %}<li>{{ r }}</li>{% endfor %}</ul></div>
-    {% endif %}
-    {% if last.adjustments %}<div class="text-xs text-slate-400">Estimated rows (not Trading 212 executions; kept only if you edited one):<ul class="list-disc ml-5">{% for r in last.adjustments %}<li>{{ r }}</li>{% endfor %}</ul></div>{% endif %}
+    {% if last.reconcile %}<div class="text-xs text-amber-300">Positions still differ from Trading 212:<ul class="list-disc ml-5">{% for r in last.reconcile %}<li>{{ r }}</li>{% endfor %}</ul></div>{% endif %}
+    {% if last.adjustments %}<div class="text-xs text-slate-400">Reconciliation adjustments (estimated, editable on the trade):<ul class="list-disc ml-5">{% for r in last.adjustments %}<li>{{ r }}</li>{% endfor %}</ul></div>{% endif %}
     {% if t212.instrument_issues %}
     <details class="text-xs" open>
       <summary class="cursor-pointer text-amber-300">Instruments to check ({{ t212.instrument_issues|length }})</summary>
@@ -53,16 +38,11 @@
     {% endif %}
     <div class="flex flex-wrap gap-2">
       <button hx-post="/settings/brokers/t212/sync" hx-target="#t212-sync" class="btn btn-p text-xs">Sync Trading 212</button>
-      <button hx-post="/settings/brokers/t212/resync" hx-target="#t212-sync" hx-confirm="Re-scan the full Trading 212 history? Existing fills are kept. Estimated rows you did not edit are removed." class="btn btn-s text-xs">Re-scan full history</button>
-      <form method="post" action="/settings/brokers/t212/find" class="flex items-center gap-1" hx-post="/settings/brokers/t212/find" hx-target="#t212-hunt" hx-swap="outerHTML">
-        <input name="symbol" class="inp text-xs w-24" placeholder="Ticker" aria-label="Ticker to search">
-        <button class="btn btn-s text-xs">Find missing executions</button>
-      </form>
+      <button hx-post="/settings/brokers/t212/resync" hx-target="#t212-sync" hx-confirm="Re-scan the full Trading 212 history? Existing fills are kept." class="btn btn-s text-xs">Re-scan full history</button>
       <form method="post" action="/settings/brokers/t212/test"><button class="btn btn-s text-xs">Test connection</button></form>
       <form method="post" action="/settings/brokers/t212/disconnect" onsubmit="return confirm('Delete the stored API key? Imported trades stay.')"><button class="btn btn-d text-xs">Disconnect</button></form>
     </div>
     <div id="t212-sync"></div>
-    {% with hunt=t212.hunt %}{% include "partials/t212_hunt.html" %}{% endwith %}
     {% if t212.instruments %}
     <details id="instruments" class="text-xs"><summary class="cursor-pointer text-slate-400">Instruments &amp; price symbols ({{ t212.instruments|length }})</summary>
       <div class="text-slate-500 my-1">Yahoo price symbol per instrument (e.g. VUSA.L, SAP.DE). Leave both fields empty and press Save to restore the automatic mapping. Mapping is derived from the Trading 212 ticker; check any marked “no price symbol”.</div>

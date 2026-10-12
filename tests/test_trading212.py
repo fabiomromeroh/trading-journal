@@ -650,10 +650,9 @@ def test_cursor_does_not_stop_on_oldest_first_or_dateless_shape(db, enc):
     assert res.inserted >= 1
     assert db.scalar(select(Execution).where(Execution.external_id == "50")) is not None
     last = t212.last_status(db)
-    assert any(str(ln).startswith("CGC: missing 3 sh vs Trading 212") for ln in last["reconcile_before"])
-    assert any(str(ln).startswith("CGC: missing 3 sh vs Trading 212") for ln in last["reconcile"])
-    assert last["adjustments"] == []
-    assert "broker_qty" in last and last["broker_qty"].get("CGC") == pytest.approx(8)
+    assert any(str(ln).startswith("CGC: missing buys") for ln in last["reconcile_before"])
+    assert last["reconcile"] == []
+    assert any("CGC" in ln for ln in last["adjustments"])
 
 
 def test_full_rescan_ignores_cursor(db, enc):

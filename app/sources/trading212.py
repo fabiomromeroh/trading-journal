@@ -18,15 +18,13 @@ currency stored per execution and fees (taxes) converted to the instrument curre
 account-currency unit (~85, not ~0.85); it is scaled to pounds before use, otherwise fees and P&L are ~100× too big.
 Order-history rows whose fill type is a split, spin-off, distribution, scrip dividend or acquisition are stored as
 corporate actions (they adjust quantity and cost, and they are not discretionary trades). Cash-only history
-(``/equity/history/transactions``), dividend history and the async CSV export are read on a full re-scan when the
-key allows it; none of those calls is repeated until the rate-limit window allows. A quantity the feed still
-cannot explain stays a gap warning. Estimated reconciliation rows are not created. Credentials live
-Fernet-encrypted in app_state (cred:t212; never in backups)."""
+(``/equity/history/transactions``) and the async CSV export are read on a full re-scan when the key allows it;
+neither call is repeated until the rate-limit window allows. A position the feed still cannot explain becomes one
+estimated reconciliation adjustment. Credentials live Fernet-encrypted in app_state (cred:t212; never in backups)."""
 from __future__ import annotations
 
 import json
 import logging
-import threading
 import time as _time
 from collections import Counter
 from dataclasses import dataclass
@@ -39,7 +37,7 @@ from sqlalchemy.orm import Session
 
 from app import markets, symbolmap
 from app.instruments import ExecRecord
-from app.models import Account, Instrument, utcnow
+from app.models import Account, Instrument, Trade, utcnow
 from app.services import get_state, ingest_records, rebuild_trades, set_state
 from app.sources.base import DataSource, SourceResult, SourceStatus, SyncContext
 
@@ -52,13 +50,11 @@ CRED_STATE = "cred:t212"        # encrypted {"key","secret","env"}; the cred: pr
 LAST_STATE = "t212:last"        # last sync / test status (no secrets)
 CURSOR_STATE = "t212:cursor"    # newest filledAt stored (ISO, UTC)
 FULL_STATE = "t212:full"        # "1" → next sync ignores the cursor (one-off full re-scan)
-EXPORT_STATE = "t212:export"    # pending reportId, legacy "done:<id>", or "done2:<id>" after the current CSV parser
-HUNT_STATE = "t212:hunt"        # find-missing progress (no secrets, no raw payloads)
+EXPORT_STATE = "t212:export"    # pending CSV reportId, or "done:<id>" once that file was imported
 RECON_STATE = "t212:recon"      # {"seen": {key: iso}, "dismissed": [key]} — not a secret
 OVERLAP_DAYS = 3
+MAX_EXTRA_PAGES = 40            # transactions on a full re-scan; history is 20 req/min
 PAGE_LIMIT = 50
-SAFETY_PAGES = 500              # loop guard only; a short page must not stop the walk before this
-CSV_DONE = "done2:"             # parser generation that keeps Dividend (DRIP) and split open/close rows
 SOURCE_KEY = "t212"
 SCOPE_HELP = ("In Trading 212 → Settings → API (Beta) create a key and tick: Account data, Portfolio, "
               "History, History - Orders, Metadata. Leave Orders - Execute (and every other trading / Pies "
@@ -118,7 +114,6 @@ class T212Client:
                                  headers={"Accept": "application/json", "User-Agent": "trading-journal/1.0"})
         self.sleep, self.clock = sleep, clock
         self.calls = 0
-        self.page_cap_hit = False
 
     def close(self) -> None:
         self.http.close()
@@ -200,55 +195,20 @@ class T212Client:
 
     def history_pages(self):
         """Yield pages (lists of {order, fill}) newest-first, following nextPagePath."""
-        yield from self.paged("/equity/history/orders")
+        yield from self.paged("/equity/history/orders", limit=None)
 
-    def paged(self, path: str, params: dict | None = None, start: str | None = None, on_page=None):
-        """Follow nextPagePath, then a cursor field, until the feed ends.
-
-        A short page or an empty page does not end the walk while the body still names a next
-        page. ``start`` resumes from a saved nextPagePath. Repeated paths stop the walk. The
-        safety cap is only a loop guard.
-        """
-        nxt = start or path
-        query: dict | None = None if start else {"limit": PAGE_LIMIT, **(params or {})}
-        seen: set[str] = set()
-        n = 0
-        self.page_cap_hit = False
+    def paged(self, path: str, limit: int | None = MAX_EXTRA_PAGES):
+        """Follow nextPagePath. ``limit`` caps pages so a full re-scan cannot sit on the 20/min bucket."""
+        nxt, params, n = path, {"limit": PAGE_LIMIT}, 0
         while nxt:
-            sent_cursor = _cursor_of(nxt, query)
-            key = nxt + "|" + _query_key(query)
-            if key in seen:
-                return
-            seen.add(key)
-            data = self.get(nxt, query)
+            data = self.get(nxt, params)
             n += 1
-            if on_page is not None:
-                on_page(n, nxt)
             if isinstance(data, list):
                 yield data
                 return
-            if not isinstance(data, dict):
-                return
-            items = None
-            for field in ("items", "data", "orders", "transactions", "dividends"):
-                if isinstance(data.get(field), list):
-                    items = data[field]
-                    break
-            yield items or []
-            nxt_path = data.get("nextPagePath") or data.get("nextPage") or ""
-            cursor = data.get("cursor") or data.get("nextCursor")
-            if isinstance(nxt_path, str) and nxt_path.strip():
-                nxt, query = nxt_path.strip(), None
-            elif cursor is not None and str(cursor) != "" and str(cursor) != str(sent_cursor or ""):
-                base = (path if not start else path).split("?")[0]
-                kept = {k: v for k, v in (params or {}).items() if k != "cursor"}
-                kept["cursor"] = cursor
-                kept.setdefault("limit", PAGE_LIMIT)
-                nxt, query = base, kept
-            else:
-                return
-            if n >= SAFETY_PAGES:
-                self.page_cap_hit = True
+            yield data.get("items") or []
+            nxt, params = data.get("nextPagePath"), None
+            if limit is not None and n >= limit:
                 return
 
 
@@ -313,67 +273,12 @@ def _skip_summary(counts: Counter, detail: dict[str, list[str]]) -> str:
     return "; ".join(bits)
 
 
-def fmt_sh(v: float) -> str:
-    """Share count without trailing zeros, enough places for a fractional Trading 212 position."""
-    s = f"{float(v):.8f}".rstrip("0").rstrip(".")
-    return "0" if s in {"", "-0"} else s
-
-
 def _qty_diff(sym: str, theirs: float, journal: float) -> list[str]:
-    delta = theirs - journal
-    if abs(delta) <= 1e-4:
+    if abs(theirs - journal) <= 1e-4:
         return []
-    if delta > 0:
-        return [f"{sym}: missing {fmt_sh(delta)} sh vs Trading 212"]
-    return [f"{sym}: journal has {fmt_sh(-delta)} sh more than Trading 212"]
-
-
-def _cursor_of(path: str, query: dict | None) -> str | None:
-    if query and query.get("cursor") is not None:
-        return str(query.get("cursor"))
-    if "cursor=" in (path or ""):
-        from urllib.parse import parse_qs, urlparse
-        return (parse_qs(urlparse(path).query).get("cursor") or [None])[0]
-    return None
-
-
-def _query_key(query: dict | None) -> str:
-    if not query:
-        return ""
-    return "&".join(f"{k}={query[k]}" for k in sorted(query))
-
-
-def _isin_of(item: dict) -> str:
-    order = _order_of(item)
-    ii = order.get("instrument") if isinstance(order.get("instrument"), dict) else {}
-    if not ii and isinstance(item.get("instrument"), dict):
-        ii = item["instrument"]
-    return (ii.get("isin") or item.get("isin") or "") or ""
-
-
-def field_names(item: dict, limit: int = 40) -> list[str]:
-    """Dotted field names only. Values are never copied."""
-    out: list[str] = []
-
-    def walk(obj, prefix: str, depth: int) -> None:
-        if not isinstance(obj, dict) or depth > 3 or len(out) >= limit:
-            return
-        for k, v in obj.items():
-            if str(k).lower() in _SECRET_KEYS:
-                continue
-            path = f"{prefix}.{k}" if prefix else str(k)
-            if path not in out:
-                out.append(path)
-            if len(out) >= limit:
-                return
-            if isinstance(v, dict):
-                walk(v, path, depth + 1)
-            elif isinstance(v, list) and v and isinstance(v[0], dict):
-                walk(v[0], path + "[]", depth + 1)
-
-    if isinstance(item, dict):
-        walk(item, "", 0)
-    return out[:limit]
+    if theirs > journal:
+        return [f"{sym}: missing buys — Trading 212 holds {theirs:g}, journal {journal:g}"]
+    return [f"{sym}: journal holds more — Trading 212 {theirs:g}, journal {journal:g} (sell, split or transfer?)"]
 
 
 def skip_ticker(item: dict) -> str:
@@ -831,101 +736,38 @@ def _to_record_one(item: dict, inst: Instrument | None, symbol: str | None) -> E
         trade_date=trade_date, currency=ccy, fx_to_account=fx, instrument_id=inst.id if inst is not None else None)
 
 
-# Share-moving transaction types. Cash ledger rows (deposit, fee, cash dividend) stay out.
-_TX_SHARE_KIND = {
-    "DIVIDEND_REINVESTMENT": "DRIP", "REINVESTMENT": "DRIP", "DRIP": "DRIP",
-    "PIE": "TRADE", "PIE_BUY": "TRADE", "PIE_REBALANCE": "TRADE", "AUTOINVEST": "TRADE",
-    "TRANSFER_IN": "TRANSFER", "TRANSFER_OUT": "TRANSFER", "SHARE_TRANSFER": "TRANSFER",
-    "FRACTIONAL": "TRADE", "FRACTIONAL_SHARE": "TRADE",
-}
-_SHARE_DIVIDEND_TYPES = {
-    "REINVESTMENT", "DRIP", "DIVIDEND_REINVESTMENT", "SCRIP", "SCRIP_DIVIDEND",
-    "STOCK", "STOCK_DIVIDEND", "STOCK_DIVIDENDS",
-}
-
-
-def _share_qty(item: dict, *, allow_quantity: bool) -> float | None:
-    """Shares acquired or removed. ``quantity`` on a cash dividend is the holding, so it is opt-in."""
-    for key in ("reinvestedQuantity", "shareQuantity", "shares"):
-        qty = _num(item.get(key))
-        if qty:
-            return qty
-    if allow_quantity:
-        return _num(item.get("quantity"))
-    return None
-
-
 def _transaction_record(item: dict) -> ExecRecord | None:
     """A share-moving transaction, or None for cash (deposit, fee, cash dividend).
 
-    ``/equity/history/transactions`` is a cash ledger. A row is kept only when it names a share
-    type (split, spin-off, distribution, scrip, DRIP, pie buy, transfer) and a ticker and a
-    share quantity. The cash ``amount`` is never turned into shares.
+    ``/equity/history/transactions`` is a cash ledger. A row is kept only when it names a known
+    share type (split, spin-off, distribution, scrip) and a ticker and a share quantity.
     """
     if not isinstance(item, dict):
         return None
     from app.corporate import FILL_KIND
-    typ = _norm_type(item.get("type") or item.get("transactionType"))
-    kind = FILL_KIND.get(typ) or _TX_SHARE_KIND.get(typ)
+    kind = FILL_KIND.get(_norm_type(item.get("type") or item.get("transactionType")))
+    if not kind:
+        return None
     ii = item.get("instrument") if isinstance(item.get("instrument"), dict) else {}
     ticker = item.get("ticker") or ii.get("ticker") or ""
-    qty = _share_qty(item, allow_quantity=kind is not None)
-    if kind is None:
-        return None
-    when_s = item.get("dateTime") or item.get("time") or item.get("createdAt") or item.get("paidOn")
+    qty = _num(item.get("quantity") if item.get("quantity") is not None else item.get("shares"))
+    when_s = item.get("dateTime") or item.get("time") or item.get("createdAt")
     ext = item.get("reference") if item.get("reference") is not None else item.get("id")
     if not ticker or not qty or abs(qty) <= 0 or not when_s or ext is None:
         return None
-    info = markets.parse_t212_ticker(ticker, ii.get("isin") or item.get("isin"))
+    info = markets.parse_t212_ticker(ticker, ii.get("isin"))
     side = (item.get("side") or "").upper()
     if side not in ("BUY", "SELL"):
-        side = "SELL" if typ.endswith("_OUT") or "SELL" in typ else "BUY"
+        side = "BUY"
     when = parse_ts(str(when_s))
     trade_date = when.replace(tzinfo=timezone.utc).astimezone(ZoneInfo(markets.exchange_tz(info.exchange))).date()
-    price = _num(item.get("price") if item.get("price") is not None else item.get("pricePerShare"))
     return ExecRecord(
         external_id="tx:" + str(ext), symbol=info.symbol or ticker, underlying=info.symbol or ticker,
         asset_type="STOCK", side=side, quantity=round(abs(qty), 8),
-        price=price or 0.0,
+        price=_num(item.get("price") or item.get("pricePerShare")) or 0.0,
         executed_at=when, fees=0.0, time_known=True, kind=kind,
         description=kind.replace("_", " ").title(),
-        raw={"ticker": ticker, "type": typ, "isin": ii.get("isin") or item.get("isin"),
-             "price_absent": price is None},
-        trade_date=trade_date, currency=(ii.get("currency") or item.get("currency") or "").upper() or None,
-    )
-
-
-def _dividend_record(item: dict) -> ExecRecord | None:
-    """A dividend reinvestment / scrip row, or None for a cash dividend.
-
-    On ``/equity/history/dividends`` the ``quantity`` field is the shares the cash dividend was
-    paid on, not shares bought. Only an explicit reinvestment type or share field becomes a fill.
-    A missing price is stored as 0 and flagged; it is not estimated.
-    """
-    if not isinstance(item, dict):
-        return None
-    typ = _norm_type(item.get("type") or item.get("dividendType"))
-    reinvested = bool(item.get("reinvested")) or any(x in typ for x in ("REINVEST", "DRIP", "SCRIP"))
-    if typ not in _SHARE_DIVIDEND_TYPES and not reinvested:
-        return None
-    ii = item.get("instrument") if isinstance(item.get("instrument"), dict) else {}
-    ticker = item.get("ticker") or ii.get("ticker") or ""
-    qty = _share_qty(item, allow_quantity=typ in _SHARE_DIVIDEND_TYPES or reinvested)
-    when_s = item.get("paidOn") or item.get("dateTime") or item.get("time")
-    ext = item.get("reference") if item.get("reference") is not None else item.get("id")
-    if not ticker or not qty or abs(qty) <= 0 or not when_s or ext is None:
-        return None
-    isin = ii.get("isin") or item.get("isin")
-    info = markets.parse_t212_ticker(ticker, isin)
-    price = _num(item.get("price") if item.get("price") is not None else item.get("pricePerShare"))
-    when = parse_ts(str(when_s))
-    trade_date = when.replace(tzinfo=timezone.utc).astimezone(ZoneInfo(markets.exchange_tz(info.exchange))).date()
-    return ExecRecord(
-        external_id="div:" + str(ext), symbol=info.symbol or ticker, underlying=info.symbol or ticker,
-        asset_type="STOCK", side="BUY", quantity=round(abs(qty), 8), price=price or 0.0,
-        executed_at=when, fees=0.0, time_known=True, kind="DRIP",
-        description="Dividend reinvestment",
-        raw={"ticker": ticker, "type": typ or "DRIP", "isin": isin, "price_absent": price is None},
+        raw={"ticker": ticker, "type": _norm_type(item.get("type") or item.get("transactionType"))},
         trade_date=trade_date, currency=(ii.get("currency") or item.get("currency") or "").upper() or None,
     )
 
@@ -1158,23 +1000,28 @@ class Trading212Source(DataSource):
             res.inserted, res.merged = stats.inserted, stats.merged
             if newest:
                 set_state(db, CURSOR_STATE, max(newest, parse_ts(cursor) if cursor else newest).isoformat())
+            split_notes = self._listing_splits(db, acct.id)
             rebuild_trades(db, [acct.id])
-            prev_status = last_status(db)
             held = self._positions(cl)
-            recon_before = self.reconcile(db, cl, acct, positions=held) if held is not None else (prev_status.get("reconcile") or [])
-            adjustments = self.retire_estimated(db, acct, held)
+            recon_before = self.reconcile(db, cl, acct, positions=held)
+            adjustments = self.apply_adjustments(db, acct, held)
+            # The new gap is often the missing split (WMT 3-for-1, CGC 1-for-10). Fetch again
+            # in this same re-scan, then drop the estimate if the listing split closed the gap.
+            again = self._listing_splits(db, acct.id)
+            if again:
+                split_notes.extend(again)
+                adjustments = self.apply_adjustments(db, acct, held)
             from app.corporate import audit_instruments
             issues = audit_instruments(db, fix=True)
-            # A removed estimated row must rebuild even when nothing new was booked.
+            # A removed adjustment (the gap closed) must rebuild even when nothing new was booked.
             rebuild_trades(db, [acct.id])
-            recon = self.reconcile(db, cl, acct, positions=held) if held is not None else recon_before
-            broker_qty = _broker_qty(db, acct.id, held) if held is not None else prev_status.get("broker_qty")
+            recon = self.reconcile(db, cl, acct, positions=held)
             sk = _skip_summary(skipped, detail)
             res.message = f"Trading 212: {len(recs)} fills read, {stats.inserted} new" + (f"; skipped {sk} (not trades)" if sk else "")
             if adjustments:
-                res.message += f"; {len(adjustments)} estimated row(s) cleared or flagged"
-            if recon:
-                res.message += f"; {len(recon)} quantity gap(s) not booked as fills"
+                res.message += f"; {len(adjustments)} reconciliation adjustment(s)"
+            if split_notes:
+                res.message += "; " + "; ".join(split_notes)
             if extra_note:
                 res.message += "; " + extra_note
             if full:
@@ -1184,18 +1031,14 @@ class Trading212Source(DataSource):
                 ctx.info(f"Skipped {reason} fields: {', '.join(names)}")
             for line in recon:
                 ctx.info("Trading 212 reconcile: " + line)
-            saved = dict(
-                ok=True, error=None, error_kind=None,
-                synced_at=utcnow().strftime("%Y-%m-%d %H:%M UTC"),
-                account_id=summary.get("id"), currency=acct.currency, fetched=len(recs), inserted=stats.inserted,
-                skipped=dict(skipped), skipped_detail=detail, skip_fields=fields,
-                reconcile=recon, reconcile_before=recon_before, adjustments=adjustments,
-                instrument_issues=[{"symbol": i["symbol"], "notes": i["notes"], "fixed": i["fixed"]}
-                                   for i in issues if i["notes"] or i["fixed"]],
-                api_calls=cl.calls, full=full)
-            if broker_qty is not None:
-                saved["broker_qty"] = broker_qty
-            _save_last(db, reset=True, **saved)
+            _save_last(db, reset=True, ok=True, error=None, error_kind=None,
+                       synced_at=utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+                       account_id=summary.get("id"), currency=acct.currency, fetched=len(recs), inserted=stats.inserted,
+                       skipped=dict(skipped), skipped_detail=detail, skip_fields=fields,
+                       reconcile=recon, reconcile_before=recon_before, adjustments=adjustments,
+                       instrument_issues=[{"symbol": i["symbol"], "notes": i["notes"], "fixed": i["fixed"]}
+                                          for i in issues if i["notes"] or i["fixed"]],
+                       api_calls=cl.calls, full=full)
             db.commit()
             return res
         except T212Error as exc:
@@ -1269,53 +1112,40 @@ class Trading212Source(DataSource):
             return None
 
     def _extra_history(self, db: Session, cl: T212Client, full: bool) -> tuple[list[ExecRecord], list[ExecRecord], str]:
-        """Transactions and dividends (full re-scan) and at most one CSV-export step.
+        """Transactions (full re-scan only) and at most one CSV-export step. Failures are notes, not errors.
 
         History endpoints are about 20 requests/minute and the export endpoints are stricter
-        (POST about 1/30s, GET about 1/min). A feed that is not ready is collected on the next sync.
-        Failures are notes, not errors. Pagination walks every page the body points at.
+        (POST 1/30s, GET 1/min), so this never loops and never runs on an incremental sync
+        except to collect a report requested earlier.
         """
         notes = []
         api: list[ExecRecord] = []
         if full:
-            for path, label, parser in (
-                ("/equity/history/transactions", "transactions", _transaction_record),
-                ("/equity/history/dividends", "dividends", _dividend_record),
-            ):
-                try:
-                    n = 0
-                    for page in cl.paged(path):
-                        n += 1
-                        for item in page:
-                            rec = parser(item)
-                            if isinstance(rec, ExecRecord):
-                                api.append(rec)
-                    if n:
-                        notes.append(f"{label} {n} page(s)")
-                    if cl.page_cap_hit:
-                        notes.append(f"{label} stopped at the page cap")
-                except T212Error as exc:
-                    notes.append(f"{label} unavailable" if exc.kind in ("scope", "api") else f"{label}: {exc.kind}")
+            try:
+                n = 0
+                for page in cl.paged("/equity/history/transactions"):
+                    n += 1
+                    for item in page:
+                        rec = _transaction_record(item)
+                        if isinstance(rec, ExecRecord):
+                            api.append(rec)
+                if n:
+                    notes.append(f"transactions {n} page(s)")
+            except T212Error as exc:
+                notes.append("transactions unavailable" if exc.kind in ("scope", "api") else f"transactions: {exc.kind}")
         csv_recs, export_note = self._csv_export(db, cl, full)
         if export_note:
             notes.append(export_note)
         return api, csv_recs, "; ".join(notes)
 
     def _csv_export(self, db: Session, cl: T212Client, full: bool) -> tuple[list[ExecRecord], str]:
-        """Request or collect one CSV report. A finished file is imported once per parser generation.
-
-        A report marked done by the previous parser (``done:<id>``) is downloaded again so
-        Dividend (DRIP) and split open/close rows that were skipped can be imported. The id dedupes
-        rows already stored. If Trading 212 has not finished the file, the next sync collects it.
-        """
+        """Request or collect one CSV report. A finished file is imported once."""
         from app.importers.t212_csv import parse as parse_csv
         pending = get_state(db, EXPORT_STATE) or ""
-        legacy = pending.startswith("done:") and not pending.startswith(CSV_DONE)
-        done_id = pending[len(CSV_DONE):] if pending.startswith(CSV_DONE) else (pending[5:] if legacy else "")
+        done_id = pending[5:] if pending.startswith("done:") else ""
         report_id = pending if pending.isdigit() else ""
-        reparse = legacy and bool(done_id)
         try:
-            if full and not report_id and not reparse:
+            if full and not report_id:
                 created = cl.post("/equity/history/exports", {
                     "timeFrom": "2016-01-01T00:00:00Z",
                     "timeTo": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -1325,8 +1155,6 @@ class Trading212Source(DataSource):
                 report_id = str((created or {}).get("reportId") or "")
                 if report_id:
                     set_state(db, EXPORT_STATE, report_id)
-            if reparse:
-                report_id = done_id
             if not report_id:
                 return [], ""
             reports = cl.get("/equity/history/exports")
@@ -1336,13 +1164,11 @@ class Trading212Source(DataSource):
             return [], "CSV export returned nothing"
         match = next((r for r in reports if str(r.get("reportId")) == report_id), None)
         if match is None:
-            if reparse:
-                set_state(db, EXPORT_STATE, None)
             return [], "CSV export queued"
         status = (match.get("status") or "")
         if status != "Finished":
             return [], f"CSV export {status or 'queued'} (imported on the next sync)"
-        if done_id == report_id and not reparse:
+        if done_id == report_id:
             return [], ""
         link = match.get("downloadLink") or ""
         if not link:
@@ -1358,7 +1184,7 @@ class Trading212Source(DataSource):
             parsed = parse_csv(text)
         except ValueError:
             return [], "CSV export was not a Trading 212 history file"
-        set_state(db, EXPORT_STATE, CSV_DONE + report_id)
+        set_state(db, EXPORT_STATE, "done:" + report_id)
         return parsed.records, f"CSV export {len(parsed.records)} rows"
 
     def _listing_splits(self, db: Session, account_id: int) -> list[str]:
@@ -1381,648 +1207,185 @@ class Trading212Source(DataSource):
         except Exception:  # noqa: BLE001
             return []
 
-    def retire_estimated(self, db: Session, acct: Account, positions: list[dict] | None) -> list[str]:
-        """Delete auto-created estimated rows. Never create one.
+    def apply_adjustments(self, db: Session, acct: Account, positions: list[dict] | None) -> list[str]:
+        """Book or refresh one estimated adjustment per symbol whose quantity still differs.
 
-        A row you edited is kept and flagged, unless real executions already match Trading 212
-        (then it is removed so the estimate and the real fill are not both kept). ``positions``
-        None means the broker quantity is unknown: unedited estimates are still deleted.
+        Dated the first time the gap is seen. A row the user edited is left alone. A dismissed
+        symbol is not recreated. When the gap closes, an unedited adjustment is removed.
         """
-        from app.corporate import open_state, user_edited
+        import json as _json
+        from collections import defaultdict
 
-        groups, labels, _, _ = _exec_groups(db, acct.id)
-        broker = _broker_qty(db, acct.id, positions) if positions is not None else None
-        lines = []
-        for key, rows in groups.items():
-            est = [e for e in rows if _is_estimated_row(e)]
-            if not est:
+        from app.corporate import (
+            adjustment_when, group_symbols, is_estimated, open_state, plan_adjustment,
+            transfer_matching_basis, user_edited,
+        )
+        from app.models import Execution, Instrument
+        from app.symbols import load_aliases
+
+        if positions is None:
+            return []
+        try:
+            state = _json.loads(get_state(db, RECON_STATE) or "{}")
+        except ValueError:
+            state = {}
+        seen: dict = state.get("seen") or {}
+        dismissed = set(state.get("dismissed") or [])
+        execs = list(db.scalars(select(Execution).where(Execution.account_id == acct.id)))
+        inst_ids = {e.instrument_id for e in execs if e.instrument_id}
+        instruments = {i.id: i for i in db.scalars(select(Instrument).where(Instrument.id.in_(inst_ids or [-1])))}
+        grouped = group_symbols(execs, instruments, load_aliases(db))
+        groups: dict[str, list] = defaultdict(list)
+        for e in execs:
+            groups[(grouped.get(e.id) or _recon_key(e)).upper()].append(e)
+        # Fills and the broker position for one instrument must share a key, including after a rename.
+        inst_group = {}
+        for e in execs:
+            if e.instrument_id and e.id in grouped and not str(e.external_id or "").startswith("recon:"):
+                inst_group[e.instrument_id] = grouped[e.id]
+        broker: dict[str, tuple[float, Instrument | None, str]] = {}
+        for p in positions:
+            ii = p.get("instrument") or {}
+            ticker = ii.get("ticker") or ""
+            inst = None
+            if ticker:
+                inst = db.scalar(select(Instrument).where(Instrument.source_key == SOURCE_KEY,
+                                                          Instrument.broker_symbol == ticker))
+                if inst is None:
+                    inst = symbolmap.upsert_t212(db, ticker, ii.get("isin"), ii.get("name"), ii.get("currency"))
+                    if inst is not None:
+                        instruments[inst.id] = inst
+            parsed = markets.parse_t212_ticker(ticker, ii.get("isin")).symbol if ticker else None
+            # The symbol the fills are grouped under (current instrument symbol, or the history ticker
+            # when the user kept it). New fills are stored under the instrument symbol.
+            sym = (inst_group.get(inst.id) if inst is not None else None) or (inst.symbol if inst else None) or parsed or "?"
+            key = (sym or "?").upper()
+            qty, prev, _prev_sym = broker.get(key, (0.0, inst, sym))
+            broker[key] = (qty + float(p.get("quantity") or 0.0), inst or prev, sym)
+        plans = []
+        keys = set(groups) | set(broker)
+        for key in sorted(keys):
+            rows = groups.get(key) or []
+            journal, avg = open_state(rows)
+            theirs, inst, sym = broker.get(key, (0.0, None, (rows[0].symbol if rows else key)))
+            plan = plan_adjustment(journal, theirs, avg)
+            if plan is None:
                 continue
-            label = labels.get(key) or (rows[0].symbol if rows else key)
-            journal, _avg = open_state(rows)
-            covered = False
-            if broker is not None:
-                covered = abs(journal - float(broker.get(label, 0.0))) <= 1e-4
-            for e in list(est):
-                raw = _load_raw(e)
-                edited = user_edited(raw)
-                if covered or not edited:
-                    db.delete(e)
-                    if covered:
-                        lines.append(f"{e.symbol}: estimated row removed (a real Trading 212 fill covers this position)")
-                    else:
-                        lines.append(f"{e.symbol}: estimated row removed")
-                else:
-                    raw["estimated"] = True
-                    raw["flagged"] = True
-                    raw.setdefault("note", "Estimated row you edited. It is not a Trading 212 execution.")
-                    e.raw = json.dumps(raw)
-                    lines.append(f"{e.symbol}: estimated row kept (you edited it)")
+            plan.update(key=key, symbol=sym, instrument_id=inst.id if inst else None,
+                        journal=journal, broker=theirs,
+                        currency=(inst.currency if inst is not None and inst.currency else None))
+            plans.append(plan)
+        transfer_matching_basis(plans)
+        lines = []
+        now = utcnow().replace(microsecond=0)
+        wanted = {p["key"] for p in plans}
+        for p in plans:
+            if p["key"] in dismissed:
+                lines.append(f"{p['symbol']}: gap left (adjustment removed by you)")
+                continue
+            seen.setdefault(p["key"], now.isoformat())
+            when = adjustment_when(groups.get(p["key"], []), p["side"], p["kind"], now)
+            if p["instrument_id"] is None:
+                for src_row in groups.get(p["key"], []):
+                    if src_row.instrument_id and src_row.instrument_id in instruments:
+                        p["instrument_id"] = src_row.instrument_id
+                        inst = instruments[src_row.instrument_id]
+                        if not p.get("currency") and inst.currency:
+                            p["currency"] = inst.currency
+                        break
+            ext = "recon:" + p["key"]
+            row = next((e for e in groups.get(p["key"], []) if e.external_id == ext and e.source == SOURCE_KEY), None)
+            raw = {}
+            if row is not None and row.raw:
+                try:
+                    raw = _json.loads(row.raw)
+                except ValueError:
+                    raw = {}
+            if row is not None and user_edited(raw):
+                lines.append(f"{p['symbol']}: estimated adjustment kept (you edited it)")
+                continue
+            payload = {"estimated": True, "note": p["note"], "journal_qty": p["journal"], "t212_qty": p["broker"],
+                       "known_on": seen[p["key"]], "applied_at": when.isoformat()}
+            if row is None:
+                row = Execution(
+                    account_id=acct.id, source=SOURCE_KEY, external_id=ext, symbol=p["symbol"],
+                    underlying=p["symbol"], asset_type="STOCK", side=p["side"], quantity=p["quantity"],
+                    price=p["price"], fees=0.0, executed_at=when, time_known=False,
+                    currency=p.get("currency") or acct.currency,
+                    instrument_id=p["instrument_id"],
+                    position_effect="RATIO" if p["ratio"] else ("OPEN" if p["side"] == "BUY" else "CLOSE"),
+                    kind=p["kind"], description=p["note"][:300], multiplier=1.0,
+                )
+                db.add(row)
+            else:
+                row.symbol = row.underlying = p["symbol"]
+                row.side, row.quantity, row.price = p["side"], p["quantity"], p["price"]
+                row.kind = p["kind"]
+                row.position_effect = "RATIO" if p["ratio"] else ("OPEN" if p["side"] == "BUY" else "CLOSE")
+                row.instrument_id = p["instrument_id"] or row.instrument_id
+                if p.get("currency"):
+                    row.currency = p["currency"]
+                row.description = p["note"][:300]
+                row.executed_at = when
+            row.raw = _json.dumps(payload)
+            row.match_key = f"{when.date().isoformat()}|{p['symbol']}|{p['side']}|{p['quantity']:.4f}|{p['price']:.4f}|{p['kind']}"
+            lines.append(f"{p['symbol']}: {p['note']}")
+        for key, rows in groups.items():
+            if key in wanted:
+                continue
+            for e in rows:
+                if e.source == SOURCE_KEY and str(e.external_id).startswith("recon:"):
+                    raw = {}
+                    try:
+                        raw = _json.loads(e.raw or "{}")
+                    except ValueError:
+                        raw = {}
+                    if is_estimated(raw) and not user_edited(raw):
+                        db.delete(e)
+        set_state(db, RECON_STATE, _json.dumps({"seen": seen, "dismissed": sorted(dismissed)}))
         db.flush()
         return lines
 
-    def apply_adjustments(self, db: Session, acct: Account, positions: list[dict] | None) -> list[str]:
-        """Old name. Does not create fills."""
-        return self.retire_estimated(db, acct, positions)
-
     def reconcile(self, db: Session, cl: T212Client, acct: Account, positions: list[dict] | None = None) -> list[str]:
-        """Compare Trading 212 positions with executions. Estimated rows are not part of the journal side.
+        """Compare each T212 open position with journal open trades.
 
-        A renamed listing (fills on DMYI, position still on that instrument) stays one symbol via the
-        ISIN group. The line is a warning. It is not an execution. Pass ``positions`` to avoid a second
-        Portfolio request in the same sync.
+        A renamed listing (history ticker DMYI, journal symbol IONQ) is matched on instrument id so it
+        is not reported as a missing buy. Where Trading 212 still holds more shares, the line says so
+        per ticker. Pass ``positions`` to avoid a second Portfolio request in the same sync.
         """
         if positions is None:
             positions = self._positions(cl)
         if positions is None:
             return []
-        broker = _broker_qty(db, acct.id, positions, upsert=True)
-        journal = _journal_qty(db, acct.id)
-        lines = []
-        for sym in sorted(set(broker) | set(journal), key=str):
-            lines.extend(_qty_diff(sym, broker.get(sym, 0.0), journal.get(sym, 0.0)))
-        return lines
-
-    def run_hunt(self, db: Session, symbol: str, client: T212Client | None = None) -> dict:
-        """List every raw Trading 212 row for one symbol and import real position changes that are missing.
-
-        Orders are read per ticker variant (no type, status or side filter), then transactions,
-        dividends and one CSV-export step. A rate limit pauses; the next Find resumes that ticker.
-        """
-        sym = (symbol or "").strip().upper()
-        data = _hunt_load(db)
-        resume = (data.get("symbol") or "").upper() == sym and data.get("status") in ("running", "paused")
-        if not resume:
-            data = {"symbol": sym, "ticker_index": 0, "tickers": [], "isins": [], "rows": [],
-                    "rows_total": 0, "imported": 0, "seen": [], "pages": 0, "note": ""}
-        data["status"] = "running"
-        data["symbol"] = sym
-        cl = client
-        own = client is None
-        try:
-            if cl is None:
-                cl = self.client(db)
-            acct = db.scalar(select(Account).where(Account.source_key == SOURCE_KEY).order_by(Account.id))
-            if acct is None:
-                acct = self.ensure_account(db, cl.account_summary())
-                db.commit()
-            if data.get("tickers"):
-                tickers = list(data["tickers"])
-                isins = {s.upper() for s in (data.get("isins") or [])}
+        pos = positions
+        opens = list(db.scalars(select(Trade).where(Trade.account_id == acct.id, Trade.status == "OPEN")))
+        by_inst: dict[int, list[Trade]] = {}
+        for t in opens:
+            if t.instrument_id:
+                by_inst.setdefault(t.instrument_id, []).append(t)
+        claimed: set[int] = set()
+        out = []
+        for p in pos or []:
+            ii = p.get("instrument") or {}
+            ticker = ii.get("ticker") or ""
+            inst = db.scalar(select(Instrument).where(Instrument.source_key == SOURCE_KEY,
+                                                      Instrument.broker_symbol == ticker)) if ticker else None
+            parsed = markets.parse_t212_ticker(ticker, ii.get("isin")).symbol if ticker else "?"
+            sym = (inst.symbol if inst else None) or parsed or "?"
+            theirs = float(p.get("quantity") or 0.0)
+            rows: list[Trade] = []
+            if inst is not None and inst.id in by_inst:
+                rows = by_inst[inst.id]
             else:
-                tickers, isins = _ticker_variants(db, cl, sym)
-                data["tickers"] = tickers
-                data["isins"] = sorted(isins)
-            _hunt_store(db, data)
-            known = _known_ids(db, acct.id)
-            cache: dict = {}
-            start = int(data.get("ticker_index") or 0)
-            for i, ticker in enumerate(tickers):
-                if i < start:
-                    continue
-                data["phase"] = "orders"
-                data["ticker_index"] = i
-                data["progress"] = f"Orders for {ticker} (about 20 requests/minute)"
-                _hunt_store(db, data)
-                batch: list[ExecRecord] = []
-                try:
-                    for page in cl.paged("/equity/history/orders", {"ticker": ticker}, on_page=_page_cb(db, data, ticker)):
-                        for item in page:
-                            if not isinstance(item, dict):
-                                continue
-                            if not _hunt_match(item, tickers, isins, sym):
-                                continue
-                            recs = _order_records(db, item, cache)
-                            _remember(data, item, "orders", known, recs)
-                            for rec in recs:
-                                _force_symbol(rec, sym, isins)
-                                if rec.external_id not in known:
-                                    batch.append(rec)
-                                    known.add(rec.external_id)
-                except T212Error as exc:
-                    if exc.kind == "rate":
-                        return _hunt_pause(db, data, i)
-                    data["note"] = f"{ticker}: {exc.kind}"
-                    _hunt_store(db, data)
-                self._take(db, acct, batch, data)
-                data["ticker_index"] = i + 1
-            for path, label, parser in (
-                ("/equity/history/transactions", "transactions", _transaction_record),
-                ("/equity/history/dividends", "dividends", _dividend_record),
-            ):
-                data["phase"] = label
-                data["progress"] = f"{label} (about 20 requests/minute)"
-                _hunt_store(db, data)
-                batch = []
-                try:
-                    for page in cl.paged(path, on_page=_page_cb(db, data, label)):
-                        for item in page:
-                            if not isinstance(item, dict) or not _hunt_match(item, tickers, isins, sym):
-                                continue
-                            rec = parser(item)
-                            recs = [rec] if isinstance(rec, ExecRecord) else []
-                            _remember(data, item, label, known, recs)
-                            for rec in recs:
-                                _force_symbol(rec, sym, isins)
-                                if rec.external_id not in known:
-                                    batch.append(rec)
-                                    known.add(rec.external_id)
-                    if cl.page_cap_hit:
-                        data["note"] = f"{label} stopped at the page cap"
-                except T212Error as exc:
-                    if exc.kind == "rate":
-                        return _hunt_pause(db, data, len(tickers))
-                    data["note"] = f"{label}: {exc.kind}"
-                self._take(db, acct, batch, data)
-            data["phase"] = "csv"
-            data["progress"] = "CSV export (strict rate limit; the next sync collects it if it is not ready)"
-            _hunt_store(db, data)
-            csv_batch: list[ExecRecord] = []
-            try:
-                csv_recs, export_note = self._csv_export(db, cl, True)
-            except T212Error as exc:
-                if exc.kind == "rate":
-                    return _hunt_pause(db, data, len(tickers))
-                csv_recs, export_note = [], exc.kind
-            if export_note:
-                data["note"] = export_note
-            elif (get_state(db, EXPORT_STATE) or "").startswith(CSV_DONE):
-                data["note"] = "CSV report already imported. Upload a newer History export on the Import page if a row is still missing."
-            for rec in csv_recs:
-                _force_symbol(rec, sym, isins)
-                if not _record_match(rec, sym, isins):
-                    continue
-                _remember_record(data, rec, known)
-                if rec.external_id not in known:
-                    csv_batch.append(rec)
-                    known.add(rec.external_id)
-            if csv_batch:
-                from app.corporate import omit_duplicate_corporate
-                csv_batch = omit_duplicate_corporate(db, acct.id, csv_batch)
-                self._take(db, acct, csv_batch, data, source="t212_csv")
-            rebuild_trades(db, [acct.id])
-            held = self._positions(cl)
-            adjustments = self.retire_estimated(db, acct, held)
-            rebuild_trades(db, [acct.id])
-            recon = self.reconcile(db, cl, acct, positions=held) if held is not None else []
-            broker_qty = _broker_qty(db, acct.id, held) if held is not None else None
-            saved = {"reconcile": recon, "adjustments": adjustments}
-            if broker_qty is not None:
-                saved["broker_qty"] = broker_qty
-            _save_last(db, **saved)
-            data["status"] = "done"
-            data["phase"] = "done"
-            data["imported"] = int(data.get("imported") or 0)
-            data["progress"] = f"Done. {data['imported']} new row(s) imported, {data.get('rows_total') or 0} listed."
-            if recon:
-                extra = (" Trading 212 did not return a position-changing row for the remaining gap. "
-                         "Upload History → Export on the Import page.")
-                data["note"] = ((data.get("note") or "") + " " + "; ".join(recon) + "." + extra).strip()
-            _hunt_store(db, data)
-            return data
-        except T212Error as exc:
-            if exc.kind == "rate":
-                return _hunt_pause(db, data, int(data.get("ticker_index") or 0))
-            data["status"] = "error"
-            data["note"] = exc.kind
-            _hunt_store(db, data)
-            return data
-        except Exception:
-            data["status"] = "error"
-            data["note"] = "error"
-            _hunt_store(db, data)
-            return data
-        finally:
-            if own and cl is not None:
-                cl.close()
-
-    def _take(self, db: Session, acct: Account, batch: list[ExecRecord], data: dict, source: str = SOURCE_KEY) -> None:
-        if not batch:
-            return
-        stats = ingest_records(db, acct.id, source, batch)
-        got = {r.external_id for r in batch}
-        for row in data.get("rows") or []:
-            if row.get("ext") in got:
-                row["imported"] = True
-        data["imported"] = int(data.get("imported") or 0) + int(stats.inserted or 0)
-        _hunt_store(db, data)
-
-
-# ------------------------------------------------------------------ quantity gaps (warnings, not fills)
-def _load_raw(e) -> dict:
-    raw = getattr(e, "raw", None)
-    if not raw:
-        return {}
-    try:
-        parsed = json.loads(raw)
-    except (TypeError, ValueError):
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
-
-
-def _is_estimated_row(e) -> bool:
-    return str(getattr(e, "external_id", "") or "").startswith("recon:") or bool(_load_raw(e).get("estimated"))
-
-
-def _exec_groups(db: Session, account_id: int):
-    """Executions grouped by the symbol the journal builds. Estimated rows do not name the group."""
-    from app.corporate import group_symbols
-    from app.models import Execution
-    from app.symbols import load_aliases
-
-    execs = list(db.scalars(select(Execution).where(Execution.account_id == account_id)))
-    inst_ids = {e.instrument_id for e in execs if e.instrument_id}
-    instruments = {i.id: i for i in db.scalars(select(Instrument).where(Instrument.id.in_(inst_ids or [-1])))}
-    grouped = group_symbols(execs, instruments, load_aliases(db))
-    groups: dict[str, list] = {}
-    labels: dict[str, str] = {}
-    inst_group: dict[int, str] = {}
-    for e in execs:
-        name = grouped.get(e.id) or e.symbol or "?"
-        key = name.upper()
-        groups.setdefault(key, []).append(e)
-        if not _is_estimated_row(e):
-            labels.setdefault(key, name)
-            if e.instrument_id and not str(e.external_id or "").startswith("recon:"):
-                inst_group.setdefault(e.instrument_id, key)
-    return groups, labels, inst_group, instruments
-
-
-def _broker_qty(db: Session, account_id: int, positions: list[dict] | None, upsert: bool = True) -> dict[str, float]:
-    """Trading 212 position quantity by the journal symbol. Empty when the broker returned no rows."""
-    if not positions:
-        return {}
-    _groups, labels, inst_group, _instruments = _exec_groups(db, account_id)
-    out: dict[str, float] = {}
-    for p in positions:
-        ii = p.get("instrument") or {}
-        ticker = ii.get("ticker") or ""
-        if not ticker:
-            continue
-        inst = db.scalar(select(Instrument).where(Instrument.source_key == SOURCE_KEY,
-                                                  Instrument.broker_symbol == ticker))
-        if inst is None and upsert:
-            inst = symbolmap.upsert_t212(db, ticker, ii.get("isin"), ii.get("name"), ii.get("currency"))
-        parsed = markets.parse_t212_ticker(ticker, ii.get("isin")).symbol or "?"
-        if inst is not None and inst.id in inst_group:
-            key = inst_group[inst.id]
-        else:
-            sym = (inst.symbol if inst is not None else None) or parsed
-            key = (sym or "?").upper()
-        label = labels.get(key) or (inst.symbol if inst is not None else None) or parsed
-        out[label] = out.get(label, 0.0) + float(p.get("quantity") or 0.0)
-    return out
-
-
-def _journal_qty(db: Session, account_id: int) -> dict[str, float]:
-    """Open quantity from real executions. ``recon:`` rows are ignored, so an estimate cannot hide a gap."""
-    from app.corporate import open_state
-
-    groups, labels, _, _ = _exec_groups(db, account_id)
-    out: dict[str, float] = {}
-    for key, rows in groups.items():
-        qty, _avg = open_state(rows)
-        if abs(qty) <= 1e-8:
-            continue
-        label = labels.get(key) or (rows[0].symbol if rows else key)
-        out[label] = out.get(label, 0.0) + qty
-    return out
-
-
-_OLD_HOLDS = __import__("re").compile(
-    r"^(?P<sym>[^:]+):\s+missing buys\s+[—-]\s+Trading 212 holds\s+(?P<b>[-0-9.eE]+)"
-)
-
-
-def _stored_broker_qty(db: Session) -> tuple[dict[str, float], bool]:
-    """(quantities, known). Missing key means the account has not been reconciled since this change."""
-    st = last_status(db)
-    raw = st.get("broker_qty") if isinstance(st, dict) else None
-    if isinstance(raw, dict):
-        out = {}
-        for k, v in raw.items():
-            try:
-                out[str(k)] = float(v)
-            except (TypeError, ValueError):
+                rows = [t for t in opens if t.symbol in {sym, parsed} and t.id not in claimed]
+            journal = sum((t.open_quantity or 0.0) for t in rows)
+            claimed.update(t.id for t in rows)
+            out.extend(_qty_diff(sym, theirs, journal))
+        left: dict[str, float] = {}
+        for t in opens:
+            if t.id in claimed or abs(t.open_quantity or 0.0) <= 1e-4:
                 continue
-        return out, True
-    out = {}
-    for line in (st.get("reconcile") or []):
-        m = _OLD_HOLDS.search(str(line))
-        if m:
-            out[m.group("sym").strip()] = float(m.group("b"))
-    return out, False
-
-
-def gap_index(db: Session) -> dict:
-    """Symbol → gap dict. Keys include the display symbol and its uppercase form."""
-    broker, _known = _stored_broker_qty(db)
-    journal: dict[str, float] = {}
-    for acct_id in db.scalars(select(Account.id).where(Account.source_key == SOURCE_KEY)):
-        for sym, qty in _journal_qty(db, acct_id).items():
-            journal[sym] = journal.get(sym, 0.0) + float(qty)
-
-    def fold(src: dict[str, float]) -> tuple[dict[str, float], dict[str, str]]:
-        totals: dict[str, float] = {}
-        labels: dict[str, str] = {}
-        for k, v in src.items():
-            key = k.upper()
-            totals[key] = totals.get(key, 0.0) + float(v)
-            labels.setdefault(key, k)
-        return totals, labels
-
-    bmap, blabels = fold(broker)
-    jmap, jlabels = fold(journal)
-    out: dict = {}
-    for key in set(bmap) | set(jmap):
-        b, j = bmap.get(key, 0.0), jmap.get(key, 0.0)
-        delta = b - j
-        if abs(delta) <= 1e-4:
-            continue
-        label = blabels.get(key) or jlabels.get(key) or key
-        if delta > 0:
-            text = f"missing {fmt_sh(delta)} sh vs Trading 212"
-            badge = f"missing {fmt_sh(delta)} sh"
-        else:
-            text = f"journal has {fmt_sh(-delta)} sh more than Trading 212"
-            badge = f"{fmt_sh(-delta)} sh over"
-        detail = (f"Trading 212 holds {fmt_sh(b)} sh; executions add up to {fmt_sh(j)} sh; "
-                  f"{text} — not booked as a fill")
-        row = {"symbol": label, "broker": b, "journal": j, "delta": delta,
-               "text": text, "badge": badge, "detail": detail}
-        out[label] = row
-        out[key] = row
-    return out
-
-
-def gap_rows(db: Session) -> list[dict]:
-    seen: set[str] = set()
-    rows = []
-    for row in gap_index(db).values():
-        if row["symbol"] in seen:
-            continue
-        seen.add(row["symbol"])
-        rows.append(row)
-    rows.sort(key=lambda r: r["symbol"])
-    return rows
-
-
-# ------------------------------------------------------------------ find-missing diagnostic
-_HUNT_ROWS = 300
-_HUNT_VARIANTS = 12
-_WMT_ISIN = "US9311421039"
-
-
-def _hunt_load(db: Session) -> dict:
-    try:
-        data = json.loads(get_state(db, HUNT_STATE) or "{}")
-    except ValueError:
-        data = {}
-    return data if isinstance(data, dict) else {}
-
-
-def _hunt_store(db: Session, data: dict) -> None:
-    data["rows"] = list(data.get("rows") or [])[-_HUNT_ROWS:]
-    data["seen"] = list(dict.fromkeys(data.get("seen") or []))[-4000:]
-    data["updated"] = utcnow().replace(microsecond=0).isoformat()
-    for key in list(data):
-        if str(key).lower() in _SECRET_KEYS:
-            data.pop(key, None)
-    set_state(db, HUNT_STATE, json.dumps(data, default=str))
-    db.commit()
-
-
-def hunt_view(db: Session) -> dict:
-    data = _hunt_load(db)
-    data.setdefault("status", "")
-    data.setdefault("rows", [])
-    data.setdefault("symbol", "")
-    return data
-
-
-def _hunt_pause(db: Session, data: dict, ticker_index: int) -> dict:
-    data["status"] = "paused"
-    data["ticker_index"] = ticker_index
-    data["note"] = "Rate limit. Progress is saved. Press Find again to resume."
-    data["progress"] = data.get("progress") or "Paused"
-    _hunt_store(db, data)
-    return data
-
-
-def start_hunt(symbol: str) -> None:
-    """Background Find. The encrypted key stays in the app database; this only starts the thread."""
-    sym = (symbol or "").strip().upper()
-    if not sym:
-        return
-    from app import db as dbmod
-    db = dbmod.SessionLocal()
-    try:
-        cur = _hunt_load(db)
-        if cur.get("status") == "running":
-            updated = cur.get("updated") or ""
-            try:
-                age = utcnow() - datetime.fromisoformat(updated)
-            except ValueError:
-                age = timedelta(hours=1)
-            if age < timedelta(minutes=15):
-                return
-        if cur.get("status") == "paused" and (cur.get("symbol") or "").upper() == sym:
-            cur["status"] = "running"
-            cur["progress"] = f"Resuming {sym}…"
-            cur["note"] = ""
-            _hunt_store(db, cur)
-        else:
-            _hunt_store(db, {
-                "status": "running", "symbol": sym, "phase": "starting", "ticker_index": 0,
-                "tickers": [], "isins": [], "pages": 0, "progress": f"Looking up {sym}…",
-                "rows": [], "rows_total": 0, "imported": 0, "note": "", "seen": [],
-            })
-    finally:
-        db.close()
-    threading.Thread(target=_hunt_thread, args=(sym,), name="t212-hunt", daemon=True).start()
-
-
-def _hunt_thread(symbol: str) -> None:
-    from app import db as dbmod
-    db = dbmod.SessionLocal()
-    try:
-        Trading212Source().run_hunt(db, symbol)
-    except Exception:
-        try:
-            db.rollback()
-            data = _hunt_load(db)
-            data["status"] = "error"
-            data["note"] = "error"
-            _hunt_store(db, data)
-        except Exception:
-            pass
-    finally:
-        db.close()
-
-
-def _page_cb(db: Session, data: dict, label: str):
-    def on_page(n: int, _path: str) -> None:
-        data["pages"] = int(data.get("pages") or 0) + 1
-        data["progress"] = f"{label} page {n} (about 20 requests/minute)"
-        _hunt_store(db, data)
-    return on_page
-
-
-def _ticker_variants(db: Session, cl: T212Client, sym: str) -> tuple[list[str], set[str]]:
-    """Broker tickers for one company: stored rows, the ISIN, and the usual Trading 212 suffixes."""
-    tickers: list[str] = []
-    isins: set[str] = set()
-    if sym == "WMT":
-        isins.add(_WMT_ISIN)
-
-    def add(ticker: str | None) -> None:
-        t = (ticker or "").strip()
-        if not t or len(tickers) >= _HUNT_VARIANTS:
-            return
-        if t.upper() in {x.upper() for x in tickers}:
-            return
-        tickers.append(t)
-
-    for inst in db.scalars(select(Instrument).where(Instrument.source_key == SOURCE_KEY)):
-        isin = (inst.isin or "").upper()
-        base = markets.parse_t212_ticker(inst.broker_symbol or "", inst.isin).symbol
-        if (inst.symbol or "").upper() == sym or (base or "").upper() == sym or (isin and isin in isins):
-            add(inst.broker_symbol)
-            if isin:
-                isins.add(isin)
-    try:
-        for m in cl.instruments() or []:
-            if not isinstance(m, dict):
-                continue
-            isin = (m.get("isin") or "").upper()
-            ticker = m.get("ticker") or ""
-            base = markets.parse_t212_ticker(ticker, isin or None).symbol
-            if (isin and isin in isins) or (base or "").upper() == sym:
-                if isin:
-                    isins.add(isin)
-                add(ticker)
-    except T212Error:
-        pass
-    add(f"{sym}_US_EQ")
-    add(f"{sym}_EQ")
-    add(sym)
-    add(f"{sym}.US")
-    add(f"{sym}_US")
-    return tickers[:_HUNT_VARIANTS], isins
-
-
-def _hunt_match(item: dict, tickers: list[str], isins: set[str], sym: str) -> bool:
-    ticker = (_ticker_of(item) or item.get("ticker") or "")
-    wanted = {t.upper() for t in tickers}
-    if ticker and ticker.upper() in wanted:
-        return True
-    isin = (_isin_of(item) or item.get("isin") or "")
-    if isin and isin.upper() in isins:
-        return True
-    if ticker:
-        base = markets.parse_t212_ticker(ticker, isin or None).symbol
-        if (base or "").upper() == sym:
-            return True
-    return False
-
-
-def _known_ids(db: Session, account_id: int) -> set[str]:
-    from app.models import Execution
-    return set(db.scalars(select(Execution.external_id).where(
-        Execution.account_id == account_id, Execution.source.in_(("t212", "t212_csv")))))
-
-
-def _order_records(db: Session, item: dict, cache: dict) -> list[ExecRecord]:
-    """Map one history item to fills. Does not call the instruments catalogue (the variant walk already did)."""
-    out = []
-    for row in history_rows(item):
-        order = row.get("order") or {}
-        if not row.get("fill"):
-            continue
-        ii = order.get("instrument") or {}
-        ticker = order.get("ticker") or ii.get("ticker")
-        if not ticker:
-            continue
-        inst = cache.get(ticker)
-        if inst is None:
-            inst = symbolmap.upsert_t212(db, ticker, ii.get("isin"), ii.get("name"), ii.get("currency"))
-            cache[ticker] = inst
-        rec = _to_record_one(row, inst, None)
-        if isinstance(rec, ExecRecord):
-            out.append(rec)
-    return out
-
-
-def _item_ext(item: dict, recs: list[ExecRecord]) -> str:
-    if recs:
-        return recs[0].external_id
-    order = _order_of(item)
-    fill = item.get("fill") if isinstance(item.get("fill"), dict) else {}
-    ext = fill.get("id")
-    if ext is None:
-        ext = item.get("reference") if item.get("reference") is not None else item.get("id")
-    if ext is None:
-        ext = order.get("id")
-    return "" if ext is None else str(ext)
-
-
-def _remember(data: dict, item: dict, source: str, known: set[str], recs: list[ExecRecord]) -> None:
-    ext = _item_ext(item, recs)
-    key = f"{source}:{ext}:{_ticker_of(item) or item.get('ticker') or ''}"
-    seen = data.setdefault("seen", [])
-    if key in seen:
-        return
-    seen.append(key)
-    order = _order_of(item)
-    fill = item.get("fill") if isinstance(item.get("fill"), dict) else {}
-    when = (fill.get("filledAt") or fill.get("dateExecuted") or item.get("dateTime")
-            or item.get("paidOn") or item.get("time") or order.get("dateExecuted") or "")
-    typ = fill.get("type") or order.get("type") or item.get("type") or item.get("transactionType") or ""
-    qty = _num(fill.get("quantity")) if fill else None
-    if qty is None:
-        qty = _num(item.get("reinvestedQuantity") if item.get("reinvestedQuantity") is not None else item.get("quantity"))
-    price = _num(fill.get("price")) if fill else None
-    if price is None:
-        price = _num(item.get("price") if item.get("price") is not None else item.get("pricePerShare"))
-    data.setdefault("rows", []).append({
-        "date": str(when)[:32], "type": str(typ)[:48],
-        "quantity": qty if qty is not None else "", "price": price if price is not None else "",
-        "id": ext[:80], "ext": (recs[0].external_id if recs else ext)[:80],
-        "ticker": str(_ticker_of(item) or item.get("ticker") or "")[:40],
-        "source": source, "fields": field_names(item),
-        "in_journal": bool(recs and recs[0].external_id in known) or (bool(ext) and ext in known),
-        "imported": False,
-    })
-    data["rows_total"] = int(data.get("rows_total") or 0) + 1
-    if len(data["rows"]) > _HUNT_ROWS:
-        data["rows"] = data["rows"][-_HUNT_ROWS:]
-
-
-def _remember_record(data: dict, rec: ExecRecord, known: set[str]) -> None:
-    key = f"csv:{rec.external_id}"
-    seen = data.setdefault("seen", [])
-    if key in seen:
-        return
-    seen.append(key)
-    raw = rec.raw or {}
-    data.setdefault("rows", []).append({
-        "date": rec.executed_at.isoformat(sep=" ", timespec="seconds"),
-        "type": (raw.get("action") or rec.kind or "")[:48],
-        "quantity": rec.quantity, "price": rec.price, "id": rec.external_id[:80], "ext": rec.external_id[:80],
-        "ticker": str(raw.get("ticker") or rec.symbol)[:40], "source": "csv",
-        "fields": sorted(raw.keys()),
-        "in_journal": rec.external_id in known, "imported": False,
-    })
-    data["rows_total"] = int(data.get("rows_total") or 0) + 1
-
-
-def _force_symbol(rec: ExecRecord, sym: str, isins: set[str]) -> None:
-    isin = str((rec.raw or {}).get("isin") or "").upper()
-    if rec.symbol.upper() == sym or (isin and isin in isins):
-        rec.symbol = sym
-        rec.underlying = sym
-
-
-def _record_match(rec: ExecRecord, sym: str, isins: set[str]) -> bool:
-    if (rec.symbol or "").upper() == sym:
-        return True
-    return str((rec.raw or {}).get("isin") or "").upper() in isins
+            left[t.symbol] = left.get(t.symbol, 0.0) + (t.open_quantity or 0.0)
+        for sym in sorted(left):
+            out.extend(_qty_diff(sym, 0.0, left[sym]))
+        return out
