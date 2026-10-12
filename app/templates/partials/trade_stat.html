@@ -10,6 +10,8 @@
 {% if wid == 'net' %}{{ kv('Net P&L' if closed else 'Realized so far', duo(t.net_pnl, fx.net if fx else none, true), t.net_pnl|pnl_class, wrap=both) }}
 {% elif wid == 'gross' %}{{ kv('Gross P&L', duo(t.gross_pnl, fx.gross if fx else none, true), t.gross_pnl|pnl_class, wrap=both) }}
 {% elif wid == 'fees' %}{{ kv('Fees', duo(t.fees, fx.fees if fx else none), wrap=both) }}
+{% elif wid == 'dividend' %}{{ kv('Dividend', duo(tm.dividend, fx.dividend if fx else none, true) if tm.dividend is not none else '—', (tm.dividend|pnl_class) if tm.dividend is not none else '', wrap=both) }}
+{% elif wid == 'pnl_div' %}{{ kv('P&L incl. dividends', duo(tm.pnl_div, fx.pnl_div if fx else none, true) if tm.pnl_div is not none else '—', (tm.pnl_div|pnl_class) if tm.pnl_div is not none else '', wrap=both) }}
 {% elif wid == 'return' %}{{ kv('Return', (t.return_pct|num(2) ~ '%') if t.return_pct is not none else '—', t.return_pct|pnl_class) }}
 {% elif wid == 'entry_exit' %}{{ kv('Entry / exit', px(t.entry_price) ~ ' → ' ~ (px(t.exit_price) if t.exit_price is not none else '—'), title='Prices in ' ~ native_ccy) }}
 {% elif wid == 'entry' %}{{ kv('Avg entry', px(t.entry_price), title='Price in ' ~ native_ccy) }}

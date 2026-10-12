@@ -312,6 +312,40 @@ def parse_activities(activities: list[dict]) -> tuple[list[ExecRecord], Counter]
     return records, ignored
 
 
+DIVIDEND_TYPES = {"DIVIDEND"}
+
+
+def parse_dividends(activities: list[dict]):
+    """SnapTrade DIVIDEND activities -> DividendIn (cash already paid; never estimated)."""
+    from app.dividends import DividendIn
+    out: list[DividendIn] = []
+    for a in activities:
+        t = (a.get("type") or "").upper()
+        if t not in DIVIDEND_TYPES:
+            continue
+        sym = _ticker(a)
+        if a.get("amount") is None:
+            continue
+        amt = _f(a.get("amount"))
+        d = _trade_date(a)
+        ext = a.get("external_reference_id") or a.get("id")
+        if not sym or not ext or d is None:
+            continue
+        ts = local_to_utc_naive(d, time(16, 0), ET)
+        ccy = "USD"
+        cur = a.get("currency")
+        if isinstance(cur, dict):
+            ccy = (cur.get("code") or cur.get("currency") or ccy).upper()
+        elif isinstance(cur, str) and cur.strip():
+            ccy = cur.strip().upper()
+        out.append(DividendIn(
+            external_id=str(ext), symbol=sym, paid_on=ts, amount=amt, currency=ccy,
+            amount_account=amt, account_currency=ccy, quantity=_f(a.get("units")) or None,
+            kind=t, raw=_slim(a),
+        ))
+    return out
+
+
 ORDER_SIDES = {  # order action -> (side, stock position effect)
     "BUY": ("BUY", None), "SELL": ("SELL", "CLOSE"), "SELL_SHORT": ("SELL", "OPEN"),
     "BUY_TO_COVER": ("BUY", "CLOSE"), "BUY_COVER": ("BUY", "CLOSE"),
@@ -647,6 +681,8 @@ class SnapTradeSource(DataSource):
             _record_cashflows(db, acct.id, acts)
             _snapshot_portfolio(db, client, acct.id, sa, ctx)
             records, ignored = parse_activities(acts)
+            from app.dividends import ingest as ingest_divs
+            ingest_divs(db, acct.id, self.key, parse_dividends(acts))
             stats = ingest_records(db, acct.id, self.key, records)
             res.fetched += len(acts)
             res.inserted += stats.inserted

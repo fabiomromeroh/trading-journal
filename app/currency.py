@@ -403,7 +403,8 @@ def presentation(db: Session, t, tm: dict | None = None) -> Presentation:
     native = trade_ccy(t)
     tm = tm or {}
     blank = {k: None for k in ("net", "gross", "fees", "mfe", "mae", "risk", "total_risk", "target",
-                               "unrealized", "open_value", "position_value", "rps", "left", "best")}
+                               "unrealized", "open_value", "position_value", "rps", "left", "best",
+                               "dividend", "pnl_div")}
     if native == display:
         return Presentation(False, blank, {})
     book = RateBook(db)
@@ -421,6 +422,8 @@ def presentation(db: Session, t, tm: dict | None = None) -> Presentation:
 
     unreal = at(tm.get("open_pnl"), latest)
     mfe, gross = m["mfe"], m["gross_pnl"]
+    div_d = tm.get("dividend_fx")
+    pnl_div_d = None if div_d is None else m["net_pnl"] + div_d
     return Presentation(True, {
         "net": m["net_pnl"], "gross": gross, "fees": m["fees"], "mfe": mfe, "mae": m["mae"],
         "risk": at(tm.get("risk"), entry), "total_risk": at(tm.get("total_risk"), entry),
@@ -428,7 +431,7 @@ def presentation(db: Session, t, tm: dict | None = None) -> Presentation:
         "open_value": at(tm.get("open_value"), latest), "position_value": m["cost_basis"],
         "rps": (m["net_pnl"] / qty) if qty and t.status == "CLOSED" else None,
         "left": (mfe - gross) if (mfe is not None and t.status == "CLOSED") else None,
-        "best": mfe,
+        "best": mfe, "dividend": div_d, "pnl_div": pnl_div_d,
     }, conv.rates)
 
 

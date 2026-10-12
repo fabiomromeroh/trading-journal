@@ -49,6 +49,7 @@ HOSTS = {"live": "https://live.trading212.com/api/v0", "demo": "https://demo.tra
 CRED_STATE = "cred:t212"        # encrypted {"key","secret","env"}; the cred: prefix keeps it out of JSON backups
 LAST_STATE = "t212:last"        # last sync / test status (no secrets)
 CURSOR_STATE = "t212:cursor"    # newest filledAt stored (ISO, UTC)
+DIV_CURSOR_STATE = "t212:div_cursor"  # newest dividend paidOn stored (ISO, UTC)
 FULL_STATE = "t212:full"        # "1" → next sync ignores the cursor (one-off full re-scan)
 EXPORT_STATE = "t212:export"    # pending CSV reportId, or "done:<id>" once that file was imported
 RECON_STATE = "t212:recon"      # {"seen": {key: iso}, "dismissed": [key]} — not a secret
@@ -387,6 +388,18 @@ def _infer_side(order: dict, fill: dict, top: dict, qty: float | None) -> str:
     if fv is not None and fv != 0:
         return "SELL" if fv < 0 else "BUY"
     return ""
+
+
+def _div_time(item: dict) -> datetime | None:
+    if not isinstance(item, dict):
+        return None
+    v = item.get("paidOn") or item.get("paid_on") or item.get("date")
+    if not isinstance(v, str) or not v.strip():
+        return None
+    try:
+        return parse_ts(v)
+    except (TypeError, ValueError):
+        return None
 
 
 def item_time(item: dict) -> datetime | None:
@@ -736,6 +749,59 @@ def _to_record_one(item: dict, inst: Instrument | None, symbol: str | None) -> E
         trade_date=trade_date, currency=ccy, fx_to_account=fx, instrument_id=inst.id if inst is not None else None)
 
 
+def dividend_record(item: dict, inst: Instrument | None = None, symbol: str | None = None):
+    """One T212 ``/equity/history/dividends`` (or ``/api/v0/history/dividends``) item -> DividendIn.
+
+    ``amount`` is the net cash paid, in the account's primary currency. GBX per-share figures are
+    stored in pounds. The cash amount itself is never estimated.
+    """
+    from app.dividends import DividendIn, scale_gbx
+    if not isinstance(item, dict):
+        return None
+    ref = item.get("reference")
+    if ref is None or ref == "":
+        ref = item.get("id")
+    paid_s = item.get("paidOn") or item.get("paid_on") or item.get("date")
+    amt = _num(item.get("amount"))
+    if ref is None or not paid_s or amt is None:
+        return None
+    try:
+        when = parse_ts(str(paid_s))
+    except (TypeError, ValueError):
+        return None
+    ii = item.get("instrument") if isinstance(item.get("instrument"), dict) else {}
+    ticker = item.get("ticker") or ii.get("ticker") or ""
+    info = markets.parse_t212_ticker(ticker, ii.get("isin")) if ticker else None
+    sym = symbol or (inst.symbol if inst is not None else None) or (info.symbol if info else None) or ticker
+    if not sym:
+        return None
+    acct_amt, acct_ccy = scale_gbx(amt, item.get("currency"))
+    gps_raw = _num(item.get("grossAmountPerShare") if item.get("grossAmountPerShare") is not None
+                   else item.get("gross_amount_per_share"))
+    instr_ccy = (item.get("tickerCurrency") or ii.get("currency") or "").upper() or None
+    gps, instr_ccy = scale_gbx(gps_raw, instr_ccy)
+    euro = _num(item.get("amountInEuro") if item.get("amountInEuro") is not None else item.get("amount_in_euro"))
+    # Paid cash stays the broker's ``amount`` (account currency). amountInEuro is the same cash
+    # when the account is not EUR. Per-share × quantity is gross, so it is never used as the total.
+    if instr_ccy and acct_ccy and instr_ccy == acct_ccy:
+        amount, currency, fx = acct_amt, acct_ccy, 1.0
+    elif euro is not None and (acct_ccy or "") != "EUR" and instr_ccy == "EUR":
+        amount, currency = euro, "EUR"
+        fx = (acct_amt / euro) if euro else None
+    else:
+        amount, currency, fx = acct_amt, acct_ccy, None
+    return DividendIn(
+        external_id=str(ref), symbol=sym, paid_on=when, amount=float(amount), currency=currency,
+        amount_account=float(acct_amt) if acct_amt is not None else None, account_currency=acct_ccy,
+        fx_to_account=fx, quantity=_num(item.get("quantity")), gross_per_share=gps,
+        kind=(item.get("type") or "DIVIDEND"), ticker=ticker or None,
+        instrument_id=inst.id if inst is not None else None,
+        raw={"ticker": ticker, "type": item.get("type"), "ccy": acct_ccy, "instr_ccy": instr_ccy,
+             "amount": amt, "amountInEuro": euro, "quantity": item.get("quantity"),
+             "grossAmountPerShare": gps_raw},
+    )
+
+
 def _transaction_record(item: dict) -> ExecRecord | None:
     """A share-moving transaction, or None for cash (deposit, fee, cash dividend).
 
@@ -989,6 +1055,7 @@ class Trading212Source(DataSource):
                         break
             recs, skipped, newest, detail, fields = self.convert(db, cl, items)
             extra_api, csv_recs, extra_note = self._extra_history(db, cl, full)
+            div_note = self._import_dividends(db, cl, acct, full)
             recs.extend(extra_api)
             res.fetched = len(recs)
             stats = ingest_records(db, acct.id, SOURCE_KEY, recs)
@@ -1024,6 +1091,8 @@ class Trading212Source(DataSource):
                 res.message += "; " + "; ".join(split_notes)
             if extra_note:
                 res.message += "; " + extra_note
+            if div_note:
+                res.message += "; " + div_note
             if full:
                 res.message += " (full history)"
             ctx.info(res.message)
@@ -1110,6 +1179,73 @@ class Trading212Source(DataSource):
             return cl.positions() or []
         except T212Error:
             return None
+
+    def _import_dividends(self, db: Session, cl: T212Client, acct: Account, full: bool) -> str:
+        """Paid-out cash dividends. Missing scope / 404 is a note, not a failed sync."""
+        from app.dividends import ingest as ingest_divs
+        cursor = None if full else get_state(db, DIV_CURSOR_STATE)
+        threshold = (datetime.fromisoformat(cursor) - timedelta(days=OVERLAP_DAYS)) if cursor else None
+        items: list[dict] = []
+        newest: datetime | None = None
+        try:
+            for page in self._dividend_pages(cl, threshold):
+                items.extend(page)
+        except T212Error as exc:
+            return "dividends unavailable" if exc.kind in ("scope", "api") else f"dividends: {exc.kind}"
+        recs = []
+        cache: dict[str, Instrument | None] = {}
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            ii = it.get("instrument") if isinstance(it.get("instrument"), dict) else {}
+            ticker = it.get("ticker") or ii.get("ticker") or ""
+            inst = cache.get(ticker)
+            if inst is None and ticker:
+                inst = db.scalar(select(Instrument).where(
+                    Instrument.source_key == SOURCE_KEY, Instrument.broker_symbol == ticker))
+                if inst is None:
+                    inst = symbolmap.upsert_t212(db, ticker, ii.get("isin"), ii.get("name"),
+                                                 ii.get("currency") or it.get("tickerCurrency"))
+                cache[ticker] = inst
+            rec = dividend_record(it, inst, None)
+            if rec is None:
+                continue
+            recs.append(rec)
+            newest = rec.paid_on if newest is None or rec.paid_on > newest else newest
+        stats = ingest_divs(db, acct.id, SOURCE_KEY, recs)
+        if newest:
+            prev = parse_ts(cursor) if cursor else newest
+            set_state(db, DIV_CURSOR_STATE, max(newest, prev).isoformat())
+        if not recs and not stats["inserted"] and not stats["merged"]:
+            return "dividends 0"
+        return f"dividends {len(recs)} read, {stats['inserted']} new"
+
+    def _dividend_pages(self, cl: T212Client, threshold: datetime | None):
+        """Yield dividend pages from the current then the legacy path. Stop at the overlap window."""
+        last_err: T212Error | None = None
+        for path in ("/equity/history/dividends", "/api/v0/history/dividends"):
+            try:
+                newest_first: bool | None = None
+                n = 0
+                for page in cl.paged(path, limit=None):
+                    n += 1
+                    if newest_first is None:
+                        times = [t for t in (_div_time(i) for i in page) if t is not None]
+                        newest_first = times[0] > times[-1] if len(times) >= 2 and times[0] != times[-1] else True
+                    yield page
+                    if threshold and newest_first and page:
+                        times = [t for t in (_div_time(i) for i in page) if t is not None]
+                        if times and max(times) < threshold:
+                            return
+                if n:
+                    return
+            except T212Error as exc:
+                last_err = exc
+                if exc.status == 404 or exc.kind in ("scope", "api"):
+                    continue
+                raise
+        if last_err:
+            raise last_err
 
     def _extra_history(self, db: Session, cl: T212Client, full: bool) -> tuple[list[ExecRecord], list[ExecRecord], str]:
         """Transactions (full re-scan only) and at most one CSV-export step. Failures are notes, not errors.

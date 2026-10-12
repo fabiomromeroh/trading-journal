@@ -16,6 +16,7 @@ class UnknownFormat(ValueError):
 class ParseResult:
     format: str
     records: list[ExecRecord] = field(default_factory=list)
+    dividends: list = field(default_factory=list)  # app.dividends.DividendIn cash rows (not trades)
     rows_total: int = 0
     skipped: Counter = field(default_factory=Counter)  # action -> count of non-trade rows
     warnings: list[str] = field(default_factory=list)

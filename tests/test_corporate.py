@@ -192,6 +192,8 @@ Market buy,2024-01-15 15:00:00,US67066G1040,NVDA,NVIDIA,10,100,USD,1,,-1000,0,0,
     split = next(r for r in parsed.records if r.external_id == "S1")
     assert split.position_effect == "RATIO" and split.quantity == pytest.approx(2) and split.price == 0
     assert "DIV1" not in kinds and "C1" not in kinds
+    assert len(parsed.dividends) == 1 and parsed.dividends[0].external_id == "DIV1"
+    assert parsed.dividends[0].amount == pytest.approx(12)
     assert parsed.records[0].symbol == "NVDA" and parsed.records[0].currency == "USD"
     assert classify_csv_action("Currency conversion") is None
 

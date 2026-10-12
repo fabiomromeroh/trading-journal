@@ -30,12 +30,12 @@
 {% for wid in L.order %}{% set w = L.catalog[wid] %}
   <div data-wid="{{ wid }}" data-title="{{ w.title }}" data-group="{{ w.group }}"{% if wid in L.resizable %} data-size="{{ L.sizes[wid] }}"{% endif %} class="relative min-w-0 {{ L.size_class[wid] }}"{{ ' hidden' if wid not in L.shown }}>
     {{ we_tools(L.width_labels if wid in L.resizable else None, L.sizes.get(wid)) }}
-    {% if wid in ('unrealized', 'total_pnl', 'positions') %}<div id="live-{{ wid }}">{% include "partials/dash_widget.html" %}</div>{% else %}{% include "partials/dash_widget.html" %}{% endif %}
+    {% if wid in ('unrealized', 'total_pnl', 'total_return', 'positions') %}<div id="live-{{ wid }}">{% include "partials/dash_widget.html" %}</div>{% else %}{% include "partials/dash_widget.html" %}{% endif %}
   </div>
 {% endfor %}
 </div>
 {% if quotes_on %}
-<div id="live-boot" hx-get="/dashboard/live{% if request.url.query %}?{{ request.url.query }}{% endif %}" hx-trigger="load" hx-swap="none" hx-indicator="#live-unrealized,#live-total_pnl,#live-positions"></div>
+<div id="live-boot" hx-get="/dashboard/live{% if request.url.query %}?{{ request.url.query }}{% endif %}" hx-trigger="load" hx-swap="none" hx-indicator="#live-unrealized,#live-total_pnl,#live-total_return,#live-positions"></div>
 {% endif %}
 {% endif %}
 {% endblock %}

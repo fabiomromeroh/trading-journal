@@ -109,6 +109,19 @@ def parse(text: str, **_) -> ParseResult:
         dates_in_order.append(d)
         key = action.lower()
         if key not in TRADE_ACTIONS:
+            if "dividend" in key:
+                from app.dividends import DividendIn
+                amount = parse_money(amount_s)
+                if amount is None or not symbol:
+                    res.skipped[action or "(blank)"] += 1
+                    continue
+                res.dividends.append(DividendIn(
+                    external_id=f"schwabcsv:{d.isoformat()}:{symbol.upper()}:{amount}:{idx}",
+                    symbol=symbol.upper(), paid_on=local_to_utc_naive(d, time(16, 0), ET),
+                    amount=amount, currency="USD", amount_account=amount, account_currency="USD",
+                    kind=action, raw={"row": cells},
+                ))
+                continue
             res.skipped[action or "(blank)"] += 1
             continue
         side, effect, kind = TRADE_ACTIONS[key]

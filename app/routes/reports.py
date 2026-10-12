@@ -246,5 +246,11 @@ def dashboard_extras(db: Session, trades, tz: str, events=None, cumulative=None)
 
 def trade_extras(db: Session, t: Trade, price: float | None = None) -> dict:
     """Per-trade stats + the stat-bar layout for the trade page."""
+    from app import dividends as dmod
     risk = default_risk(db)
-    return {"tm": metrics.trade_metrics(t, risk, price), "TL": widgets.layout_ctx(db, "trade"), "default_risk": risk}
+    tm = metrics.trade_metrics(t, risk, price)
+    d = dmod.for_trade(db, t)
+    tm["dividend"] = d["native"] if d["count"] else None
+    tm["dividend_fx"] = d["display"] if d["count"] else None
+    tm["pnl_div"] = None if tm["dividend"] is None else (t.net_pnl or 0.0) + tm["dividend"]
+    return {"tm": tm, "TL": widgets.layout_ctx(db, "trade"), "default_risk": risk}

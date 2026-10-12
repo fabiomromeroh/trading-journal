@@ -71,6 +71,13 @@ class FakeT212:
             return httpx.Response(200, json=load("positions.json"))
         if path.endswith("/equity/metadata/instruments"):
             return httpx.Response(200, json=load("instruments.json"))
+        if path.endswith("/history/dividends"):
+            pages = getattr(self, "div_pages", None)
+            if pages is None:
+                return httpx.Response(200, json={"items": [], "nextPagePath": None})
+            cursor = req.url.params.get("cursor")
+            page = pages[1] if cursor and len(pages) > 1 else pages[0]
+            return httpx.Response(200, json=page)
         return httpx.Response(404, json={"message": "not found"})
 
     def transport(self):

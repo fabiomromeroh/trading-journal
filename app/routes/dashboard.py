@@ -67,10 +67,13 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
         "hold": _series(st.by_hold),
         "winloss": [st.wins, st.losses, st.scratches],
     }
+    from app import dividends as dmod
+    display = currency.get_display(db)
+    dividends_total = dmod.total(db, f.account_id, display, f.start, f.end, tz)
     return templates.TemplateResponse(request, "dashboard.html", base_context(
         request, db, nav="dashboard", f=f, st=st, charts=charts,
         recent=recent, has_any=has_any, last_import=last_import, n_all=len(trades),
-        last_sync=last_sync, anchor=anchor, quotes_on=quotes_on,
+        last_sync=last_sync, anchor=anchor, quotes_on=quotes_on, dividends_total=dividends_total,
         **dashboard_extras(db, trades, tz, events=evs, cumulative=st.cumulative)))
 
 
@@ -93,9 +96,12 @@ def dashboard_live(request: Request, db: Session = Depends(get_db)):
     opens = None if (f.start or f.end) else [t for t in trades if t.status == "OPEN"]
     anchor = _anchor(db, f, trades, st, quotes=True, open_trades=opens)
     display = currency.get_display(db)
+    from app import dividends as dmod
+    dividends_total = dmod.total(db, f.account_id, display, f.start, f.end, tz)
     return templates.TemplateResponse(request, "partials/dash_live.html", {
         "request": request, "anchor": anchor, "st": st,
         "display_currency": display, "display_symbol": currency.symbol(display),
+        "dividends_total": dividends_total,
     })
 
 

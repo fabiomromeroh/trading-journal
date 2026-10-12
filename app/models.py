@@ -99,6 +99,34 @@ class FxRate(Base):
     rate: Mapped[float] = mapped_column(Float)
 
 
+class Dividend(Base):
+    """A cash dividend the broker actually paid (never estimated). Amount is the net cash received."""
+    __tablename__ = "dividends"
+    __table_args__ = (
+        UniqueConstraint("account_id", "source", "external_id", name="uq_div_source_ext"),
+        Index("ix_div_account_symbol", "account_id", "symbol"),
+        Index("ix_div_account_paid", "account_id", "paid_on"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"))
+    source: Mapped[str] = mapped_column(String(30))
+    external_id: Mapped[str] = mapped_column(String(200))
+    symbol: Mapped[str] = mapped_column(String(64))
+    paid_on: Mapped[datetime] = mapped_column(DateTime)  # naive UTC
+    amount: Mapped[float] = mapped_column(Float)  # net cash in ``currency`` (GBP not GBX)
+    currency: Mapped[str | None] = mapped_column(String(3))
+    amount_account: Mapped[float | None] = mapped_column(Float)  # net cash in the account currency
+    account_currency: Mapped[str | None] = mapped_column(String(3))
+    fx_to_account: Mapped[float | None] = mapped_column(Float)  # instrument -> account when the broker gave one
+    quantity: Mapped[float | None] = mapped_column(Float)
+    gross_per_share: Mapped[float | None] = mapped_column(Float)  # instrument currency, pounds not pence
+    kind: Mapped[str | None] = mapped_column(String(64))
+    ticker: Mapped[str | None] = mapped_column(String(64))
+    instrument_id: Mapped[int | None] = mapped_column(ForeignKey("instruments.id", ondelete="SET NULL"))
+    raw: Mapped[str | None] = mapped_column(Text)
+    account: Mapped[Account] = relationship()
+
+
 class ImportBatch(Base):
     __tablename__ = "import_batches"
     id: Mapped[int] = mapped_column(primary_key=True)

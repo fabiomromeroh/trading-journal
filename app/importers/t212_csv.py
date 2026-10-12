@@ -110,6 +110,40 @@ def parse(text: str, **_kw) -> ParseResult:
         action = _cell(row, ix["action"])
         mapped = classify_csv_action(action)
         if mapped is None:
+            a = " ".join((action or "").lower().split())
+            if a.startswith("dividend") and "reinvest" not in a:
+                from app.dividends import DividendIn, scale_gbx
+                ext = _cell(row, ix["id"])
+                when = parse_csv_time(_cell(row, ix["time"]))
+                ticker = _cell(row, ix["ticker"]).upper()
+                total = parse_money(_cell(row, ix["total"]))
+                if not ext or when is None or not ticker or total is None:
+                    res.skipped[action or "blank"] += 1
+                    continue
+                if ext in seen:
+                    res.skipped["duplicate id"] += 1
+                    continue
+                seen.add(ext)
+                ccy = (_cell(row, ix["ccy"]) or "").upper() or None
+                gps, instr_ccy = scale_gbx(parse_money(_cell(row, ix["price"])), ccy)
+                amt, acct_ccy = scale_gbx(total, ccy if ccy == "GBX" else None)
+                # CSV Total is the credited cash. If the price currency is GBX, Total is still usually
+                # the account currency — keep it as-is unless the Total itself was tagged GBX.
+                if ccy != "GBX":
+                    amt, acct_ccy = total, ccy
+                if "_" in ticker:
+                    info = parse_t212_ticker(ticker, _cell(row, ix["isin"]).upper() or None)
+                    sym = info.symbol or ticker
+                else:
+                    sym = ticker
+                res.dividends.append(DividendIn(
+                    external_id=ext, symbol=sym,
+                    paid_on=when, amount=float(amt), currency=acct_ccy or instr_ccy,
+                    amount_account=float(amt), account_currency=acct_ccy or instr_ccy,
+                    quantity=parse_money(_cell(row, ix["shares"])), gross_per_share=gps,
+                    kind=action, ticker=ticker, raw={"action": action, "ccy": ccy},
+                ))
+                continue
             res.skipped[action or "blank"] += 1
             continue
         kind, side = mapped

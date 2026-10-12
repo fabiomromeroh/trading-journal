@@ -24,6 +24,8 @@ I = {
                    "Σ open qty × (latest price − FIFO avg cost of the remaining lots) × multiplier (reversed for shorts). Prices: Yahoo last trade incl. pre/after-hours, refreshed on page load (≤ 2 min old); SnapTrade price as fallback."),
     "total_pnl": ("Total P&L", "Realized + unrealized, checked against the broker account value.",
                   "Total realized + unrealized. Account check: account value − net deposits (SnapTrade)."),
+    "total_return": ("Total return", "Realized P&L + unrealized P&L + dividends − fees, like Trading 212.",
+                     "Realized (already net of fees) + unrealized of open positions now + cash dividends the broker paid. Dividends are never estimated."),
     "gross_net": ("Gross vs net P&L", "P&L before and after commissions/fees for closed trades.", "Gross = Σ (exit − entry) × qty × mult; net = gross − fees."),
     "fees": ("Commissions & fees", "Total commissions and regulatory fees on closed trades.", "Σ fees of closed trades; open trades' fees shown separately."),
     "long_short": ("Long vs short", "Net P&L of closed long trades vs closed short trades.", "Σ net P&L by direction (closed trades)."),
@@ -95,6 +97,10 @@ I = {
     "t_net": ("Net P&L", "This trade's realized P&L after fees (for an open trade: what partial exits realized so far).", "gross − fees."),
     "t_gross": ("Gross P&L", "Realized P&L before fees.", "Σ over closing fills of (exit − FIFO entry) × qty × multiplier."),
     "t_fees": ("Fees", "Commissions and regulatory fees on all fills.", "Σ fill fees."),
+    "t_dividend": ("Dividend", "Cash dividends the broker paid on this ticker while the position was open.",
+                   "Σ real dividends for this ticker and account between the first entry and the final exit (or now if still open). Never estimated."),
+    "t_pnl_div": ("P&L incl. dividends", "This trade's net P&L plus those cash dividends.",
+                  "net P&L + dividends received while the position was open."),
     "t_return": ("Return %", "Net P&L relative to the cost of the entries.", "net ÷ (Σ entry price × qty × multiplier) × 100."),
     "t_entry_exit": ("Entry / exit", "Average entry and exit price.", "qty-weighted average of opening and closing fills."),
     "t_max_size": ("Max size", "Largest position held during the trade.", "max |running position|."),
@@ -180,7 +186,8 @@ LABELS = {
 
 # Money tooltips name the conversion rule. Ratios (R, return %) do not use it.
 _FX_KEYS = {"realized", "closed_net", "unrealized", "positions", "fees", "left_on_table", "avg_mfe", "avg_mae",
-            "t_net", "t_gross", "t_fees", "t_unrealized", "t_risk", "t_mfe", "t_mae", "t_mfe_mae", "t_open_value",
+            "total_return", "t_net", "t_gross", "t_fees", "t_dividend", "t_pnl_div", "t_unrealized", "t_risk",
+            "t_mfe", "t_mae", "t_mfe_mae", "t_open_value",
             "t_position_value", "t_total_risk", "t_target_pnl", "t_return_per_share", "t_left_on_table", "t_best_exit",
             "realized_view"}
 

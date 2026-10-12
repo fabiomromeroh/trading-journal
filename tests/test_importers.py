@@ -27,7 +27,9 @@ def test_schwab_csv_parse(fixture_text):
     r = parse(fixture_text("schwab_transactions.csv"))
     assert r.account_hint == "...123"
     assert r.rows_total == 10
-    assert r.skipped["Qualified Dividend"] == 1 and r.skipped["MoneyLink Transfer"] == 1
+    assert r.skipped["MoneyLink Transfer"] == 1 and "Qualified Dividend" not in r.skipped
+    assert len(r.dividends) == 1 and r.dividends[0].symbol == "AAPL"
+    assert r.dividends[0].amount == pytest.approx(12.50)
     assert len(r.records) == 8
     syms = {x.symbol for x in r.records}
     assert "SPY 2026-09-19 580P" in syms and "NVDA 2026-09-18 130C" in syms

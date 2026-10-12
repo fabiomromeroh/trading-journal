@@ -124,6 +124,9 @@ def commit(batch_id: int, db: Session = Depends(get_db)):
     result = parse(batch.content, batch.file_format)
     records = _csv_records(db, batch, result.records)
     stats = ingest_records(db, batch.account_id, batch.file_format, records, batch_id=batch.id)
+    if getattr(result, "dividends", None):
+        from app.dividends import ingest as ingest_divs
+        ingest_divs(db, batch.account_id, batch.file_format, result.dividends)
     batch.inserted, batch.merged, batch.duplicates = stats.inserted, stats.merged, stats.duplicates
     batch.status, batch.committed_at, batch.content = "committed", utcnow(), None
     if result.warnings:
