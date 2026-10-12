@@ -56,7 +56,7 @@
         <li>Trading 212 → History → Export (include orders and transactions)</li>
         <li>Upload the CSV here and choose the Trading 212 account</li>
       </ol>
-      <div class="text-xs text-slate-500 mt-1">Splits, spin-offs, free shares and dividend reinvestments are imported. Cash dividends, deposits and card rows are skipped. Rows are deduped by ID. A corporate action the API already stored for that symbol and day is not imported again.</div>
+      <div class="text-xs text-slate-500 mt-1">Market buy, Limit buy and Stop buy are fills. Dividend (DRIP), scrip, Stock distribution, Spin-off, and Stock split open/close are imported from the share count in the file (Result and Notes are read). Cash dividends, deposits and currency conversion are skipped. Rows are deduped by ID. A corporate action already stored for that symbol and day is not imported again.</div>
     </div>
   </div>
 </div>

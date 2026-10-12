@@ -24,6 +24,7 @@
   {% if t.status == 'OPEN' %}<span class="pill bg-sky-500/15 text-sky-300">OPEN</span>{% else %}
   <span class="pill {{ {'WIN': 'bg-emerald-500/15 text-emerald-300', 'LOSS': 'bg-rose-500/15 text-rose-300'}.get(outcome_label(t), 'bg-slate-500/20 text-slate-300') }}" title="{{ be_text() }}">{{ 'BREAK-EVEN' if outcome_label(t) == 'BE' else outcome_label(t) }}</span>{% endif %}
   {% if t.is_demo %}<span class="pill bg-amber-500/20 text-amber-300">SAMPLE DATA</span>{% endif %}
+  {% if t212_gap %}<span class="pill bg-amber-500/20 text-amber-200" title="{{ t212_gap.detail }}">{{ t212_gap.badge }}</span>{% endif %}
   <span class="text-xs text-slate-500">{{ t.opened_at|local_dt('%b %d, %Y') }}{% if t.closed_at %} → {{ t.closed_at|local_dt('%b %d, %Y') }}{% endif %}</span>
   <div class="ml-auto flex gap-2 text-sm">
     {% if prev_id %}<a id="prev-trade" href="/trades/{{ prev_id }}{{ '?' ~ list_qs if list_qs }}" class="btn btn-s !py-1" title="Previous in list (k)">← Prev</a>{% endif %}
@@ -113,6 +114,13 @@
     </div>
     <div class="card p-4 overflow-x-auto">
       <div class="card-h mb-2">Executions</div>
+      {% if t212_gap %}<div class="mb-2 text-xs text-amber-300" id="t212-gap">{{ t212_gap.detail }}</div>{% endif %}
+      {% if t.account and (t.account.source_key == 't212' or t.account.broker == 'trading212') %}
+      <form method="post" action="/trades/{{ t.id }}/find-missing" class="mb-2">
+        <button class="btn btn-s text-xs">Find missing executions for {{ t.symbol }}</button>
+      </form>
+      {% if t212_hunt %}{% with hunt=t212_hunt %}{% include "partials/t212_hunt.html" %}{% endwith %}{% endif %}
+      {% endif %}
       <table class="w-full text-sm tbl">
         <thead><tr><th>Time ({{ settings().display_tz.split('/')[-1].replace('_',' ') }})</th><th>Action</th><th>Role</th><th class="text-right">Qty</th><th class="text-right">Price</th><th class="text-right">Value</th><th class="text-right">Fees</th><th>Source</th></tr></thead>
         <tbody>
@@ -121,7 +129,7 @@
           <td class="text-slate-300">{{ f.executed_at|local_dt('%Y-%m-%d %H:%M:%S' if (f.execution and f.execution.time_known) else '%Y-%m-%d') }}</td>
           <td><span class="{{ 'text-emerald-300' if f.side == 'BUY' else 'text-rose-300' }} font-medium">{{ f.side }}</span>
               {% if f.execution and f.execution.kind != 'TRADE' %}<span class="pill bg-indigo-500/15 text-indigo-200">{{ f.execution.kind|lower|replace('_', ' ') }}</span>{% elif not f.execution %}<span class="text-xs text-slate-500">(expired, inferred)</span>{% endif %}
-              {% if f.execution and adjustments.get(f.execution.id) %}<span class="pill bg-amber-500/15 text-amber-300">estimated</span>{% endif %}</td>
+              {% if f.execution and adjustments.get(f.execution.id) %}<span class="pill bg-amber-500/15 text-amber-300" title="Not a Trading 212 execution">estimated</span> <span class="text-amber-200/90">not a Trading 212 execution</span>{% if adjustments[f.execution.id].user_edited %} <span class="text-slate-400">you edited this</span>{% endif %}{% endif %}</td>
           <td class="text-slate-400">{{ f.role|lower }}</td>
           <td class="text-right">{{ f.quantity|qty }}</td><td class="text-right" title="Price in {{ native_ccy }}">{{ native_symbol }}{{ f.price|num(4 if f.price < 10 else 2) }}</td>
           <td class="text-right text-slate-400">{% set nv = f.quantity * f.price * t.multiplier %}{% if fx and fx.show %}{{ fx.fill_amount(f, nv)|money }} <span class="text-[10px] text-slate-500">({{ nv|money(sym=native_symbol) }})</span>{% else %}{{ nv|money }}{% endif %}</td>

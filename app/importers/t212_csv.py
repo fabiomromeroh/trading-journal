@@ -15,7 +15,7 @@ from datetime import timezone
 from zoneinfo import ZoneInfo
 
 from app.corporate import classify_csv_action, parse_csv_time, ratio_from_text
-from app.importers.base import ParseResult, parse_money
+from app.importers.base import ParseResult
 from app.instruments import ExecRecord
 from app.markets import exchange_tz, parse_t212_ticker
 
@@ -27,13 +27,53 @@ def _headers(row: list[str]) -> list[str]:
     return [re.sub(r"\s+", " ", (c or "").strip().strip('"').lower()) for c in row]
 
 
-def detect(text: str) -> bool:
+def _table(text: str) -> list[list[str]]:
+    """Comma or semicolon. A one-field first row that contains ``;`` is a semicolon export."""
     sample = text.lstrip("\ufeff")
-    for row in list(csv.reader(io.StringIO(sample)))[:8]:
+    rows = list(csv.reader(io.StringIO(sample)))
+    if rows and len(rows[0]) <= 1 and ";" in (rows[0][0] if rows[0] else ""):
+        rows = list(csv.reader(io.StringIO(sample), delimiter=";"))
+    return rows
+
+
+def detect(text: str) -> bool:
+    for row in _table(text)[:8]:
         h = _headers(row)
         if "action" in h and "isin" in h and "ticker" in h and any(_SHARES.search(c) for c in h):
             return True
     return False
+
+
+def _csv_number(val: str | None) -> float | None:
+    """Trading 212 amounts. ``1,234.56``, ``1.234,56`` and ``0,77856`` all parse. Not used for Schwab."""
+    if val is None:
+        return None
+    s = val.strip()
+    if not s or s in {"-", "--", "N/A"}:
+        return None
+    neg = (s.startswith("(") and s.endswith(")")) or s.startswith("-")
+    s = s.strip("()")
+    s = s.replace(" ", "").replace("\u00a0", "")
+    s = re.sub(r"[^0-9,.\-]", "", s)
+    if s in {"", "-", ".", ",", "-."}:
+        return None
+    if "," in s and "." in s:
+        if s.rfind(",") > s.rfind("."):
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            s = s.replace(",", "")
+    elif "," in s:
+        parts = s.split(",")
+        # 1,234 and 1,234,567 are thousands groups. 0,77856 and 12,5 are decimals.
+        if parts[0].lstrip("-").isdigit() and all(len(p) == 3 and p.isdigit() for p in parts[1:]):
+            s = "".join(parts)
+        else:
+            s = parts[0] + "." + "".join(parts[1:])
+    try:
+        v = float(s)
+    except ValueError:
+        return None
+    return -abs(v) if neg else v
 
 
 def _col(header: list[str], *names: str) -> int | None:
@@ -75,8 +115,7 @@ def _csv_fx(gross_instr: float, rate: float | None, total: float | None, pence: 
 
 
 def parse(text: str, **_kw) -> ParseResult:
-    sample = text.lstrip("\ufeff")
-    rows = list(csv.reader(io.StringIO(sample)))
+    rows = _table(text)
     header_i = None
     header: list[str] = []
     for i, row in enumerate(rows[:8]):
@@ -97,6 +136,7 @@ def parse(text: str, **_kw) -> ParseResult:
         "ccy": _col(header, "currency (price / share)", "currency (price/share)", "currency"),
         "fx": _col(header, "exchange rate"),
         "total": _col(header, "total"),
+        "result": _col(header, "result"),
         "stamp": _col(header, "stamp duty reserve tax", "stamp duty"),
         "fxfee": _col(header, "currency conversion fee"),
         "notes": _col(header, "notes"),
@@ -135,8 +175,8 @@ def parse(text: str, **_kw) -> ParseResult:
             sym, exch = ticker, None
         from app.markets import ISIN_PREFIX_TO_EXCHANGE
         exch = exch or (ISIN_PREFIX_TO_EXCHANGE.get((isin or "")[:2]) if isin else None)
-        shares = parse_money(_cell(row, ix["shares"]))
-        price = parse_money(_cell(row, ix["price"])) or 0.0
+        shares = _csv_number(_cell(row, ix["shares"]))
+        price = _csv_number(_cell(row, ix["price"])) or 0.0
         ccy = (_cell(row, ix["ccy"]) or "").upper() or None
         notes = _cell(row, ix["notes"])
         name = _cell(row, ix["name"])
@@ -154,10 +194,12 @@ def parse(text: str, **_kw) -> ParseResult:
         pence = ccy == "GBX"
         if pence:
             price, ccy = price / 100.0, "GBP"
-        total = parse_money(_cell(row, ix["total"]))
-        fx = _csv_fx(abs(shares) * price, parse_money(_cell(row, ix["fx"])), total, pence)
-        stamp = abs(parse_money(_cell(row, ix["stamp"])) or 0.0)
-        fxfee = abs(parse_money(_cell(row, ix["fxfee"])) or 0.0)
+        total = _csv_number(_cell(row, ix["total"]))
+        if total is None:
+            total = _csv_number(_cell(row, ix["result"]))
+        fx = _csv_fx(abs(shares) * price, _csv_number(_cell(row, ix["fx"])), total, pence)
+        stamp = abs(_csv_number(_cell(row, ix["stamp"])) or 0.0)
+        fxfee = abs(_csv_number(_cell(row, ix["fxfee"])) or 0.0)
         fees = stamp + fxfee
         if fx:
             fees = fees / fx

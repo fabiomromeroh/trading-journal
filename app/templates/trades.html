@@ -60,6 +60,8 @@
         <span class="pill {{ 'bg-emerald-500/15 text-emerald-300' if t.direction == 'LONG' else 'bg-rose-500/15 text-rose-300' }}">{{ t.direction }}</span>
         {% if t.status == 'OPEN' %}<span class="pill bg-sky-500/15 text-sky-300">OPEN</span>{% else %}<span class="pill {{ {'WIN': 'bg-emerald-500/15 text-emerald-300', 'LOSS': 'bg-rose-500/15 text-rose-300'}.get(outcome_label(t), 'bg-slate-500/20 text-slate-300') }}">{{ outcome_label(t) }}</span>{% endif %}
         {% if t.id in provisional_trades %}<span class="pill bg-amber-500/15 text-amber-300">provisional</span>{% endif %}
+        {% set gap = t212_gaps.get(t.symbol) if t212_gaps is defined else none %}
+        {% if gap %}<span class="pill bg-amber-500/20 text-amber-200" title="{{ gap.detail }}">{{ gap.badge }}</span>{% endif %}
       </div>
       {{ company_name(t) }}
       <div class="text-xs text-slate-500 mt-0.5">{{ t.opened_at|local_dt('%b %d %H:%M' if t.time_known else '%b %d') }}{% if t.closed_at %} → {{ t.closed_at|local_dt('%b %d %H:%M' if t.time_known else '%b %d') }}{% endif %} · {{ t.quantity|qty }} @ {{ t.entry_price|num(2) }}{% if t.exit_price %} → {{ t.exit_price|num(2) }}{% endif %}{% if t.currency and t.currency != display_currency %} {{ t.currency }}{% endif %}</div>
@@ -90,7 +92,7 @@
   <tr class="cursor-pointer" onclick="location='/trades/{{ t.id }}{{ '?' ~ list_qs if list_qs }}'">
     <td class="text-slate-400">{{ t.opened_at|local_dt('%Y-%m-%d %H:%M' if t.time_known else '%Y-%m-%d') }}</td>
     <td class="text-slate-400">{{ t.closed_at|local_dt('%Y-%m-%d %H:%M' if t.time_known else '%Y-%m-%d') if t.closed_at else '—' }}</td>
-    <td><a href="/trades/{{ t.id }}{{ '?' ~ list_qs if list_qs }}" class="text-white font-medium hover:underline">{{ t.symbol }}</a>{% if t.is_demo %} <span class="pill bg-amber-500/20 text-amber-300">demo</span>{% endif %}{% if t.id in provisional_trades %} <span class="pill bg-amber-500/15 text-amber-300" title="Includes a same-day fill from a SnapTrade order. Fees post with tomorrow's activity data.">provisional (fees pending)</span>{% endif %}{{ company_name(t) }}</td>
+    <td><a href="/trades/{{ t.id }}{{ '?' ~ list_qs if list_qs }}" class="text-white font-medium hover:underline">{{ t.symbol }}</a>{% if t.is_demo %} <span class="pill bg-amber-500/20 text-amber-300">demo</span>{% endif %}{% if t.id in provisional_trades %} <span class="pill bg-amber-500/15 text-amber-300" title="Includes a same-day fill from a SnapTrade order. Fees post with tomorrow's activity data.">provisional (fees pending)</span>{% endif %}{% set gap = t212_gaps.get(t.symbol) if t212_gaps is defined else none %}{% if gap %} <span class="pill bg-amber-500/20 text-amber-200" title="{{ gap.detail }}">{{ gap.badge }}</span>{% endif %}{{ company_name(t) }}</td>
     <td>{{ company_pills(t) }}</td>
     <td><span class="pill {{ 'bg-emerald-500/15 text-emerald-300' if t.direction == 'LONG' else 'bg-rose-500/15 text-rose-300' }}">{{ t.direction }}</span></td>
     <td>{% if t.status == 'OPEN' %}<span class="pill bg-sky-500/15 text-sky-300">OPEN</span>{% else %}<span class="pill {{ {'WIN': 'bg-emerald-500/15 text-emerald-300', 'LOSS': 'bg-rose-500/15 text-rose-300'}.get(outcome_label(t), 'bg-slate-500/20 text-slate-300') }}">{{ outcome_label(t) }}</span>{% if t.close_reason and t.close_reason != 'TRADE' %} <span class="text-[10px] text-slate-500">{{ t.close_reason|lower }}</span>{% endif %}{% endif %}</td>

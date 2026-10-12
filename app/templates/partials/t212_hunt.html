@@ -1,0 +1,22 @@
+{% if hunt and hunt.status %}
+<div id="t212-hunt" {% if hunt.status == 'running' %}hx-get="/settings/brokers/t212/hunt" hx-trigger="every 2s" hx-swap="outerHTML"{% endif %}
+     class="mt-2 rounded-lg px-3 py-2 text-xs {{ 'bg-indigo-500/15 text-indigo-100' if hunt.status == 'running' else 'bg-amber-500/10 text-amber-100' if hunt.status in ('paused', 'error') else 'bg-slate-800/60 text-slate-200' }}">
+  <div class="font-medium">{% if hunt.symbol %}{{ hunt.symbol }} · {% endif %}{{ hunt.progress or hunt.status }}</div>
+  {% if hunt.note %}<div class="mt-1 whitespace-pre-line">{{ hunt.note }}</div>{% endif %}
+  {% if hunt.rows %}
+  <ul class="mt-2 space-y-1">
+    {% for row in hunt.rows %}
+    <li>{{ row.date }} · {{ row.type or '—' }} · qty {{ row.quantity }} · price {{ row.price }} · id {{ row.id }}
+      · {{ row.source }}{% if row.ticker %} · {{ row.ticker }}{% endif %}
+      {% if row.in_journal %}· in journal{% else %}· not in journal{% endif %}
+      {% if row.imported %}· imported{% endif %}
+      {% if row.fields %}<div class="text-slate-500">fields: {{ row.fields|join(', ') }}</div>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% if hunt.rows_total and hunt.rows_total > hunt.rows|length %}<div class="mt-1 text-slate-500">Showing the latest {{ hunt.rows|length }} of {{ hunt.rows_total }}.</div>{% endif %}
+  {% endif %}
+</div>
+{% else %}
+<div id="t212-hunt"></div>
+{% endif %}

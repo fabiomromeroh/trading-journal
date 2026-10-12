@@ -120,12 +120,36 @@ def set_instrument(iid: int, request: Request, price_symbol: str = Form(""), sym
                            f"{inst.symbol}; existing trades keep theirs until the next rebuild.")
 
 
+@router.post("/settings/brokers/t212/find")
+def find_missing(request: Request, symbol: str = Form(""), db: Session = Depends(get_db)):
+    """Ask Trading 212 for every raw row on this ticker. Runs on the server; the key never leaves the DB."""
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return _flash(request, "Enter a ticker to search Trading 212.")
+    t212.start_hunt(sym)
+    db.expire_all()
+    hunt = t212.hunt_view(db)
+    if request.headers.get("hx-request"):
+        return templates.TemplateResponse(request, "partials/t212_hunt.html", {"request": request, "hunt": hunt})
+    return _flash(request, f"Looking up missing {sym} executions. The list updates on this page.")
+
+
+@router.get("/settings/brokers/t212/hunt")
+def hunt_status(request: Request, db: Session = Depends(get_db)):
+    db.expire_all()
+    return templates.TemplateResponse(request, "partials/t212_hunt.html",
+                                      {"request": request, "hunt": t212.hunt_view(db)})
+
+
 def settings_ctx(db: Session) -> dict:
     from app.corporate import audit_instruments
     creds = t212.load_credentials(db)
     insts = list(db.scalars(select(Instrument).where(Instrument.source_key == "t212").order_by(Instrument.symbol)))
+    st = t212.last_status(db)
     return {"t212": {"connected": creds is not None, "masked": t212.mask(creds["key"]) if creds else None,
-                     "practice": bool(creds and creds.get("env") == "demo"), "last": t212.last_status(db),
+                     "practice": bool(creds and creds.get("env") == "demo"), "last": st,
                      "instruments": insts, "instrument_issues": audit_instruments(db, fix=False),
                      "scope_help": t212.SCOPE_HELP,
-                     "enc_key": bool(get_settings().token_encryption_key)}}
+                     "enc_key": bool(get_settings().token_encryption_key),
+                     "gaps": t212.gap_rows(db), "hunt": t212.hunt_view(db),
+                     "broker_qty_known": isinstance(st.get("broker_qty"), dict)}}

@@ -145,13 +145,15 @@ def trades_list(request: Request, db: Session = Depends(get_db)):
     companies.annotate(db, rows)
     sectors, industries = companies.choices(db)
     params = {k: v for k, v in q.items() if k not in ("sort", "dir", "page")}
+    from app.sources.trading212 import gap_index
     return templates.TemplateResponse(request, "trades.html", base_context(
         request, db, nav="trades", f=f, trades=rows, total=total, page=page, pages=max(1, -(-total // PAGE)),
         sort=sort, desc=desc, params=params, q=q, setups=setups, tags=tags, mistakes=mistakes,
         sectors=sectors, industries=industries, list_qs=list_qs,
         filtered_pnl=closed_pnl, n_closed=n_closed, n_open=n_open, open_realized=open_pnl,
         realized_pnl=closed_pnl + open_pnl, day=day, day_rows=day_rows or {},
-        day_total=sum(r["net"] for r in (day_rows or {}).values())))
+        day_total=sum(r["net"] for r in (day_rows or {}).values()),
+        t212_gaps=gap_index(db)))
 
 
 def filter_options(db: Session):
@@ -212,6 +214,12 @@ def trade_detail(trade_id: int, request: Request, db: Session = Depends(get_db))
             continue
         if isinstance(raw, dict) and raw.get("estimated"):
             adjustments[ex.id] = raw
+    from app.sources.trading212 import gap_index, hunt_view
+    gaps = gap_index(db)
+    t212_gap = gaps.get(t.symbol) or gaps.get((t.symbol or "").upper())
+    hunt = hunt_view(db)
+    if (hunt.get("symbol") or "").upper() != (t.symbol or "").upper():
+        hunt = None
     # A cached quote only. The page asks /r.json after paint so Yahoo is not on this response.
     from app import companies, quotes
     companies.annotate(db, [t])
@@ -224,9 +232,19 @@ def trade_detail(trade_id: int, request: Request, db: Session = Depends(get_db))
         native_ccy=native, fx=fx, list_symbol=currency.symbol(currency.get_display(db)), prev_id=prev_id, next_id=next_id,
         **symbol_override,
         saved=False, fullscreen=True, chart_symbol=chart_symbol, listing=listing, adjustments=adjustments,
+        t212_gap=t212_gap, t212_hunt=hunt,
         **journal_ctx(db, t), stop_rule=stops.get_rule(db), opened_ts=int(t.opened_at.replace(tzinfo=timezone.utc).timestamp()), mfe_note=excursion_note(excursion_basis(t)), nav_rows=nav_rows,
         list_qs=list_qs, in_list=in_list, list_filtered=filtered, list_truncated=len(nav_rows) >= SIDEBAR_LIMIT,
         **extras))
+
+
+@router.post("/trades/{trade_id}/find-missing")
+def find_missing_trade(trade_id: int, db: Session = Depends(get_db)):
+    """Find Trading 212 rows for this trade's ticker. The key stays on the server."""
+    from app.sources.trading212 import start_hunt
+    t = _get_trade(db, trade_id)
+    start_hunt(t.symbol)
+    return RedirectResponse(f"/trades/{trade_id}", status_code=303)
 
 
 @router.post("/trades/{trade_id}/adjustments/{exec_id}")

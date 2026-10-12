@@ -236,11 +236,13 @@ def test_adjustment_page_save_and_remove(db):
         external_id="1", symbol="CGC", underlying="CGC", asset_type="STOCK", side="BUY",
         quantity=50, price=1, executed_at=datetime(2024, 1, 15, 15, 0), currency="USD",
         instrument_id=inst.id)])
+    db.add(Execution(
+        account_id=acct.id, source="t212", external_id="recon:CGC", match_key="recon:CGC", symbol="CGC",
+        underlying="CGC", asset_type="STOCK", side="BUY", quantity=0.1, price=0, kind="SPLIT",
+        position_effect="RATIO", executed_at=datetime(2024, 2, 1), instrument_id=inst.id, currency="USD",
+        raw='{"estimated": true, "note": "Reconciliation adjustment (estimated): split"}'))
+    db.flush()
     src = t212.Trading212Source(sleep=lambda *_a, **_k: None)
-    lines = src.apply_adjustments(db, acct, [{
-        "quantity": 5, "instrument": {"ticker": "CGC_US_EQ", "isin": "CA1380351009", "currency": "USD"},
-    }])
-    assert any(ln.startswith("CGC:") for ln in lines)
     rebuild_trades(db, [acct.id])
     db.commit()
     trade = db.scalar(select(Trade).where(Trade.symbol == "CGC"))
@@ -270,8 +272,11 @@ def test_adjustment_page_save_and_remove(db):
     src.apply_adjustments(db, acct, [{
         "quantity": 5, "instrument": {"ticker": "CGC_US_EQ", "isin": "CA1380351009", "currency": "USD"},
     }])
+    db.commit()
     db.expire_all()
-    assert db.get(Execution, adj_id).executed_at.date().isoformat() == "2024-03-01"
+    kept = db.get(Execution, adj_id)
+    assert kept.executed_at.date().isoformat() == "2024-03-01"
+    assert "flagged" in (kept.raw or "")
 
     gone = client.post(f"/trades/{trade.id}/adjustments/{adj_id}", data={"action": "remove"},
                        follow_redirects=False)
@@ -283,7 +288,7 @@ def test_adjustment_page_save_and_remove(db):
     again = src.apply_adjustments(db, acct, [{
         "quantity": 5, "instrument": {"ticker": "CGC_US_EQ", "isin": "CA1380351009", "currency": "USD"},
     }])
-    assert any("removed by you" in ln for ln in again)
+    assert again == []
     assert db.scalar(select(Execution).where(Execution.external_id == "recon:CGC")) is None
 
 

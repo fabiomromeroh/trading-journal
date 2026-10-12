@@ -5,9 +5,10 @@ the share count (and sometimes the average cost) without being a discretionary b
 The trade builder treats ``kind == "SPLIT"`` as a ratio applied to the open lots (no P&L) and
 every other kind here as a buy or sell that must not open a short on its own.
 
-When the broker feed does not contain the event, a sync books one estimated adjustment per
-symbol (``external_id`` ``recon:<key>``, ``raw.estimated``) so the journal position matches the
-broker. The row is editable and removable; a user edit is never overwritten.
+A sync does not invent a fill when the broker feed has no row for the gap. Rows already stored
+as ``recon:<key>`` / ``raw.estimated`` are deleted on the next re-scan unless you edited one and
+the real executions still do not match Trading 212 (that row stays, flagged). `plan_adjustment`
+is the old arithmetic only; nothing in the sync calls it.
 """
 from __future__ import annotations
 
@@ -91,7 +92,7 @@ def choose_split_ratio(pos: float, avg: float, reported_qty: float, reported_pri
 
 
 def plan_adjustment(journal: float, broker: float, avg_cost: float) -> dict | None:
-    """One estimated event that moves ``journal`` shares to ``broker`` shares. None when they match.
+    """Arithmetic for a quantity gap. Sync does not book this. None when the quantities match.
 
     A clean ratio (50 -> 5 is 1-for-10) becomes a split, which keeps cost and books no P&L.
     Extra broker shares are added at cost 0 (a received spin-off, or a buy we never saw).
@@ -584,11 +585,16 @@ def classify_csv_action(action: str) -> tuple[str, str] | None:
         return None
     if any(x in a for x in _CASH_ACTIONS):
         return None
-    if "reinvest" in a:
+    # "Dividend (DRIP)" and scrip reinvestment must be seen before the cash-dividend skip.
+    if "reinvest" in a or "drip" in a or "scrip" in a:
         return ("DRIP", "BUY")
     if a.startswith("dividend") or a.startswith("withholding"):
         return None
     if "split" in a:
+        if "close" in a:
+            return ("CONVERSION", "SELL")
+        if "open" in a:
+            return ("DISTRIBUTION", "BUY")
         return ("SPLIT", "BUY")
     if "spin" in a:
         return ("SPIN_OFF", "BUY")
@@ -624,7 +630,9 @@ def parse_csv_time(value: str) -> datetime | None:
         return None
     s = s.replace("Z", "+00:00")
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M",
-                "%Y-%m-%dT%H:%M:%S", "%m/%d/%Y %H:%M:%S"):
+                "%Y-%m-%dT%H:%M:%S", "%m/%d/%Y %H:%M:%S",
+                "%d.%m.%Y %H:%M:%S", "%d.%m.%Y %H:%M", "%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M",
+                "%d-%m-%Y %H:%M:%S", "%d-%m-%Y %H:%M"):
         try:
             return datetime.strptime(s[:19], fmt)
         except ValueError:
