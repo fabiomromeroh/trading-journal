@@ -373,11 +373,15 @@ def missing_accounts(db: Session, ccy: str | None = None) -> list[int]:
 
 
 def after_sync(db: Session, account_ids) -> None:
+    # No SAVEPOINT: the price cache and FX top-up commit on their own, which would close one.
+    # The sync's own work is committed first so a failure here can only lose the curve.
+    db.commit()
     try:
-        with db.begin_nested():
-            ids = sorted(set(account_ids) | set(missing_accounts(db)))
-            rebuild(db, ids or None)
+        ids = sorted(set(account_ids) | set(missing_accounts(db)))
+        rebuild(db, ids or None)
+        db.commit()
     except Exception as exc:  # noqa: BLE001 - the curve is informational; never fail a sync
+        db.rollback()
         log.warning("balance rebuild failed: %s", exc)
 
 
