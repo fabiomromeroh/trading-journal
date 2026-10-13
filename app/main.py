@@ -100,6 +100,8 @@ def create_app() -> FastAPI:
     # Added last => runs first, so the session is available to RequireLogin.
     app.add_middleware(SessionMiddleware, secret_key=s.secret_key, session_cookie="tj_session",
                        max_age=60 * 60 * 24 * 14, same_site="lax", https_only=s.cookie_secure)
+    from app import timing
+    timing.install(app)  # outermost: times the whole request incl. login check
     @app.middleware("http")
     async def view_account(request, call_next):
         from app import currency
