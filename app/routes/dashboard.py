@@ -74,7 +74,7 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
     bal = bmod.series(db, f.account_id, display, f.start, f.end)
     charts["balance"] = {k: bal[k] for k in ("labels", "balance", "net_deposits", "missing")} if bal else None
     return templates.TemplateResponse(request, "dashboard.html", base_context(
-        request, db, nav="dashboard", f=f, st=st, charts=charts, balance=bal, balance_build=bal is None and has_any > 0,
+        request, db, nav="dashboard", f=f, st=st, charts=charts, balance=bal, balance_build=has_any > 0 and not bmod.has_points(db, f.account_id, display),
         recent=recent, has_any=has_any, last_import=last_import, n_all=len(trades),
         last_sync=last_sync, anchor=anchor, quotes_on=quotes_on, dividends_total=dividends_total,
         **dashboard_extras(db, trades, tz, events=evs, cumulative=st.cumulative)))
@@ -90,7 +90,7 @@ def _build_balance_bg() -> None:
     from app import db as dbmod
     s = dbmod.SessionLocal()
     try:
-        bmod.rebuild(s)
+        bmod.rebuild(s, bmod.missing_accounts(s) or None)
         s.commit()
     except Exception as exc:  # noqa: BLE001
         s.rollback()

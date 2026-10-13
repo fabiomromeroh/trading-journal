@@ -346,16 +346,26 @@ def rebuild(db: Session, account_ids: list[int] | None = None, currencies=None, 
     return done
 
 
+def missing_accounts(db: Session, ccy: str | None = None) -> list[int]:
+    """Accounts with no stored balance points yet (in ``ccy``, or in any of CURRENCIES)."""
+    have = set(db.scalars(select(BalancePoint.account_id).where(
+        BalancePoint.currency.in_([ccy] if ccy else list(CURRENCIES))).distinct()))
+    return [a for a in db.scalars(select(Account.id)) if a not in have]
+
+
 def after_sync(db: Session, account_ids) -> None:
     try:
         with db.begin_nested():
-            rebuild(db, sorted(set(account_ids)) or None)
+            ids = sorted(set(account_ids) | set(missing_accounts(db)))
+            rebuild(db, ids or None)
     except Exception as exc:  # noqa: BLE001 - the curve is informational; never fail a sync
         log.warning("balance rebuild failed: %s", exc)
 
 
 # ------------------------------------------------------------------ read for the dashboard
 def has_points(db: Session, account_id: int | None, ccy: str) -> bool:
+    if account_id is None:
+        return not missing_accounts(db, ccy)
     q = select(BalancePoint.id).where(BalancePoint.currency == ccy)
     if account_id:
         q = q.where(BalancePoint.account_id == account_id)
