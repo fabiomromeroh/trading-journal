@@ -17,6 +17,7 @@ class ParseResult:
     format: str
     records: list[ExecRecord] = field(default_factory=list)
     dividends: list = field(default_factory=list)  # app.dividends.DividendIn cash rows (not trades)
+    cash_flows: list = field(default_factory=list)  # interest rows as app.balance cash-flow dicts
     rows_total: int = 0
     skipped: Counter = field(default_factory=Counter)  # action -> count of non-trade rows
     warnings: list[str] = field(default_factory=list)

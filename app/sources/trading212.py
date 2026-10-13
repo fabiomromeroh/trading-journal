@@ -50,7 +50,7 @@ CRED_STATE = "cred:t212"        # encrypted {"key","secret","env"}; the cred: pr
 LAST_STATE = "t212:last"        # last sync / test status (no secrets)
 CURSOR_STATE = "t212:cursor"    # newest filledAt stored (ISO, UTC)
 DIV_CURSOR_STATE = "t212:div_cursor"  # newest dividend paidOn stored (ISO, UTC)
-CASH_CURSOR_STATE = "t212:cash_cursor"  # newest cash-ledger row stored (ISO, UTC): deposits / withdrawals
+CASH_CURSOR_STATE = "t212:cash_cursor:v2"  # v2: re-read the whole ledger once to pick up interest rows  # newest cash-ledger row stored (ISO, UTC): deposits / withdrawals
 FULL_STATE = "t212:full"        # "1" → next sync ignores the cursor (one-off full re-scan)
 EXPORT_STATE = "t212:export"    # pending CSV reportId, or "done:<id>" once that file was imported
 RECON_STATE = "t212:recon"      # {"seen": {key: iso}, "dismissed": [key]} — not a secret
@@ -981,6 +981,8 @@ class Trading212Source(DataSource):
     description = ("Official API (read-only key + secret): fills with execution times, ISIN, instrument currency, fees and "
                    "FX per fill. Manual sync only; history is fetched once, later syncs only re-read the last few days.")
 
+    _acct_id: int | None = None
+
     def __init__(self, transport: httpx.BaseTransport | None = None, sleep=None, split_fetch=None):
         self._transport, self._sleep = transport, sleep or _time.sleep
         self.split_fetch = split_fetch
@@ -1065,6 +1067,7 @@ class Trading212Source(DataSource):
                     if times and not blind and max(times) < threshold:
                         break
             recs, skipped, newest, detail, fields = self.convert(db, cl, items)
+            self._acct_id = acct.id
             extra_api, csv_recs, extra_note = self._extra_history(db, cl, full, acct)
             self._save_summary(db, cl, acct, summary)
             div_note = self._import_dividends(db, cl, acct, full)
@@ -1293,6 +1296,7 @@ class Trading212Source(DataSource):
         if full or acct is not None:
             threshold = (datetime.fromisoformat(cursor) - timedelta(days=OVERLAP_DAYS)) if cursor else None
             flows: list[dict] = []
+            types: Counter = Counter()
             newest: datetime | None = None
             try:
                 n = 0
@@ -1300,6 +1304,8 @@ class Trading212Source(DataSource):
                     n += 1
                     times = []
                     for item in page:
+                        from app.balance import raw_type
+                        types[raw_type(item) or "?"] += 1
                         if full:
                             rec = _transaction_record(item)
                             if isinstance(rec, ExecRecord):
@@ -1325,6 +1331,8 @@ class Trading212Source(DataSource):
                     st = ingest_flows(db, acct.id, SOURCE_KEY, flows)
                     if st["inserted"]:
                         notes.append(f"cash flows {st['inserted']} new")
+                    if types:  # type names and counts only (no amounts / ids)
+                        notes.append("ledger types " + ", ".join(f"{k} {v}" for k, v in sorted(types.items())))
                     if newest:
                         prev = parse_ts(cursor) if cursor else newest
                         set_state(db, CASH_CURSOR_STATE, max(newest, prev).isoformat())
@@ -1382,6 +1390,9 @@ class Trading212Source(DataSource):
         except ValueError:
             return [], "CSV export was not a Trading 212 history file"
         set_state(db, EXPORT_STATE, "done:" + report_id)
+        if parsed.cash_flows and self._acct_id is not None:
+            from app.balance import ingest_flows
+            ingest_flows(db, self._acct_id, "t212_csv", parsed.cash_flows)
         return parsed.records, f"CSV export {len(parsed.records)} rows"
 
     def _listing_splits(self, db: Session, account_id: int) -> list[str]:

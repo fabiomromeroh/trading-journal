@@ -71,10 +71,11 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
     from app import balance as bmod
     display = currency.get_display(db)
     dividends_total = dmod.total(db, f.account_id, display, f.start, f.end, tz)
+    interest = bmod.interest_total(db, f.account_id, display, f.start, f.end, tz)
     bal = bmod.series(db, f.account_id, display, f.start, f.end)
     charts["balance"] = {k: bal[k] for k in ("labels", "balance", "net_deposits", "missing")} if bal else None
     return templates.TemplateResponse(request, "dashboard.html", base_context(
-        request, db, nav="dashboard", f=f, st=st, charts=charts, balance=bal, balance_build=has_any > 0 and not bmod.has_points(db, f.account_id, display),
+        request, db, nav="dashboard", f=f, st=st, charts=charts, balance=bal, interest=interest, balance_build=has_any > 0 and not bmod.has_points(db, f.account_id, display),
         recent=recent, has_any=has_any, last_import=last_import, n_all=len(trades),
         last_sync=last_sync, anchor=anchor, quotes_on=quotes_on, dividends_total=dividends_total,
         **dashboard_extras(db, trades, tz, events=evs, cumulative=st.cumulative)))
@@ -156,7 +157,10 @@ def dashboard_live(request: Request, db: Session = Depends(get_db)):
     display = currency.get_display(db)
     from app import dividends as dmod
     dividends_total = dmod.total(db, f.account_id, display, f.start, f.end, tz)
+    from app import balance as bmod
+    interest = bmod.interest_total(db, f.account_id, display, f.start, f.end, tz)
     return templates.TemplateResponse(request, "partials/dash_live.html", {
+        "interest": interest,
         "request": request, "anchor": anchor, "st": st,
         "display_currency": display, "display_symbol": currency.symbol(display),
         "dividends_total": dividends_total,

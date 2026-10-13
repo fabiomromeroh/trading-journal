@@ -18,6 +18,7 @@ import re
 BUILTIN = {
     "SATS": ("ECHO", "2026-06-24", "EchoStar: Nasdaq ticker SATS -> ECHO, CUSIP unchanged"),
     "FB": ("META", "2022-06-09", "Meta Platforms: FB -> META"),
+    "HONAV": ("HONA", "2026-06-30", "Honeywell Aerospace spin-off: when-issued HONAV -> regular-way HONA"),
 }
 USER_STATE = "symbol_aliases"          # JSON {"OLD": "NEW" | ""}
 AUTO_STATE = "symbol_aliases_auto"     # JSON {"OLD": {"to": "NEW", "evidence": "..."}}

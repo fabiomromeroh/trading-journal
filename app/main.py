@@ -100,6 +100,17 @@ def create_app() -> FastAPI:
     # Added last => runs first, so the session is available to RequireLogin.
     app.add_middleware(SessionMiddleware, secret_key=s.secret_key, session_cookie="tj_session",
                        max_age=60 * 60 * 24 * 14, same_site="lax", https_only=s.cookie_secure)
+    @app.middleware("http")
+    async def view_account(request, call_next):
+        from app import currency
+        from app.web import ACCOUNT_COOKIE
+        raw = request.query_params.get("account") if "account" in request.query_params else request.cookies.get(ACCOUNT_COOKIE, "")
+        tok = currency.VIEW_ACCOUNT.set(int(raw) if raw and raw.isdigit() else None)
+        try:
+            return await call_next(request)
+        finally:
+            currency.VIEW_ACCOUNT.reset(tok)
+
     app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
     for r in (auth.router, dashboard.router, trades.router, imports.router, settings_routes.router, email_sync.router, reports.router, security.router, pwa.router, backup_routes.router, journal_routes.router, ai_review_routes.router, prefs_routes.router, brokers_routes.router):
         app.include_router(r)

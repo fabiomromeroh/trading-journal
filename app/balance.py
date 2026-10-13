@@ -63,12 +63,26 @@ _T212_KINDS = {"DEPOSIT": "deposit", "WITHDRAW": "withdrawal", "WITHDRAWAL": "wi
                "CASHBACK": "interest", "FEE": "fee"}
 
 
+def raw_type(item) -> str:
+    return str((item or {}).get("type") or (item or {}).get("transactionType") or "").upper().replace(" ", "_") \
+        if isinstance(item, dict) else ""
+
+
+def flow_kind(typ: str) -> str | None:
+    kind = _T212_KINDS.get(typ)
+    if kind is None and "INTEREST" in typ:
+        kind = "interest"       # INTEREST_ON_CASH, LENDING_INTEREST, ...
+    if kind is None and typ.endswith("_FEE"):
+        kind = "fee"
+    return kind
+
+
 def t212_flow(item: dict, account_ccy: str | None) -> dict | None:
     """A Trading 212 cash-ledger row (/equity/history/transactions) as a cash flow, or None."""
     if not isinstance(item, dict):
         return None
-    typ = str(item.get("type") or item.get("transactionType") or "").upper().replace(" ", "_")
-    kind = _T212_KINDS.get(typ)
+    typ = raw_type(item)
+    kind = flow_kind(typ)
     if not kind:
         return None
     try:
@@ -161,22 +175,27 @@ def broker_snapshots(db: Session, account_ids: list[int]) -> dict[int, dict]:
 # ------------------------------------------------------------------ daily closes
 def _yahoo_closes(db: Session, trade, start: date, end: date) -> dict[date, float]:
     from app import prices
-    from app.config import get_settings
-    if get_settings().price_provider in ("none", "off", ""):
+    provs = prices._provider_order(trade)  # same order as the charts (Schwab / Polygon / Yahoo)
+    if not provs:
         return {}
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     s = datetime.combine(start - timedelta(days=CARRY_DAYS + 1), datetime.min.time())
     cut = datetime.combine(min(end, now.date()) - timedelta(days=3), datetime.min.time())
     out: dict[date, float] = {}
     spans = [(s, cut), (max(s, cut - timedelta(days=7)), now)] if cut > s else [(s, now)]
-    for a, b in spans:
-        try:
-            candles = prices._fetch(db, "yahoo", trade, "1d", a, b, now)
-        except Exception as exc:  # noqa: BLE001 - a missing price is a gap, never a failed sync
-            log.info("balance: no daily closes for %s: %s", getattr(trade, "underlying", "?"), exc)
-            continue
-        for c in candles or []:
-            out[datetime.fromtimestamp(int(c["time"]), timezone.utc).date()] = float(c["close"])
+    for prov in provs:
+        for a, b in spans:
+            try:
+                candles = prices._fetch(db, prov, trade, "1d", a, b, now)
+            except Exception as exc:  # noqa: BLE001 - a missing price is a gap, never a failed sync
+                log.info("balance: no %s daily closes for %s: %s", prov, getattr(trade, "underlying", "?"), exc)
+                continue
+            for c in candles or []:
+                t = int(c["time"])
+                t = t // 1000 if t > 10**11 else t  # some providers use ms
+                out.setdefault(datetime.fromtimestamp(t, timezone.utc).date(), float(c["close"]))
+        if out:
+            break
     return out
 
 
@@ -441,3 +460,31 @@ def check(db: Session, account_ids: list[int], ccy: str, journal_balance: float)
             "sources": sorted({s["source"] for s in snaps.values()}),
             "as_of": max((s.get("as_of") or "") for s in snaps.values()) or None,
             "missing_accounts": len(account_ids) - len(snaps)}
+
+
+def interest_total(db: Session, account_id: int | None, ccy: str, start: date | None = None, end: date | None = None,
+                   tz: str = "America/New_York") -> dict:
+    """Real interest (and cash fees) the broker reported in the period, in ``ccy``."""
+    from app import currency
+    q = select(CashFlow).where(CashFlow.kind.in_(OTHER_KINDS))
+    if account_id:
+        q = q.where(CashFlow.account_id == account_id)
+    rows = list(db.scalars(q))
+    Z = ZoneInfo(tz)
+    rows = [r for r in rows if not ((start and _local_day(r.occurred_at, Z) < start) or (end and _local_day(r.occurred_at, Z) > end))]
+    out = {"interest": 0.0, "fees": 0.0, "count": 0, "unconverted": 0}
+    if not rows:
+        return out
+    book = currency.RateBook(db)
+    need = {(r.currency or "USD").upper() for r in rows}
+    if need - {ccy}:
+        days = [r.occurred_at.date() for r in rows]
+        book.ensure(need | {ccy}, min(days), max(days))
+    for r in rows:
+        rate = book.rate(r.currency or "USD", ccy, r.occurred_at.date())
+        if rate is None:
+            out["unconverted"] += 1
+            continue
+        out["interest" if r.kind == "interest" else "fees"] += r.amount * rate
+        out["count"] += 1
+    return out

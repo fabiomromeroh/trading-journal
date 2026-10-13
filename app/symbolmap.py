@@ -54,10 +54,11 @@ def is_us(t) -> bool:
 
 def price_symbol(t) -> str:
     """Symbol for the Yahoo price feeds: the mapped one (e.g. VUSA.L) or the journal underlying."""
+    from app.symbols import BUILTIN
     inst = instrument_of(t)
-    if inst is not None and inst.price_symbol:
-        return inst.price_symbol
-    return t.underlying
+    ps = inst.price_symbol if inst is not None and inst.price_symbol else t.underlying
+    # a retired / when-issued ticker (HONAV) has no price feed: read the verified new one (HONA)
+    return BUILTIN[ps][0] if ps in BUILTIN else ps
 
 
 def market_tz(t, default: str) -> str:

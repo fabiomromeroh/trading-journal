@@ -30,7 +30,7 @@ def set_prefs(request: Request, db: Session = Depends(get_db), nxt: str = Form("
     resp = RedirectResponse(safe_next(nxt), status_code=303)
     if currency_choice:
         if currency_choice.upper() in currency.CHOICES:
-            currency.set_display(db, currency_choice)
+            currency.set_display(db, currency_choice, currency.VIEW_ACCOUNT.get())
     if account is not None:
         if account.isdigit() and db.get(Account, int(account)):
             resp.set_cookie(ACCOUNT_COOKIE, account, max_age=60 * 60 * 24 * 365, samesite="lax", httponly=True)

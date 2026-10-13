@@ -16,6 +16,7 @@ DASHBOARD = [
     ("total_return", "Total return", "kpi", "P&L", True),
     ("dividends", "Dividends", "kpi", "P&L", True),
     ("balance", "Balance (account value)", "kpi", "P&L", True),
+    ("interest", "Interest", "kpi", "P&L", True),
     ("positions", "Open positions (unrealized breakdown)", "full", "P&L", True),
     ("win_rate", "Win rate", "kpi", "Win/loss", True),
     ("profit_factor", "Profit factor", "kpi", "Win/loss", True),
@@ -168,7 +169,7 @@ def _key(page: str) -> str:
 # Default widgets added after layouts could be saved: shown once in saved layouts too (after `anchor`),
 # unless the layout was saved when the widget already existed (then the user chose to hide it).
 INTRODUCED = {"dashboard": {"positions": "total_pnl", "coach": "recent", "total_return": "total_pnl", "dividends": "total_return",
-                            "balance": "dividends", "chart_balance": "positions"},
+                            "balance": "dividends", "interest": "dividends", "chart_balance": "positions"},
               "trade": {"r_now": "mfe_mae", "stop": "r_now", "risk": "stop", "mfe_mae_r": "risk",
                         "position": "entry_exit", "total_risk": "risk", "unrealized": "r_now",
                         "dividend": "fees"}}

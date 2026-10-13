@@ -50,20 +50,40 @@ def symbol(ccy: str | None) -> str:
 
 
 # ------------------------------------------------------------------ display choice (remembered)
-def get_display(db: Session) -> str:
+# The account the current request shows (header switcher cookie or ?account=), set by middleware.
+# One account selected: its own saved choice, else its account currency (Trading 212 EUR, Schwab USD).
+# All: the global choice, as before.
+from contextvars import ContextVar
+
+VIEW_ACCOUNT: ContextVar[int | None] = ContextVar("view_account", default=None)
+ACCT_KEY = "display_currency:acct:"
+
+
+def get_display(db: Session, account_id: int | None = None) -> str:
+    aid = account_id if account_id is not None else VIEW_ACCOUNT.get()
+    if aid:
+        v = db.scalar(select(AppState.value).where(AppState.key == ACCT_KEY + str(aid)))
+        if v in CHOICES:
+            return v
+        from app.models import Account
+        acct = db.get(Account, aid)
+        if acct is not None and (acct.currency or "").upper() in CHOICES:
+            return acct.currency.upper()
     v = db.scalar(select(AppState.value).where(AppState.key == "display_currency"))
     return v if v in CHOICES else "USD"
 
 
-def set_display(db: Session, ccy: str) -> str:
+def set_display(db: Session, ccy: str, account_id: int | None = None) -> str:
+    """Manual toggle: remembered for the selected account only, or globally when All is shown."""
     ccy = ccy.upper()
     if ccy not in CHOICES:
         raise ValueError(f"unsupported display currency {ccy}")
-    row = db.get(AppState, "display_currency")
+    key = ACCT_KEY + str(account_id) if account_id else "display_currency"
+    row = db.get(AppState, key)
     if row:
         row.value = ccy
     else:
-        db.add(AppState(key="display_currency", value=ccy))
+        db.add(AppState(key=key, value=ccy))
     db.commit()
     return ccy
 

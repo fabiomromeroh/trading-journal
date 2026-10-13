@@ -137,3 +137,51 @@ def test_dashboard_widgets_render(db, monkeypatch):
     assert r.status_code == 200 and r.headers.get("HX-Refresh") == "true"
     html = c.get("/").text
     assert "ch-balance" in html and "Deposits $250.00" in html
+
+
+def test_interest_types_and_total(db):
+    for typ in ("INTEREST_ON_CASH", "LENDING_INTEREST", "INTEREST"):
+        assert bmod.flow_kind(typ) == "interest"
+    assert bmod.flow_kind("CURRENCY_CONVERSION_FEE") == "fee" and bmod.flow_kind("CARD_PURCHASE") is None
+    a = _acct(db)
+    bmod.ingest_flows(db, a.id, "t212", [
+        bmod.t212_flow({"type": "INTEREST_ON_CASH", "amount": 1.25, "reference": "i1", "dateTime": "2026-09-02T00:00:00Z", "currency": "USD"}, "USD"),
+        {"external_id": "d", "occurred_at": datetime(2026, 9, 1, 15), "amount": 100.0, "currency": "USD", "kind": "deposit"}])
+    it = bmod.interest_total(db, a.id, "USD")
+    assert it["interest"] == pytest.approx(1.25) and it["count"] == 1
+    bmod.rebuild(db, [a.id], currencies=("USD",), fetch=lambda *_: {}, today=date(2026, 9, 3))
+    s = bmod.series(db, a.id, "USD")
+    assert s["latest"]["balance"] == pytest.approx(101.25) and s["latest"]["net_deposits"] == pytest.approx(100)
+
+
+def test_csv_interest_rows():
+    from app.importers.t212_csv import parse
+    text = ("Action,Time,ISIN,Ticker,Name,ID,No. of shares,Price / share,Currency (Price / share),Total,Currency (Total)\n"
+            "Interest on cash,2026-09-02 01:00:00,,,,int-1,,,,0.42,EUR\n")
+    r = parse(text)
+    assert r.cash_flows and r.cash_flows[0]["amount"] == pytest.approx(0.42) and r.cash_flows[0]["currency"] == "EUR"
+
+
+def test_display_currency_follows_account(db):
+    from app import currency
+    eur = Account(name="T212", broker="trading212", currency="EUR", source_key="t212")
+    usd = Account(name="Schwab", broker="schwab", currency="USD", source_key="snaptrade")
+    db.add_all([eur, usd])
+    db.commit()
+    currency.set_display(db, "USD")
+    assert currency.get_display(db) == "USD"
+    assert currency.get_display(db, eur.id) == "EUR" and currency.get_display(db, usd.id) == "USD"
+    currency.set_display(db, "USD", eur.id)  # manual override for that account only
+    assert currency.get_display(db, eur.id) == "USD" and currency.get_display(db) == "USD"
+    tok = currency.VIEW_ACCOUNT.set(usd.id)
+    try:
+        assert currency.get_display(db) == "USD"
+    finally:
+        currency.VIEW_ACCOUNT.reset(tok)
+
+
+def test_honav_prices_from_hona():
+    from types import SimpleNamespace
+    from app import symbolmap
+    t = SimpleNamespace(underlying="HONAV", instrument=None, instrument_id=None)
+    assert symbolmap.price_symbol(t) == "HONA"

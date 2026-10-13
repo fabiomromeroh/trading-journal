@@ -30,6 +30,8 @@ I = {
                 "Net deposits (real deposits − withdrawals) + realized P&L + dividends + interest − cash fees + unrealized of positions held at the latest daily close. Broker check: cash + holdings from the latest Trading 212 / SnapTrade sync. Stored once per sync; never estimated."),
     "chart_balance": ("Balance curve", "Daily account value (balance) and the net cash you put in, like Trading 212's chart.",
                       "Each day: cumulative net deposits + realized P&L by fill day + dividends by pay day + unrealized at that day's close (Yahoo daily closes, carried at most 6 days over weekends/holidays). Days where a held position had no price are marked; that position is left out, not guessed."),
+    "interest": ("Interest", "Interest on cash the broker paid in this period (less any cash fees it charged).",
+                 "Sum of real interest rows from the Trading 212 cash ledger / CSV export, converted at the payment-date rate. Never estimated."),
     "dividends": ("Dividends", "Cash dividends the broker paid in this period.",
                   "Sum of real dividend payments (Trading 212, SnapTrade, Schwab CSV), converted at the payment-date rate. Never estimated."),
     "gross_net": ("Gross vs net P&L", "P&L before and after commissions/fees for closed trades.", "Gross = Σ (exit − entry) × qty × mult; net = gross − fees."),

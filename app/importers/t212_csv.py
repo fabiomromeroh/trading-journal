@@ -144,6 +144,15 @@ def parse(text: str, **_kw) -> ParseResult:
                     kind=action, ticker=ticker, raw={"action": action, "ccy": ccy},
                 ))
                 continue
+            if "interest" in a:  # "Interest on cash", "Lending interest": real cash the broker paid
+                ext = _cell(row, ix["id"])
+                when = parse_csv_time(_cell(row, ix["time"]))
+                total = parse_money(_cell(row, ix["total"]))
+                if ext and when is not None and total:
+                    res.cash_flows.append({"external_id": "csv:" + ext, "occurred_at": when, "amount": float(total),
+                                           "currency": (_cell(row, _col(header, "currency (total)")) or "").upper() or None,
+                                           "kind": "interest", "description": action[:200]})
+                    continue
             res.skipped[action or "blank"] += 1
             continue
         kind, side = mapped
