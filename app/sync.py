@@ -175,6 +175,9 @@ def execute_run(run_id: int, sources=None, send_reminders: bool = False, only: s
                 log.warning("email fill reconcile failed: %s", exc)
         run.trades_built = rebuild_trades(db)
         db.flush()
+        if touched:  # stored balance curve (deposits + realized + dividends + unrealized at daily closes)
+            from app import balance
+            balance.after_sync(db, touched)
         summary = summarize(run.inserted, run.merged, before, _trade_snapshot(db)) if used else None
         run.sources = ", ".join(used) or None
         if not used and not errors:

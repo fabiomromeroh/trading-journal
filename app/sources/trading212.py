@@ -50,6 +50,7 @@ CRED_STATE = "cred:t212"        # encrypted {"key","secret","env"}; the cred: pr
 LAST_STATE = "t212:last"        # last sync / test status (no secrets)
 CURSOR_STATE = "t212:cursor"    # newest filledAt stored (ISO, UTC)
 DIV_CURSOR_STATE = "t212:div_cursor"  # newest dividend paidOn stored (ISO, UTC)
+CASH_CURSOR_STATE = "t212:cash_cursor"  # newest cash-ledger row stored (ISO, UTC): deposits / withdrawals
 FULL_STATE = "t212:full"        # "1" → next sync ignores the cursor (one-off full re-scan)
 EXPORT_STATE = "t212:export"    # pending CSV reportId, or "done:<id>" once that file was imported
 RECON_STATE = "t212:recon"      # {"seen": {key: iso}, "dismissed": [key]} — not a secret
@@ -802,6 +803,11 @@ def dividend_record(item: dict, inst: Instrument | None = None, symbol: str | No
     )
 
 
+def balance_flow(item: dict, account_ccy: str | None) -> dict | None:
+    from app.balance import t212_flow
+    return t212_flow(item, account_ccy)
+
+
 def _transaction_record(item: dict) -> ExecRecord | None:
     """A share-moving transaction, or None for cash (deposit, fee, cash dividend).
 
@@ -1059,7 +1065,8 @@ class Trading212Source(DataSource):
                     if times and not blind and max(times) < threshold:
                         break
             recs, skipped, newest, detail, fields = self.convert(db, cl, items)
-            extra_api, csv_recs, extra_note = self._extra_history(db, cl, full)
+            extra_api, csv_recs, extra_note = self._extra_history(db, cl, full, acct)
+            self._save_summary(db, cl, acct, summary)
             div_note = self._import_dividends(db, cl, acct, full)
             recs.extend(extra_api)
             res.fetched = len(recs)
@@ -1258,7 +1265,19 @@ class Trading212Source(DataSource):
         if last_err:
             raise last_err
 
-    def _extra_history(self, db: Session, cl: T212Client, full: bool) -> tuple[list[ExecRecord], list[ExecRecord], str]:
+    def _save_summary(self, db: Session, cl: T212Client, acct: Account, summary: dict) -> None:
+        """Real cash + holdings for the Balance check. Legacy cash endpoint only when the summary lacks them."""
+        from app.balance import save_t212_summary
+        fallback = None
+        inv = summary.get("investments") if isinstance(summary.get("investments"), dict) else {}
+        if summary.get("totalValue") is None and inv.get("currentValue") is None:
+            try:
+                fallback = cl.get("/equity/account/cash")
+            except T212Error:
+                fallback = None
+        save_t212_summary(db, acct.id, summary, fallback if isinstance(fallback, dict) else None)
+
+    def _extra_history(self, db: Session, cl: T212Client, full: bool, acct: Account | None = None) -> tuple[list[ExecRecord], list[ExecRecord], str]:
         """Transactions (full re-scan only) and at most one CSV-export step. Failures are notes, not errors.
 
         History endpoints are about 20 requests/minute and the export endpoints are stricter
@@ -1267,17 +1286,48 @@ class Trading212Source(DataSource):
         """
         notes = []
         api: list[ExecRecord] = []
-        if full:
+        cursor = None if full else get_state(db, CASH_CURSOR_STATE)
+        # Cash ledger: every sync reads it back to the cursor (minus the overlap) for deposits and
+        # withdrawals; a full re-scan (or the first run) reads it all. Share-moving rows are kept on a
+        # full re-scan only, as before.
+        if full or acct is not None:
+            threshold = (datetime.fromisoformat(cursor) - timedelta(days=OVERLAP_DAYS)) if cursor else None
+            flows: list[dict] = []
+            newest: datetime | None = None
             try:
                 n = 0
-                for page in cl.paged("/equity/history/transactions"):
+                for page in cl.paged("/equity/history/transactions", limit=None if (full or not cursor) else MAX_EXTRA_PAGES):
                     n += 1
+                    times = []
                     for item in page:
-                        rec = _transaction_record(item)
-                        if isinstance(rec, ExecRecord):
-                            api.append(rec)
-                if n:
+                        if full:
+                            rec = _transaction_record(item)
+                            if isinstance(rec, ExecRecord):
+                                api.append(rec)
+                        if acct is not None:
+                            fl = balance_flow(item, acct.currency)
+                            if fl:
+                                flows.append(fl)
+                                times.append(fl["occurred_at"])
+                                newest = fl["occurred_at"] if newest is None or fl["occurred_at"] > newest else newest
+                        w = item.get("dateTime") if isinstance(item, dict) else None
+                        if w:
+                            try:
+                                times.append(parse_ts(str(w)))
+                            except ValueError:
+                                pass
+                    if threshold and not full and times and max(times) < threshold:
+                        break
+                if n and full:
                     notes.append(f"transactions {n} page(s)")
+                if acct is not None:
+                    from app.balance import ingest_flows
+                    st = ingest_flows(db, acct.id, SOURCE_KEY, flows)
+                    if st["inserted"]:
+                        notes.append(f"cash flows {st['inserted']} new")
+                    if newest:
+                        prev = parse_ts(cursor) if cursor else newest
+                        set_state(db, CASH_CURSOR_STATE, max(newest, prev).isoformat())
             except T212Error as exc:
                 notes.append("transactions unavailable" if exc.kind in ("scope", "api") else f"transactions: {exc.kind}")
         csv_recs, export_note = self._csv_export(db, cl, full)

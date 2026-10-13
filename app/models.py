@@ -127,6 +127,42 @@ class Dividend(Base):
     account: Mapped[Account] = relationship()
 
 
+class CashFlow(Base):
+    """Real money moved in or out of a broker account (deposit, withdrawal, transfer, interest, fee). Never estimated."""
+    __tablename__ = "cash_flows"
+    __table_args__ = (
+        UniqueConstraint("account_id", "source", "external_id", name="uq_cashflow_source_ext"),
+        Index("ix_cashflow_account_at", "account_id", "occurred_at"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"))
+    source: Mapped[str] = mapped_column(String(30))
+    external_id: Mapped[str] = mapped_column(String(200))
+    occurred_at: Mapped[datetime] = mapped_column(DateTime)  # naive UTC
+    amount: Mapped[float] = mapped_column(Float)  # signed: + in, - out
+    currency: Mapped[str | None] = mapped_column(String(3))
+    kind: Mapped[str] = mapped_column(String(40))  # deposit | withdrawal | transfer | interest | fee
+    description: Mapped[str | None] = mapped_column(String(200))
+
+
+class BalancePoint(Base):
+    """One day of the stored balance curve for one account in one display currency."""
+    __tablename__ = "balance_points"
+    __table_args__ = (UniqueConstraint("account_id", "currency", "day", name="uq_balance_point"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"))
+    currency: Mapped[str] = mapped_column(String(3))
+    day: Mapped[date] = mapped_column(Date)
+    net_deposits: Mapped[float] = mapped_column(Float)
+    realized_cum: Mapped[float] = mapped_column(Float)
+    dividends_cum: Mapped[float] = mapped_column(Float)
+    other_cum: Mapped[float] = mapped_column(Float, default=0.0)  # interest - cash fees
+    unrealized: Mapped[float | None] = mapped_column(Float)  # None = a held position had no close that day
+    balance: Mapped[float | None] = mapped_column(Float)
+    missing: Mapped[str | None] = mapped_column(Text)  # symbols without a price that day (comma list)
+    computed_at: Mapped[datetime | None] = mapped_column(DateTime, default=utcnow)
+
+
 class ImportBatch(Base):
     __tablename__ = "import_batches"
     id: Mapped[int] = mapped_column(primary_key=True)

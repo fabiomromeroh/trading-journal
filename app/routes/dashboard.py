@@ -68,13 +68,71 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
         "winloss": [st.wins, st.losses, st.scratches],
     }
     from app import dividends as dmod
+    from app import balance as bmod
     display = currency.get_display(db)
     dividends_total = dmod.total(db, f.account_id, display, f.start, f.end, tz)
+    bal = bmod.series(db, f.account_id, display, f.start, f.end)
+    charts["balance"] = {k: bal[k] for k in ("labels", "balance", "net_deposits", "missing")} if bal else None
     return templates.TemplateResponse(request, "dashboard.html", base_context(
-        request, db, nav="dashboard", f=f, st=st, charts=charts,
+        request, db, nav="dashboard", f=f, st=st, charts=charts, balance=bal, balance_build=bal is None and has_any > 0,
         recent=recent, has_any=has_any, last_import=last_import, n_all=len(trades),
         last_sync=last_sync, anchor=anchor, quotes_on=quotes_on, dividends_total=dividends_total,
         **dashboard_extras(db, trades, tz, events=evs, cumulative=st.cumulative)))
+
+
+_BUILDING = {"on": False, "error": None}
+_INLINE = False  # tests build in the request thread
+
+
+def _build_balance_bg() -> None:
+    import logging
+    from app import balance as bmod
+    from app import db as dbmod
+    s = dbmod.SessionLocal()
+    try:
+        bmod.rebuild(s)
+        s.commit()
+    except Exception as exc:  # noqa: BLE001
+        s.rollback()
+        _BUILDING["error"] = str(exc)[:200]
+        logging.getLogger(__name__).warning("balance build failed: %s", exc)
+    finally:
+        s.close()
+        _BUILDING["on"] = False
+
+
+@router.post("/dashboard/balance/build")
+def balance_build(db: Session = Depends(get_db)):
+    """First-time build of the stored balance series (later every sync rebuilds it). Runs in the
+    background (daily closes for every held symbol can take a minute); the card polls the status."""
+    import threading
+    from fastapi.responses import HTMLResponse
+    from app import balance as bmod
+    from app import currency
+    if bmod.has_points(db, None, currency.get_display(db)):
+        return HTMLResponse("", headers={"HX-Refresh": "true"})
+    if not _BUILDING["on"]:
+        _BUILDING.update(on=True, error=None)
+        if _INLINE:
+            _build_balance_bg()
+        else:
+            threading.Thread(target=_build_balance_bg, daemon=True).start()
+    return balance_status(db)
+
+
+@router.get("/dashboard/balance/status")
+def balance_status(db: Session = Depends(get_db)):
+    from fastapi.responses import HTMLResponse
+    from app import balance as bmod
+    from app import currency
+    if bmod.has_points(db, None, currency.get_display(db)):
+        return HTMLResponse("", headers={"HX-Refresh": "true"})
+    if _BUILDING["on"]:
+        return HTMLResponse('<div class="card-h">Balance</div><div class="kpi-v text-slate-500" hx-get="/dashboard/balance/status" '
+                            'hx-trigger="every 4s" hx-target="closest .kpi-card" hx-swap="innerHTML">…</div>'
+                            '<div class="kpi-sub">Building the balance history (daily closes)…</div>')
+    msg = "Could not build: " + _BUILDING["error"] if _BUILDING["error"] else "No cash flows or trades yet"
+    return HTMLResponse('<div class="card-h">Balance</div><div class="kpi-v">—</div><div class="kpi-sub">' + msg.replace("<", "&lt;") + '</div>')
 
 
 @router.get("/dashboard/live")

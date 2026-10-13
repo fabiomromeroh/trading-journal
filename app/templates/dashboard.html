@@ -78,7 +78,19 @@ const line = (id, labels, sets, day) => new Chart(document.getElementById(id), {
   options: { ...baseOpts, plugins: { legend: { display: sets.length > 1, position: 'bottom' }, tooltip: { callbacks: {
       label: c => (c.dataset.label ? c.dataset.label + ' ' : '') + signed(c.raw),
       footer: items => day && items.length && day[items[0].dataIndex] != null ? 'Day net P&L ' + signed(day[items[0].dataIndex]) : '' } } }, scales: { x: { ticks: { maxTicksLimit: 8, callback: function(v) { return String(this.getLabelForValue(v)).slice(0, 10); } } }, y: { ticks: { callback: money } } } } });
+function initBalance() {
+const el = document.getElementById('ch-balance'); const B = C.balance; if (!el || !B) return;
+new Chart(el, { type: 'line', data: { labels: B.labels, datasets: [
+    { label: 'Balance', data: B.balance, borderColor: '#818cf8', backgroundColor: 'rgba(99,102,241,.15)', fill: true, pointRadius: 0, pointHoverRadius: 4, pointHitRadius: 8, tension: .2, borderWidth: 2 },
+    { label: 'Net deposits', data: B.net_deposits, borderColor: '#94a3b8', borderDash: [4, 3], pointRadius: 0, pointHoverRadius: 3, tension: 0, borderWidth: 1.5, stepped: true }] },
+  options: { ...baseOpts, plugins: { legend: { display: true, position: 'bottom' }, tooltip: { callbacks: {
+      label: c => c.dataset.label + ' ' + money2(c.raw),
+      footer: items => { if (!items.length) return ''; const i = items[0].dataIndex; const r = B.balance[i] - B.net_deposits[i];
+        return 'Return ' + signed(r) + (B.missing[i] ? '\n⚠ no price: ' + B.missing[i] : ''); } } } },
+    scales: { x: { ticks: { maxTicksLimit: 8 } }, y: { ticks: { callback: money } } } } });
+}
 const INIT = {
+  chart_balance: initBalance,
   chart_equity: initEquity, chart_winloss: initWinloss,
   chart_daily: () => DailyPnl(document.getElementById('daily-widget'), C),
   calendar: () => PnlCalendar(document.getElementById('pnl-calendar'), C), chart_symbol: () => bar('ch-symbol', C.symbol, true),
