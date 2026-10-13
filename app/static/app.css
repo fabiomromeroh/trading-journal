@@ -110,3 +110,7 @@ form.is-loading { opacity: .7; }
 @media (max-width: 767px) { .kpi-card { height: 132px; } .kpi-card { padding: .75rem; } }
 /* tables of numbers: aligned columns */
 .tbl-num td, .tbl-num th { font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* Live dashboard cards: spinner while prices load */
+[id^="live-"].htmx-request .kpi-v { color: transparent !important; position: relative; }
+[id^="live-"].htmx-request .kpi-v::after { content: ""; position: absolute; left: 0; top: 50%; width: 18px; height: 18px; margin-top: -9px;
+  border-radius: 50%; border: 2px solid rgba(148,163,184,.35); border-top-color: #818cf8; animation: tj-spin .7s linear infinite; }

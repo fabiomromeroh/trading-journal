@@ -26,6 +26,8 @@ I = {
                   "Total realized + unrealized. Account check: account value − net deposits (SnapTrade)."),
     "total_return": ("Total return", "Realized P&L + unrealized P&L + dividends − fees, like Trading 212.",
                      "Realized (already net of fees) + unrealized of open positions now + cash dividends the broker paid. Dividends are never estimated."),
+    "dividends": ("Dividends", "Cash dividends the broker paid in this period.",
+                  "Sum of real dividend payments (Trading 212, SnapTrade, Schwab CSV), converted at the payment-date rate. Never estimated."),
     "gross_net": ("Gross vs net P&L", "P&L before and after commissions/fees for closed trades.", "Gross = Σ (exit − entry) × qty × mult; net = gross − fees."),
     "fees": ("Commissions & fees", "Total commissions and regulatory fees on closed trades.", "Σ fees of closed trades; open trades' fees shown separately."),
     "long_short": ("Long vs short", "Net P&L of closed long trades vs closed short trades.", "Σ net P&L by direction (closed trades)."),

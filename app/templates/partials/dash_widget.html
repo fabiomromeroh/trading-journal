@@ -22,6 +22,7 @@
 {% elif wid == 'total_pnl' %}{% if anchor and anchor.account_check %}{{ kpi('Total P&L', anchor.journal_total|money(true), anchor.journal_total|pnl_class,
     'Realized + unrealized · account check ' ~ anchor.total_pnl|money(true) ~ (' ✓' if anchor.diff|abs < 1 else ' (diff ' ~ anchor.diff|money(true) ~ ')'),
     'Realized + unrealized. Account check at SnapTrade sync prices (' ~ anchor.snap_as_of|irish_time ~ '): value ' ~ anchor.value|money ~ ' − net deposits ' ~ anchor.net_deposits|money ~ ' = ' ~ anchor.total_pnl|money(true) ~ (' ✓ matches journal' if anchor.diff|abs < 1 else ' (diff ' ~ anchor.diff|money(true) ~ ')')) }}{% elif anchor %}{{ kpi('Total P&L', (st.realized + anchor.unrealized)|money(true), (st.realized + anchor.unrealized)|pnl_class, 'Realized in view + unrealized now') }}{% else %}{{ kpi('Total P&L', '—', '', na) }}{% endif %}
+{% elif wid == 'dividends' %}{{ kpi('Dividends', (dividends_total or 0)|money(true), (dividends_total or 0)|pnl_class, 'Cash dividends paid in this period') }}
 {% elif wid == 'total_return' %}{% set unrl = anchor.unrealized if anchor else 0 %}{% set ret = st.realized + unrl + (dividends_total or 0) %}{{ kpi('Total return', ret|money(true), ret|pnl_class,
     'Div ' ~ (dividends_total or 0)|money(true) ~ ' · realized ' ~ st.realized|money(true) ~ ' · unrealized ' ~ unrl|money(true) ~ ' · fees ' ~ R.fees|money,
     'Realized P&L + unrealized P&L + dividends − fees (fees already in realized). Dividends are cash the broker paid, converted at the payment-date rate.') }}
