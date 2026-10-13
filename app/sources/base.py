@@ -21,9 +21,23 @@ class SyncContext:
     trigger: str = "manual"
     log: list[str] = field(default_factory=list)
     run_id: int | None = None
+    account_id: int | None = None  # None = every account this source owns
 
     def info(self, msg: str) -> None:
         self.log.append(msg)
+
+
+def account_is_target(account, *, external_ref: str | None, masked: str | None) -> bool:
+    """True when a broker row is the account the user picked.
+
+    A stored external_ref must match. Before the first sync links the account, the masked number is enough.
+    """
+    if account is None or getattr(account, "is_demo", False):
+        return False
+    ref = account.external_ref or ""
+    if ref:
+        return bool(external_ref) and ref == external_ref
+    return bool(masked and account.account_number_masked == masked)
 
 
 @dataclass

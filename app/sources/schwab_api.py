@@ -29,7 +29,7 @@ from app.instruments import OPTION_MULTIPLIER, ExecRecord, option_symbol, parse_
 from app.models import Account, OAuthToken, SourceState, utcnow
 from app.security import decrypt, encrypt
 from app.services import ingest_records
-from app.sources.base import DataSource, SourceResult, SourceStatus, SyncContext
+from app.sources.base import DataSource, SourceResult, SourceStatus, SyncContext, account_is_target
 from app.timeutil import et_date, to_utc_naive
 
 log = logging.getLogger(__name__)
@@ -284,6 +284,10 @@ class SchwabApiSource(DataSource):
         now = utcnow()
         for a in client.account_numbers():
             number, hash_value = str(a.get("accountNumber", "")), a.get("hashValue")
+            masked = f"...{number[-3:]}" if number else None
+            if ctx.account_id is not None and not account_is_target(
+                    db.get(Account, ctx.account_id), external_ref=hash_value, masked=masked):
+                continue
             acct = db.scalar(select(Account).where(Account.external_ref == hash_value)) or db.scalar(
                 select(Account).where(Account.broker == "schwab", Account.is_demo.is_(False),
                                       Account.account_number_masked == f"...{number[-3:]}"))
@@ -335,6 +339,8 @@ class SchwabApiSource(DataSource):
             extra = ("; " + "; ".join(corp)) if corp else ""
             ctx.info(f"{acct.name}: {len(records)} executions ({stats.inserted} new, {stats.merged} merged){extra}")
             db.commit()
+        if ctx.account_id is not None and ctx.account_id not in res.accounts:
+            ctx.info("Selected account is not on this Schwab connection.")
         return res
 
     def _fetch_window(self, client: SchwabClient, h: str, start: datetime, end: datetime) -> list[dict]:

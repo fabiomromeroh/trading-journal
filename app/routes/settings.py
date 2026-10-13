@@ -112,11 +112,47 @@ def backup(db: Session = Depends(get_db)):
 
 
 # ---------------------------------------------------------------- sync
+def _sync_note(db: Session, message: str) -> SyncRun:
+    existing = running_sync(db)
+    if existing:
+        return existing
+    run = SyncRun(trigger="manual", status="skipped", finished_at=utcnow(), message=message)
+    db.add(run)
+    db.commit()
+    return run
+
+
 @router.post("/sync")
-def sync_now(request: Request, db: Session = Depends(get_db)):
+def sync_now(request: Request, account: str = Form(""), mode: str = Form("new"), db: Session = Depends(get_db)):
+    """Sync every connected account, or the one account the switcher / Accounts card named.
+
+    mode=new continues from the stored cursor. mode=full arms a one-off full re-scan first
+    (SnapTrade / Schwab cursor reset, Trading 212 FULL_STATE).
+    """
     from app import quotes
+    from app.sync import arm_full_history, source_key_for_account
+
+    acct = None
+    only = None
+    raw = (account or "").strip()
+    if raw:
+        if not raw.isdigit():
+            run = _sync_note(db, "That account cannot be synced.")
+            return templates.TemplateResponse(request, "partials/sync_status.html", {"request": request, "run": run})
+        acct = db.get(Account, int(raw))
+        if acct is None or acct.is_demo:
+            run = _sync_note(db, "That account cannot be synced.")
+            return templates.TemplateResponse(request, "partials/sync_status.html", {"request": request, "run": run})
+        key = source_key_for_account(db, acct)
+        if key is None:
+            run = _sync_note(db, f"{acct.name} has no broker connection. Sync new and Full history run for a "
+                             "connected account (SnapTrade, Schwab API, or Trading 212).")
+            return templates.TemplateResponse(request, "partials/sync_status.html", {"request": request, "run": run})
+        only = {key}
+    if mode == "full":
+        arm_full_history(db, acct)
     quotes.clear_cache()  # next dashboard load fetches fresh prices for the unrealized P&L
-    run_id = start_background("manual")
+    run_id = start_background("manual", only=only, account_id=acct.id if acct else None)
     run = db.get(SyncRun, run_id)
     return templates.TemplateResponse(request, "partials/sync_status.html", {"request": request, "run": run})
 
@@ -198,7 +234,7 @@ def _finish_schwab(request: Request, db: Session, code_or_url: str) -> None:
     try:
         client = SchwabClient(db)
         client.exchange_code(client.code_from_redirect(code_or_url))
-        request.session["flash"] = "Schwab connected. Run 'Sync now' to pull your history."
+        request.session["flash"] = "Schwab connected. Run Sync new to pull your history."
     except (SchwabAuthError, RuntimeError) as exc:
         request.session["flash"] = f"Schwab connection failed: {exc}"
 
@@ -272,11 +308,11 @@ def snaptrade_return(request: Request, id: str = "", db: Session = Depends(get_d
     conns = {c["id"]: c for c in snap.get("connections", [])}
     if id and id in conns and not conns[id].get("disabled"):
         mark_reconnected(db, id)
-        request.session["flash"] = "Schwab reconnected. Click Sync now to pull new trades."
+        request.session["flash"] = "Schwab reconnected. Click Sync new to pull new trades."
     elif id and id in conns:
         request.session["flash"] = "SnapTrade still reports the Schwab connection as disabled. Try Reconnect again."
     else:
-        request.session["flash"] = "Back from SnapTrade. Click Sync now to pull your trades."
+        request.session["flash"] = "Back from SnapTrade. Click Sync new to pull your trades."
     return RedirectResponse("/settings", status_code=303)
 
 

@@ -1031,6 +1031,11 @@ class Trading212Source(DataSource):
         try:
             cl = self.client(db)
             summary = cl.account_summary()
+            if ctx.account_id is not None:
+                wanted = db.get(Account, ctx.account_id)
+                if wanted is None or (wanted.external_ref or "") != str(summary.get("id")):
+                    ctx.info("Trading 212 account does not match the selected account.")
+                    return res
             acct = self.ensure_account(db, summary)
             res.accounts.append(acct.id)
             full = get_state(db, FULL_STATE) == "1"

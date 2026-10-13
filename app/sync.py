@@ -16,7 +16,7 @@ from datetime import timedelta
 from sqlalchemy import select
 
 from app import db as dbmod
-from app.models import SyncRun, Trade, utcnow
+from app.models import Account, SourceState, SyncRun, Trade, utcnow
 from app.services import rebuild_trades
 from app.sources import SyncContext, all_sources
 
@@ -66,7 +66,67 @@ def summarize(inserted: int, merged: int, before: dict, after: dict) -> str:
     return ", ".join(parts) + f"; {trades}."
 
 
-def execute_run(run_id: int, sources=None, send_reminders: bool = False, only: set[str] | None = None) -> SyncRun:
+def source_key_for_account(db, account: Account | None) -> str | None:
+    """Adapter that can pull this account, or None for a file-import / sample account."""
+    if account is None or account.is_demo:
+        return None
+    sk = (account.source_key or "").strip().lower()
+    broker = (account.broker or "").strip().lower()
+    ref = account.external_ref or ""
+    if sk in {"t212", "trading212"} or broker in {"trading212", "t212", "trading 212"}:
+        return "t212"
+    if sk == "snaptrade" or ref.startswith("snaptrade:"):
+        return "snaptrade"
+    if sk == "schwab_api":
+        return "schwab_api"
+    found = db.scalar(select(SourceState.source).where(
+        SourceState.account_id == account.id,
+        SourceState.source.in_(("snaptrade", "schwab_api", "t212"))))
+    if found:
+        return found
+    # The Schwab API stores its account hash in external_ref. SnapTrade ids are prefixed and handled above.
+    if ref and broker in {"schwab", "thinkorswim", "tos"}:
+        return "schwab_api"
+    return None
+
+
+def _clear_synced_through(db, source: str, account_id: int | None) -> None:
+    stmt = select(SourceState).where(SourceState.source == source)
+    if account_id is not None:
+        stmt = stmt.where(SourceState.account_id == account_id)
+    for st in db.scalars(stmt):
+        st.synced_through = None
+
+
+def arm_full_history(db, account: Account | None) -> None:
+    """Arm a one-off full re-scan. None means every connected source.
+
+    SnapTrade and the Schwab API forget synced_through. Trading 212 sets FULL_STATE, which the next
+    sync consumes. Other accounts keep their cursors when one account is chosen.
+    """
+    from app.services import set_state
+    from app.sources.snaptrade import full_resync
+    from app.sources.trading212 import FULL_STATE
+
+    if account is None:
+        full_resync(db)
+        _clear_synced_through(db, "schwab_api", None)
+        set_state(db, FULL_STATE, "1")
+        db.commit()
+        return
+    key = source_key_for_account(db, account)
+    if key == "t212":
+        set_state(db, FULL_STATE, "1")
+        db.commit()
+    elif key == "snaptrade":
+        full_resync(db, account.id)
+    elif key == "schwab_api":
+        _clear_synced_through(db, "schwab_api", account.id)
+        db.commit()
+
+
+def execute_run(run_id: int, sources=None, send_reminders: bool = False, only: set[str] | None = None,
+                account_id: int | None = None) -> SyncRun:
     if not _lock.acquire(blocking=False):
         db = dbmod.SessionLocal()
         run = db.get(SyncRun, run_id)
@@ -75,7 +135,7 @@ def execute_run(run_id: int, sources=None, send_reminders: bool = False, only: s
     db = dbmod.SessionLocal()
     try:
         run = db.get(SyncRun, run_id)
-        ctx = SyncContext(trigger=run.trigger, run_id=run.id)
+        ctx = SyncContext(trigger=run.trigger, run_id=run.id, account_id=account_id)
         sources = sources if sources is not None else all_sources()
         if only:  # per-broker "Sync now"
             sources = [s for s in sources if s.key in only]
@@ -157,7 +217,8 @@ def execute_run(run_id: int, sources=None, send_reminders: bool = False, only: s
         _lock.release()
 
 
-def start_background(trigger: str = "manual", only: set[str] | None = None) -> int:
+def start_background(trigger: str = "manual", only: set[str] | None = None,
+                     account_id: int | None = None) -> int:
     db = dbmod.SessionLocal()
     try:
         run, created = start_run(db, trigger)
@@ -165,7 +226,8 @@ def start_background(trigger: str = "manual", only: set[str] | None = None) -> i
     finally:
         db.close()
     if created:
-        threading.Thread(target=execute_run, args=(run_id,), kwargs={"only": only} if only else {}, daemon=True).start()
+        threading.Thread(target=execute_run, args=(run_id,),
+                         kwargs={"only": only, "account_id": account_id}, daemon=True).start()
     return run_id
 
 

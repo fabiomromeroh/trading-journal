@@ -21,7 +21,8 @@
 {% include "partials/brokers_settings.html" %}
 
 <div class="card p-5 mb-4">
-  <div class="card-h mb-3">Accounts</div>
+  <div class="card-h mb-1">Accounts</div>
+  <p class="text-[11px] text-slate-500 mb-3" id="account-sync-help"><b>Sync new</b> reads fills after that account's stored cursor. <b>Full history</b> re-scans that account once (SnapTrade or Schwab cursor reset, or a Trading 212 full re-scan). Existing fills are kept. The sidebar does the same for the account selected there; All runs every connected account.</p>
   {% if acct_rows %}
   <div class="set-cards cols-2">
     {% for row in acct_rows %}{% set a = row.a %}
@@ -38,6 +39,14 @@
       </form>
       <p class="text-slate-400 text-xs mt-3">{% if row.orphans %}<span class="text-amber-300">{{ row.orphans|length }}</span> fills closed positions opened before your imported history{% for o in row.orphans[:4] %} · {{ o.symbol }} {{ o.quantity|qty }}{% endfor %}{% if row.orphans|length > 4 %} …{% endif %}. Import older history to match them.{% else %}Unmatched closes: —{% endif %}</p>
       {% if not a.is_demo %}
+      <div class="flex flex-wrap gap-2 mt-3">
+        <button type="button" class="btn btn-p text-xs" hx-post="/sync" hx-target="#acct-sync-{{ a.id }}" hx-swap="innerHTML"
+                hx-vals='{"account":"{{ a.id }}","mode":"new"}'>Sync new</button>
+        <button type="button" class="btn btn-s text-xs" hx-post="/sync" hx-target="#acct-sync-{{ a.id }}" hx-swap="innerHTML"
+                hx-vals='{"account":"{{ a.id }}","mode":"full"}'
+                hx-confirm="Re-read the full history for this account? Existing fills are kept.">Full history</button>
+      </div>
+      <div id="acct-sync-{{ a.id }}"></div>
       <form method="post" action="/settings/accounts/{{ a.id }}/delete" class="set-inline mt-3" onsubmit="return confirm('Delete this account and ALL its fills and trades?')">
         <label class="set-field"><span class="card-h">Delete</span><input name="confirm" class="inp" placeholder="type name" aria-label="Type the account name to confirm delete"></label>
         <button class="text-xs text-rose-300">Delete</button>
@@ -58,8 +67,12 @@
   <div class="card p-5 min-w-0">
     <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
       <div class="card-h">Automated data sources</div>
-      <button hx-post="/sync" hx-target="#sync-panel" class="btn btn-p text-xs">Sync now</button>
+      <div class="flex flex-wrap gap-2">
+        <button hx-post="/sync" hx-target="#sync-panel" hx-vals='{"mode":"new"}' class="btn btn-p text-xs">Sync new</button>
+        <button hx-post="/sync" hx-target="#sync-panel" hx-vals='{"mode":"full"}' hx-confirm="Re-read the full history for every connected account? Existing fills are kept." class="btn btn-s text-xs">Full history</button>
+      </div>
     </div>
+    <p class="text-[11px] text-slate-500 mb-3">These two run every connected account. <b>Sync new</b> continues from each stored cursor. <b>Full history</b> re-scans once. For one account, use the card under Accounts or the sidebar switcher.</p>
     <div id="sync-panel" class="mb-3">{% if active_run %}{% with run = active_run %}{% include "partials/sync_status.html" %}{% endwith %}{% endif %}</div>
     {% for src, st in sources %}
     <div class="rounded-lg border border-slate-700/70 p-4 mb-3 min-w-0">
@@ -88,7 +101,7 @@
         {% endif %}
         <div class="text-slate-400">Last successful sync: <span class="text-slate-200">{{ snaptrade.last_success|local_dt if snaptrade and snaptrade.last_success else 'never' }}</span>{% if snaptrade and snaptrade.checked_at %} · status checked {{ snaptrade.checked_at|local_dt }}{% endif %}</div>
         {% if snaptrade and snaptrade.error %}<div class="text-amber-300">Last status check failed: {{ snaptrade.error }}</div>{% endif %}
-        <div class="text-xs text-slate-500">Sync is manual: click <b>Sync now</b>. SnapTrade refreshes Schwab transactions once a day (one day behind); today's fills come from your executed orders and are marked <i>provisional (fees pending)</i> until the transaction arrives tomorrow. Times are date-only; importing a thinkorswim Account Statement adds exact fill times to the same fills.</div>
+        <div class="text-xs text-slate-500">Sync is manual: click <b>Sync new</b>. SnapTrade refreshes Schwab transactions once a day (one day behind); today's fills come from your executed orders and are marked <i>provisional (fees pending)</i> until the transaction arrives tomorrow. Times are date-only; importing a thinkorswim Account Statement adds exact fill times to the same fills.</div>
       </div>
       <div class="flex flex-wrap gap-2 mt-3">
         {% if snaptrade and snaptrade.connections %}
@@ -116,7 +129,7 @@
       {% endif %}
     </div>
     {% endfor %}
-    <div class="text-xs text-slate-500">CSV import is always available on the <a href="/import" class="underline">Import</a> page. Automated sources plug into <code>app/sources/</code>; “Sync now” runs every enabled source, then rebuilds trades. There is no scheduled sync.</div>
+    <div class="text-xs text-slate-500">CSV import is always available on the <a href="/import" class="underline">Import</a> page. Automated sources plug into <code>app/sources/</code>; “Sync new” runs every enabled source, then rebuilds trades. There is no scheduled sync.</div>
   </div>
 
   <div class="card p-5 min-w-0">

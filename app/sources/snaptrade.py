@@ -50,7 +50,7 @@ from app.config import get_settings
 from app.instruments import OPTION_MULTIPLIER, ExecRecord, option_symbol, parse_occ
 from app.models import Account, SourceState, utcnow
 from app.services import get_state, ingest_records, set_state
-from app.sources.base import DataSource, SourceResult, SourceStatus, SyncContext
+from app.sources.base import DataSource, SourceResult, SourceStatus, SyncContext, account_is_target
 from app.timeutil import ET, local_to_utc_naive
 
 log = logging.getLogger(__name__)
@@ -677,6 +677,9 @@ class SnapTradeSource(DataSource):
         if not accounts:
             raise SnapTradeError("No accounts are connected in SnapTrade.")
         for sa in accounts:
+            if ctx.account_id is not None and not account_is_target(
+                    db.get(Account, ctx.account_id), external_ref=f"snaptrade:{sa['id']}", masked=sa.get("masked")):
+                continue
             acct = self._account(db, sa)
             st = db.scalar(select(SourceState).where(SourceState.source == self.key,
                                                      SourceState.account_id == acct.id))
@@ -734,6 +737,8 @@ class SnapTradeSource(DataSource):
                      f"{stats.merged} merged with imports{extra}. "
                      f"SnapTrade data through {through or '?'}.")
             db.commit()
+        if ctx.account_id is not None and ctx.account_id not in res.accounts:
+            ctx.info("Selected account is not on this SnapTrade connection.")
         return res
 
     def _account(self, db: Session, sa: dict) -> Account:
@@ -753,8 +758,14 @@ class SnapTradeSource(DataSource):
         return acct
 
 
-def full_resync(db: Session) -> None:
-    """Forget the incremental cursor so the next sync pulls the full history again."""
-    for st in db.scalars(select(SourceState).where(SourceState.source == SOURCE_KEY)):
+def full_resync(db: Session, account_id: int | None = None) -> None:
+    """Forget the incremental cursor so the next sync pulls the full history again.
+
+    account_id limits the reset to one account. Omit it to reset every SnapTrade account.
+    """
+    stmt = select(SourceState).where(SourceState.source == SOURCE_KEY)
+    if account_id is not None:
+        stmt = stmt.where(SourceState.account_id == account_id)
+    for st in db.scalars(stmt):
         st.synced_through = None
     db.commit()

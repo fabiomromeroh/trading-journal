@@ -30,7 +30,9 @@
   </button>
   <a href="/" class="flex items-center gap-2 min-w-0"><span class="h-7 w-7 rounded-lg bg-gradient-to-br from-indigo-500 to-cyan-400 grid place-items-center font-bold text-slate-900 text-xs">TJ</span><span class="font-semibold text-white truncate">{% block mobile_title %}Trading Journal{% endblock %}</span></a>
   <button type="button" @click="mnav = true" class="ml-auto text-[11px] rounded-md border border-slate-700 px-2 py-1 text-slate-300" id="mobile-chip">{{ (accounts|selectattr('id','equalto',active_account)|first).name if active_account else 'All' }} · {{ display_symbol|trim }}</button>
-  <button hx-post="/sync" hx-target="#sync-toast" hx-swap="innerHTML" @click="mnav = true" class="h-10 px-3 rounded-lg bg-indigo-600 text-white text-sm font-medium" aria-label="Sync now">Sync</button>
+  <button hx-post="/sync" hx-target="#sync-toast" hx-swap="innerHTML" @click="mnav = true"
+          hx-vals='{"mode":"new"{% if active_account %},"account":"{{ active_account }}"{% endif %}}'
+          class="h-10 px-3 rounded-lg bg-indigo-600 text-white text-sm font-medium" aria-label="Sync new" title="Sync new: fills after the stored cursor">Sync</button>
 </header>
 <div id="nav-backdrop" class="md:hidden" @click="mnav = false"></div>
 <div class="flex min-h-screen">
@@ -73,12 +75,17 @@
       </a>
       {% endfor %}
     </nav>
-    <div class="mt-auto p-4 space-y-3">
-      <button hx-post="/sync" hx-target="#sync-toast" hx-swap="innerHTML"
-              class="w-full text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white py-2 font-medium flex items-center justify-center gap-2">
-        <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.6M20 20v-5h-.6M5 9a8 8 0 0114.4-2M19 15a8 8 0 01-14.4 2"/></svg>
-        Sync now
-      </button>
+    <div class="mt-auto p-4 space-y-2" id="side-sync">
+      <p class="text-[11px] text-slate-500 leading-snug" id="sync-help">
+        {% if active_account %}{% set sel = (accounts|selectattr('id','equalto',active_account)|list|first) %}Syncs <b class="text-slate-300">{{ sel.name if sel else 'this account' }}</b> only.{% else %}Syncs <b class="text-slate-300">every connected account</b>.{% endif %}
+        <b class="text-slate-400">Sync new</b> reads fills after the stored cursor.
+        <b class="text-slate-400">Full history</b> re-scans once; existing fills are kept.
+      </p>
+      <form hx-post="/sync" hx-target="#sync-toast" hx-swap="innerHTML" id="side-sync-form" class="space-y-1.5">
+        {% if active_account %}<input type="hidden" name="account" value="{{ active_account }}">{% endif %}
+        <button name="mode" value="new" class="w-full text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white py-2 font-medium">Sync new</button>
+        <button name="mode" value="full" onclick="return confirm('Re-read the full history? Existing fills are kept.')" class="w-full text-xs rounded-lg border border-slate-700 text-slate-300 hover:text-white hover:bg-slate-800 py-1.5">Full history</button>
+      </form>
       <div id="sync-toast" class="text-xs"></div>
       <form method="post" action="/logout"><button class="w-full text-xs text-slate-500 hover:text-slate-300">Log out</button></form>
     </div>

@@ -46,7 +46,7 @@ with sync_playwright() as p:
     page.screenshot(path=str(OUT / "04-import.png"), full_page=True)
     page.goto(f"{BASE}/settings")
     page.wait_for_timeout(1000)
-    page.click("button:has-text('Sync now') >> nth=1")
+    page.click("button:has-text('Sync new') >> nth=1")
     page.wait_for_timeout(3500)
     page.screenshot(path=str(OUT / "05-settings.png"), full_page=True)
     browser.close()
