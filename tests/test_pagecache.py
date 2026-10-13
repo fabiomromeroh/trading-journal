@@ -52,3 +52,12 @@ def test_disabled_by_env(db, monkeypatch):
     c = _client()
     c.get("/trades")
     assert "x-page-cache" not in c.get("/trades").headers
+
+
+def test_prewarm_rerenders_recent_pages(db):
+    c = _client()
+    c.get("/trades")
+    c.get("/trades")
+    pagecache.bump()
+    pagecache._prewarm()  # what the timer runs a few seconds after the last write
+    assert c.get("/trades").headers.get("x-page-cache") == "hit"

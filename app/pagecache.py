@@ -37,12 +37,54 @@ def enabled() -> bool:
     return os.environ.get("PAGE_CACHE", "on").lower() not in ("0", "off", "false")
 
 
+_RECENT: "OrderedDict[tuple, list]" = OrderedDict()   # key -> request headers, most recent last (in memory only)
+_APP = None
+_WARM = {"timer": None}
+WARM_PAGES = 6
+WARM_DELAY = 4.0   # seconds after the last write (a sync commits many times)
+
+
 def bump() -> None:
     global GEN
     with _LOCK:
         GEN += 1
         _CACHE.clear()
         _MEMO.clear()
+        # never re-warm because of a write made while warming (no loop)
+        if _APP is not None and _RECENT and enabled() and not os.environ.get("PYTEST_CURRENT_TEST") \
+                and not _WARM.get("running") and time.monotonic() - _WARM.get("ended", -999) > 5:
+            t = _WARM["timer"]
+            if t is not None:
+                t.cancel()
+            _WARM["timer"] = threading.Timer(WARM_DELAY, _prewarm)
+            _WARM["timer"].daemon = True
+            _WARM["timer"].start()
+
+
+def _prewarm() -> None:
+    """Re-render the pages the user opened most recently, so the first click after a sync is fast too."""
+    import asyncio
+
+    import httpx
+    with _LOCK:
+        jobs = list(_RECENT.items())[-WARM_PAGES:]
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=_APP), base_url="http://warm") as c:
+            for key, headers in reversed(jobs):
+                path, query = key[0], key[1]
+                try:
+                    await c.get(path + (("?" + query) if query else ""), headers=headers)
+                except Exception:  # noqa: BLE001 - warming is best effort
+                    pass
+    _WARM["running"] = True
+    try:
+        asyncio.run(run())
+    except Exception:  # noqa: BLE001
+        pass
+    finally:
+        _WARM["running"] = False
+        _WARM["ended"] = time.monotonic()
 
 
 @event.listens_for(Engine, "before_cursor_execute")
@@ -102,7 +144,9 @@ def put(key: tuple, gen: int, ttl: int, body: bytes, headers: dict) -> None:
 
 
 def install(app) -> None:
+    global _APP
     from starlette.responses import Response
+    _APP = app
 
     @app.middleware("http")
     async def page_cache(request, call_next):
@@ -112,6 +156,12 @@ def install(app) -> None:
         if ttl is None or not request.session.get("auth") or set(request.session) - _PLAIN_SESSION:
             return await call_next(request)
         key = key_for(request)
+        if not request.headers.get("x-tj-warm"):
+            with _LOCK:
+                _RECENT[key] = {k: v for k, v in request.headers.items() if k.lower() in ("cookie", "hx-request", "hx-target", "hx-trigger", "accept")} | {"x-tj-warm": "1"}
+                _RECENT.move_to_end(key)
+                while len(_RECENT) > 20:
+                    _RECENT.popitem(last=False)
         got = get(key)
         if got is not None:
             stats["hit"] += 1
