@@ -214,9 +214,40 @@ def save_layout(db: Session, page: str, ids, sizes=None) -> list[str]:
     return ids
 
 
+MIN_H, MAX_H = 120, 2000   # px, user-set widget heights (Dashboard non-KPI widgets)
+
+
+def _heights_key(page: str) -> str:
+    return f"layout:{page}:heights"
+
+
+def get_heights(db: Session, page: str) -> dict[str, int]:
+    try:
+        raw = json.loads(get_state(db, _heights_key(page)) or "{}")
+    except ValueError:
+        return {}
+    return {k: int(v) for k, v in (raw.items() if isinstance(raw, dict) else [])
+            if resizable(page, k) and isinstance(v, (int, float)) and MIN_H <= v <= MAX_H}
+
+
+def set_height(db: Session, page: str, wid: str, height) -> dict[str, int]:
+    """Save one widget's height (px), or drop it (None / 0) to return to the default size."""
+    if not resizable(page, wid):
+        raise ValueError("not a resizable widget")
+    cur = get_heights(db, page)
+    if height in (None, 0, "", False):
+        cur.pop(wid, None)
+    else:
+        cur[wid] = int(min(MAX_H, max(MIN_H, float(height))))
+    set_state(db, _heights_key(page), json.dumps(cur) if cur else None)
+    db.commit()
+    return cur
+
+
 def reset_layout(db: Session, page: str) -> list[str]:
     set_state(db, _key(page), None)
     set_state(db, _sizes_key(page), None)
+    set_state(db, _heights_key(page), None)
     db.commit()
     return default_layout(page)
 
@@ -230,4 +261,5 @@ def layout_ctx(db: Session, page: str) -> dict:
     return {"page": page, "shown": shown, "order": shown + hidden, "catalog": cat, "sizes": sizes,
             "size_class": {k: width_class(v) for k, v in sizes.items()}, "widths": WIDTHS, "width_labels": WIDTH_LABELS,
             "resizable": {k for k in sizes if resizable(page, k)},
+            "heights": get_heights(db, page) if sizes else {},
             "groups": sorted({w["group"] for w in CATALOGS[page]}, key=[w["group"] for w in CATALOGS[page]].index)}

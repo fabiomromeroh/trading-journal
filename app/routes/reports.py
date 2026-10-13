@@ -222,6 +222,19 @@ async def save_layout(page: str, request: Request, db: Session = Depends(get_db)
     return {"ok": True, "widgets": ids}
 
 
+@router.post("/layout/{page}/height")
+async def save_height(page: str, request: Request, db: Session = Depends(get_db)):
+    """One widget's height from the drag handle: {"widget": id, "height": px | null (reset)}."""
+    if page not in widgets.CATALOGS:
+        raise HTTPException(404)
+    try:
+        body = json.loads(await request.body() or b"{}")
+        heights = widgets.set_height(db, page, str(body.get("widget") or ""), body.get("height"))
+    except (ValueError, TypeError, AttributeError):
+        return JSONResponse({"ok": False, "error": "bad request"}, status_code=400)
+    return {"ok": True, "heights": heights}
+
+
 @router.post("/layout/{page}/reset")
 def reset_layout(page: str, db: Session = Depends(get_db)):
     if page not in widgets.CATALOGS:

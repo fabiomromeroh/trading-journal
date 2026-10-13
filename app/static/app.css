@@ -114,3 +114,16 @@ form.is-loading { opacity: .7; }
 [id^="live-"].htmx-request .kpi-v { color: transparent !important; position: relative; }
 [id^="live-"].htmx-request .kpi-v::after { content: ""; position: absolute; left: 0; top: 50%; width: 18px; height: 18px; margin-top: -9px;
   border-radius: 50%; border: 2px solid rgba(148,163,184,.35); border-top-color: #818cf8; animation: tj-spin .7s linear infinite; }
+
+/* User-resizable widget heights (Dashboard non-KPI widgets). Phones keep the default sizes. */
+.we-grip { display: none; }
+@media (min-width: 768px) {
+  .we-tall .we-grip { display: block; position: absolute; left: 50%; bottom: -5px; transform: translateX(-50%); width: 64px; height: 12px;
+    cursor: ns-resize; z-index: 15; border-radius: 6px; touch-action: none; opacity: .0; transition: opacity .15s; }
+  .we-tall .we-grip::after { content: ""; position: absolute; left: 14px; right: 14px; top: 4px; height: 4px; border-radius: 2px; background: #64748b; }
+  .we-tall:hover .we-grip, .we-grip.we-dragging, body.we-editing .we-tall .we-grip { opacity: 1; }
+  .we-sized > .card, .we-sized > [id^="live-"] > .card { height: var(--wh); overflow: auto; display: flex; flex-direction: column; }
+  .we-sized .card .overflow-x-auto { overflow: visible; }
+  .we-sized .card > div:has(> canvas) { flex: 1 1 auto; min-height: 80px; height: auto !important; position: relative; }
+  .we-sized .card thead th { position: sticky; top: -1rem; background: #111827; z-index: 2; }
+}

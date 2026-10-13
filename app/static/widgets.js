@@ -100,6 +100,32 @@
       const f = $('msg'); if (!f) return; f.textContent = msg; f.className = 'text-xs ' + (bad ? 'text-rose-300' : 'text-emerald-300');
       setTimeout(() => { f.textContent = ''; }, 2500);
     }
+    // Height: drag the bottom handle (md+), double-click it to reset. Saved per widget, debounced.
+    const timers = {};
+    function saveHeight(el, h) {
+      clearTimeout(timers[el.dataset.wid]);
+      timers[el.dataset.wid] = setTimeout(() => post(`/layout/${page}/height`, { widget: el.dataset.wid, height: h })
+        .catch(e => flash('Could not save size: ' + e.message, true)), 400);
+    }
+    function cardOf(el) { return el.querySelector(':scope > .card, :scope > [id^="live-"] > .card'); }
+    grid.addEventListener('pointerdown', ev => {
+      const g = ev.target.closest('.we-grip'); if (!g) return;
+      ev.preventDefault();
+      const el = g.closest('[data-wid]'); const card = cardOf(el); if (!card) return;
+      const y0 = ev.clientY, h0 = card.getBoundingClientRect().height;
+      g.classList.add('we-dragging'); g.setPointerCapture(ev.pointerId);
+      const mv = e => { const h = Math.max(120, Math.min(2000, Math.round(h0 + e.clientY - y0)));
+        el.classList.add('we-sized'); el.style.setProperty('--wh', h + 'px'); };
+      const up = () => { g.removeEventListener('pointermove', mv); g.classList.remove('we-dragging');
+        const v = parseInt(el.style.getPropertyValue('--wh'), 10); if (v) saveHeight(el, v);
+        window.dispatchEvent(new Event('resize')); };
+      g.addEventListener('pointermove', mv); g.addEventListener('pointerup', up, { once: true }); g.addEventListener('pointercancel', up, { once: true });
+    });
+    grid.addEventListener('dblclick', ev => {
+      const g = ev.target.closest('.we-grip'); if (!g) return;
+      const el = g.closest('[data-wid]'); el.classList.remove('we-sized'); el.style.removeProperty('--wh');
+      saveHeight(el, null); window.dispatchEvent(new Event('resize'));
+    });
     items().filter(e => !e.hidden).forEach(e => onShow(e.dataset.wid));
   };
 })();
