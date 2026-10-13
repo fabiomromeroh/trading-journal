@@ -19,7 +19,9 @@
       form.classList.add('is-loading');
       const a = document.activeElement, name = a && a.form === form ? a.name : null;
       const sel = name && a.selectionStart != null ? [a.selectionStart, a.selectionEnd] : null;
-      window.htmx.ajax('GET', u, { target, select: target, swap: 'outerHTML' }).then(() => {
+      const opts = { target, select: target, swap: 'outerHTML' };
+      if (form.dataset.indicator) opts.indicator = form.dataset.indicator;
+      window.htmx.ajax('GET', u, opts).then(() => {
         form.classList.remove('is-loading');
         if (name) {  // keep typing where you were
           const el = document.querySelector(`${target} [name="${name}"]`);

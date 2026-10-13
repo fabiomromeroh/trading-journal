@@ -30,16 +30,18 @@
 {% block content %}
 <div class="flex flex-wrap items-end justify-between gap-3 mb-3">
   <div>
-    <h1 class="text-2xl font-semibold text-white">Reports</h1>
+    <h1 class="text-2xl font-semibold text-white">Reports <span id="reports-spin" class="tj-spin htmx-indicator" role="status" aria-label="Loading reports"></span></h1>
     <p class="text-sm text-slate-500">{{ s.closed + s.open }} trades ({{ s.closed }} closed, {{ s.open }} open) · stats use closed trades · total realized includes partial exits · times in {{ settings().display_tz }}</p>
   </div>
   {% include "partials/report_filters.html" %}
 </div>
 {% if flash %}<div class="card border-indigo-500/40 bg-indigo-500/10 text-indigo-100 p-3 mb-3 text-sm">{{ flash }}</div>{% endif %}
 
+<div id="reports-body">
 <nav class="flex gap-1 overflow-x-auto mb-4 border-b border-slate-800 -mx-1 px-1" aria-label="Report sections">
   {% for key, label in tabs %}
   <a href="?{% for k, x in params.items() %}{{ k }}={{ x|urlencode }}&{% endfor %}tab={{ key }}"
+    
      class="whitespace-nowrap px-3 py-2 text-sm border-b-2 {{ 'border-indigo-400 text-white' if tab == key else 'border-transparent text-slate-400 hover:text-white' }}">{{ label }}</a>
   {% endfor %}
   <a href="/ai-review?{% for k, x in params.items() %}{{ k }}={{ x|urlencode }}&{% endfor %}" class="whitespace-nowrap px-3 py-2 text-sm border-b-2 border-transparent text-indigo-300 hover:text-white ml-auto">AI review →</a>
@@ -206,6 +208,7 @@
 </tbody></table></div>
 {% else %}<div class="card p-6 text-slate-500 text-sm">No trades with MFE/MAE in this selection yet. Open a closed stock trade's chart to measure it.</div>{% endif %}
 {% endif %}
+</div>
 {% endblock %}
 
 {% block scripts %}

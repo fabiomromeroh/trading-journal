@@ -94,6 +94,18 @@ form.is-loading { opacity: .7; }
   .hx-busy { animation: none; }
 }
 @keyframes tj-busy { 50% { opacity: .45; } }
+/* Small spinner for HTMX loads (dashboard quotes, trades list, reports). Not a page overlay. */
+.tj-spin { display: inline-block; width: 14px; height: 14px; margin-left: 6px; border-radius: 50%;
+  border: 2px solid rgba(148,163,184,.35); border-top-color: #818cf8; vertical-align: -2px; }
+.htmx-indicator.tj-spin { opacity: 0; }
+.htmx-request.tj-spin, .htmx-request .tj-spin { opacity: 1; }
+@media (prefers-reduced-motion: no-preference) {
+  .htmx-request.tj-spin, .htmx-request .tj-spin { animation: tj-spin .7s linear infinite; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .htmx-request.tj-spin, .htmx-request .tj-spin { animation: none; }
+}
+@keyframes tj-spin { to { transform: rotate(360deg); } }
 .tstat-card { height: 52px; overflow: hidden; }
 @media (max-width: 767px) { .kpi-card { height: 132px; } .kpi-card { padding: .75rem; } }
 /* tables of numbers: aligned columns */
