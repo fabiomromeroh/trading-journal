@@ -96,6 +96,8 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     s = get_settings()
     app = FastAPI(title="Trading Journal", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
+    from app import pagecache
+    pagecache.install(app)  # inside the login check and the session (added first = innermost)
     app.add_middleware(RequireLogin)
     # Added last => runs first, so the session is available to RequireLogin.
     app.add_middleware(SessionMiddleware, secret_key=s.secret_key, session_cookie="tj_session",

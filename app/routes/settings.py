@@ -64,7 +64,7 @@ def _settings_ctx(request, db, **kw):
     for src in all_sources():
         if src.key == "snaptrade" and src.is_configured():
             try:
-                src.refresh(db)
+                src.maybe_refresh(db)  # connection status: SnapTrade API at most every 6 h, not every page load
             except Exception:  # pragma: no cover - shown as status error instead
                 db.rollback()
     sources = [(s, s.status(db)) for s in all_sources()]
