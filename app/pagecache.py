@@ -42,6 +42,7 @@ def bump() -> None:
     with _LOCK:
         GEN += 1
         _CACHE.clear()
+        _MEMO.clear()
 
 
 @event.listens_for(Engine, "before_cursor_execute")
@@ -126,3 +127,25 @@ def install(app) -> None:
         keep = {k: v for k, v in resp.headers.items() if k.lower() in ("content-type", "cache-control", "x-frame-options", "x-content-type-options", "referrer-policy", "content-security-policy")}
         put(key, gen, ttl, body, keep)
         return Response(content=body, status_code=200, headers={**keep, "X-Page-Cache": "miss"})
+
+
+_MEMO: "OrderedDict[tuple, tuple[float, int, object]]" = OrderedDict()
+
+
+def memo(key: tuple, fn, ttl: int = 600):
+    """Computed data (not HTML) reused until the data changes, e.g. the trades + stats behind
+    /dashboard/live so only the live-price part is computed per call."""
+    if not enabled():
+        return fn()
+    with _LOCK:
+        hit = _MEMO.get(key)
+        if hit and hit[1] == GEN and time.monotonic() < hit[0]:
+            return hit[2]
+        gen = GEN
+    val = fn()
+    with _LOCK:
+        if gen == GEN:
+            _MEMO[key] = (time.monotonic() + ttl, gen, val)
+            while len(_MEMO) > 12:
+                _MEMO.popitem(last=False)
+    return val

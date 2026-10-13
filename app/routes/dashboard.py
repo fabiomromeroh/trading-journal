@@ -142,23 +142,30 @@ def dashboard_live(request: Request, db: Session = Depends(get_db)):
     f = parse_filters(request)
     from app import currency
     from app import realized as rz
-    stmt = apply_trade_filters(select(Trade), f)
-    if f.start or f.end:
-        evs, _, _ = realized_scope(db, f)
-        trades = currency.view(db, load_trades(db, stmt))
-    else:
-        trades = currency.view(db, load_trades(db, stmt))
-        evs = rz.events(trades)
-    open_count = sum(1 for t in trades if t.status == "OPEN")
     tz = get_settings().display_tz
-    st = compute(trades, tz, open_count=open_count, events=evs)
-    opens = None if (f.start or f.end) else [t for t in trades if t.status == "OPEN"]
-    anchor = _anchor(db, f, trades, st, quotes=True, open_trades=opens)
     display = currency.get_display(db)
-    from app import dividends as dmod
-    dividends_total = dmod.total(db, f.account_id, display, f.start, f.end, tz)
-    from app import balance as bmod
-    interest = bmod.interest_total(db, f.account_id, display, f.start, f.end, tz)
+
+    def base():
+        stmt = apply_trade_filters(select(Trade), f)
+        if f.start or f.end:
+            evs, _, _ = realized_scope(db, f)
+            trades = currency.view(db, load_trades(db, stmt))
+        else:
+            trades = currency.view(db, load_trades(db, stmt))
+            evs = rz.events(trades)
+        open_count = sum(1 for t in trades if t.status == "OPEN")
+        st = compute(trades, tz, open_count=open_count, events=evs)
+        opens = None if (f.start or f.end) else [t for t in trades if t.status == "OPEN"]
+        from app import balance as bmod
+        from app import dividends as dmod
+        return (trades, st, opens, dmod.total(db, f.account_id, display, f.start, f.end, tz),
+                bmod.interest_total(db, f.account_id, display, f.start, f.end, tz))
+
+    from app import pagecache
+    # trades / stats / dividends only change with the data: reuse them; only live prices are fetched per call
+    trades, st, opens, dividends_total, interest = pagecache.memo(
+        ("dash_live", f.preset, f.start, f.end, f.account_id, display), base)
+    anchor = _anchor(db, f, trades, st, quotes=True, open_trades=opens)
     return templates.TemplateResponse(request, "partials/dash_live.html", {
         "interest": interest,
         "request": request, "anchor": anchor, "st": st,
