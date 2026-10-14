@@ -42,23 +42,15 @@
 <aside id="trade-list" class="flex flex-col rounded-xl border border-slate-800 bg-[#0f1520] overflow-hidden" :class="{ 'tl-open': tdrawer, 'tl-hidden': !tlist }" aria-label="Trades">
   <div class="p-2 border-b border-slate-800 space-y-1.5">
     <div class="flex items-center justify-between text-xs">
-      <span class="card-h">Trades <span class="text-slate-500 normal-case">({{ nav_rows|length }}{{ '+' if list_truncated }})</span></span>
+      <span class="card-h">Trades <span class="text-slate-500 normal-case">({{ nav_count }}{{ '+' if list_truncated }})</span></span>
       <span class="flex items-center gap-2">{% if list_filtered %}<a href="/trades?{{ list_qs }}" class="pill bg-indigo-500/20 text-indigo-200" title="Using the filters from the trades list">filtered</a><a href="/trades/{{ t.id }}" class="text-slate-500 hover:text-white" title="Show all trades">clear</a>{% endif %}
       <button type="button" class="lg:hidden text-slate-400 text-lg leading-none px-1" @click="tdrawer = false" aria-label="Close list">×</button></span>
     </div>
     <input id="tl-search" type="search" placeholder="Search symbol…  (/)" class="inp w-full text-xs" autocomplete="off" aria-label="Search trades">
   </div>
   {% if not in_list %}<div class="px-2 py-1.5 text-[11px] text-amber-300/80 border-b border-slate-800">This trade isn't in the current filter.</div>{% endif %}
-  <nav id="tl-items" class="flex-1 overflow-y-auto p-1 space-y-0.5 text-sm">
-    {% for r in nav_rows %}{% set cur = r.id == t.id %}
-    <a href="/trades/{{ r.id }}{{ '?' ~ list_qs if list_qs }}" data-tl-item data-sym="{{ r.symbol|lower }}" class="flex items-stretch gap-2 px-2 py-1.5 rounded-md {{ 'bg-indigo-500/20 ring-1 ring-indigo-500/50' if cur else 'hover:bg-slate-800/70' }}"{% if cur %} aria-current="page"{% endif %}>
-      <span class="w-1 rounded {{ {'OPEN': 'bg-sky-400', 'WIN': 'bg-emerald-400', 'LOSS': 'bg-rose-400'}.get(outcome_label(r), 'bg-slate-500') }}"></span>
-      <span class="min-w-0 flex-1">
-        <span class="flex justify-between gap-2"><span class="text-white font-medium truncate">{{ r.symbol }}</span><span class="{{ r.net_pnl|pnl_class }} tabular-nums">{{ r.net_pnl|money(sym=list_symbol) }}</span></span>
-        <span class="flex justify-between gap-2 text-[11px] text-slate-500"><span>{{ r.opened_at|local_dt('%b %d') }} · {{ 'L' if r.direction == 'LONG' else 'S' }}</span><span>{{ outcome_label(r) }}</span></span>
-      </span>
-    </a>
-    {% else %}<div class="text-xs text-slate-500 p-3">No trades match the filter.</div>{% endfor %}
+  <nav id="tl-items" hx-get="/trades/{{ t.id }}/list{{ '?' ~ list_qs if list_qs }}" hx-trigger="load" hx-swap="innerHTML" class="flex-1 overflow-y-auto p-1 space-y-0.5 text-sm">
+    <div class="text-xs text-slate-500 p-3">Loading trades…</div>
   </nav>
 </aside>
 <div class="flex-1 min-w-0">
@@ -182,8 +174,14 @@ window.TJ_CHART = { tradeId: {{ t.id }}, symbol: {{ chart_symbol|tojson }}, tz: 
 <script>
 (function () {  // trade list: current row into view, quick search, j/k (and ↑/↓ inside the list) to move
   const items = () => [...document.querySelectorAll('[data-tl-item]')].filter((a) => a.style.display !== 'none');
-  const cur = document.querySelector('[data-tl-item][aria-current]');
-  if (cur) cur.scrollIntoView({ block: 'center' });
+  let cur = null;
+  const list0 = document.getElementById('tl-items');
+  list0.addEventListener('htmx:afterSwap', () => {  // the list arrives after paint
+    cur = document.querySelector('[data-tl-item][aria-current]');
+    if (cur) cur.scrollIntoView({ block: 'center' });
+    const v = search.value.trim().toLowerCase();
+    if (v) document.querySelectorAll('[data-tl-item]').forEach((a) => { a.style.display = a.dataset.sym.includes(v) ? '' : 'none'; });
+  });
   const search = document.getElementById('tl-search'), list = document.getElementById('tl-items');
   search.addEventListener('input', () => {
     const v = search.value.trim().toLowerCase();

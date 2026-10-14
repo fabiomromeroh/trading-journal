@@ -62,6 +62,11 @@ def ensure_seeded(db: Session) -> None:
 
 
 def names(db: Session, kind: str) -> list[str]:
+    from app import pagecache
+    return list(pagecache.memo(("journal_options", kind), lambda: tuple(_names(db, kind))))
+
+
+def _names(db: Session, kind: str) -> list[str]:
     ensure_seeded(db)
     return list(db.scalars(select(JournalOption.name).where(JournalOption.kind == kind)
                            .order_by(JournalOption.position, func.lower(JournalOption.name))))
@@ -93,6 +98,11 @@ def remove(db: Session, kind: str, name: str) -> bool:
 
 
 def usage(db: Session, kind: str) -> dict[str, int]:
+    from app import pagecache
+    return dict(pagecache.memo(("journal_usage", kind), lambda: _usage(db, kind)))
+
+
+def _usage(db: Session, kind: str) -> dict[str, int]:
     if kind == "setup":
         rows = db.execute(select(Trade.setup, func.count()).where(Trade.setup.is_not(None)).group_by(Trade.setup))
     elif kind == "tag":

@@ -181,6 +181,8 @@ def execute_run(run_id: int, sources=None, send_reminders: bool = False, only: s
             try:  # stored per-trade results for the touched accounts (pages then only read them)
                 from app import results
                 results.rebuild(db, sorted(touched) if all(isinstance(x, int) for x in touched) else None)
+                from app import prices
+                prices.prefetch_recent()
             except Exception as exc:  # noqa: BLE001 - pages rebuild stale rows on read anyway
                 db.rollback()
                 log.warning("trade results rebuild failed: %s", exc)

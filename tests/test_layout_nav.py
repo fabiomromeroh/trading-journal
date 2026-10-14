@@ -49,7 +49,8 @@ def test_trade_page_sidebar_follows_list_filter_and_sort(db):
     c = _client(db)
     # winners sorted by P&L desc: CCC (+20), AAA (+10), DDD (+5)
     html = c.get(f"/trades/{ids['AAA']}?outcome=win&sort=pnl&dir=desc").text
-    side = html.split('id="tl-items"')[1].split("</nav>")[0]
+    assert f'hx-get="/trades/{ids["AAA"]}/list?outcome=win' in html  # the list loads after paint
+    side = c.get(f"/trades/{ids['AAA']}/list?outcome=win&sort=pnl&dir=desc").text
     order = re.findall(r'<span class="text-white font-medium truncate">(\w+)</span>', side)
     assert order == ["CCC", "AAA", "DDD"]
     assert 'aria-current="page"' in side and "filtered" in html
@@ -60,6 +61,6 @@ def test_trade_page_sidebar_follows_list_filter_and_sort(db):
     assert "isn't in the current filter" in html and 'id="prev-trade"' in html
     # no filters: everything, newest first; first row has no Prev
     html = c.get(f"/trades/{ids['DDD']}").text
-    side = html.split('id="tl-items"')[1].split("</nav>")[0]
+    side = c.get(f"/trades/{ids['DDD']}/list").text
     assert re.findall(r'truncate">(\w+)</span>', side) == ["DDD", "ABC", "CCC", "BBB", "AAA"]
     assert 'id="prev-trade"' not in html and 'id="next-trade"' in html

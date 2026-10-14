@@ -180,14 +180,10 @@ def trade_detail(trade_id: int, request: Request, db: Session = Depends(get_db))
     t = _get_trade(db, trade_id)
     _auto_stop(db, t)
     stmt, f, q, sort, desc, list_qs = filtered_trades(request, db)
-    cols = stmt.with_only_columns(Trade.id, Trade.symbol, Trade.opened_at, Trade.closed_at, Trade.direction,
-                                  Trade.status, Trade.net_pnl, Trade.time_known, Trade.is_demo)
-    from app import currency
-    if currency.needs_conversion(db):  # list amounts in the display currency (the page itself stays native)
-        nav_rows = _results.trades(db, stmt.limit(SIDEBAR_LIMIT))
-    else:
-        nav_rows = db.execute(cols.limit(SIDEBAR_LIMIT)).all()
-    ids = [r.id for r in nav_rows]
+    # ids only (same order as the list); the list itself is loaded after paint (/trades/<id>/list)
+    from app import currency, pagecache
+    ids = pagecache.memo(("detail-ids", list_qs, currency.VIEW_ACCOUNT.get(), str(stmt)),
+                         lambda: list(db.scalars(stmt.with_only_columns(Trade.id).limit(SIDEBAR_LIMIT))))
     in_list = t.id in ids
     if in_list:
         i = ids.index(t.id)
@@ -225,9 +221,25 @@ def trade_detail(trade_id: int, request: Request, db: Session = Depends(get_db))
         native_ccy=native, fx=fx, list_symbol=currency.symbol(currency.get_display(db)), prev_id=prev_id, next_id=next_id,
         **symbol_override,
         saved=False, fullscreen=True, chart_symbol=chart_symbol, listing=listing, adjustments=adjustments,
-        **journal_ctx(db, t), stop_rule=stops.get_rule(db), opened_ts=int(t.opened_at.replace(tzinfo=timezone.utc).timestamp()), mfe_note=excursion_note(excursion_basis(t)), nav_rows=nav_rows,
-        list_qs=list_qs, in_list=in_list, list_filtered=filtered, list_truncated=len(nav_rows) >= SIDEBAR_LIMIT,
+        **journal_ctx(db, t), stop_rule=stops.get_rule(db), opened_ts=int(t.opened_at.replace(tzinfo=timezone.utc).timestamp()), mfe_note=excursion_note(excursion_basis(t)), nav_count=len(ids),
+        list_qs=list_qs, in_list=in_list, list_filtered=filtered, list_truncated=len(ids) >= SIDEBAR_LIMIT,
         **extras))
+
+
+@router.get("/trades/{trade_id}/list")
+def trade_detail_list(trade_id: int, request: Request, db: Session = Depends(get_db)):
+    """The trade page's side list (loaded after the page paints; it is most of the page's HTML)."""
+    stmt, f, q, sort, desc, list_qs = filtered_trades(request, db)
+    from app import currency
+    cols = stmt.with_only_columns(Trade.id, Trade.symbol, Trade.opened_at, Trade.closed_at, Trade.direction,
+                                  Trade.status, Trade.net_pnl, Trade.time_known, Trade.is_demo)
+    if currency.needs_conversion(db):  # list amounts in the display currency (the page itself stays native)
+        nav_rows = _results.trades(db, stmt.limit(SIDEBAR_LIMIT))
+    else:
+        nav_rows = db.execute(cols.limit(SIDEBAR_LIMIT)).all()
+    return templates.TemplateResponse(request, "partials/trade_list_items.html", {
+        "nav_rows": nav_rows, "cur_id": trade_id, "list_qs": list_qs,
+        "list_symbol": currency.symbol(currency.get_display(db))})
 
 
 @router.post("/trades/{trade_id}/adjustments/{exec_id}")

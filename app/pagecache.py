@@ -196,6 +196,6 @@ def memo(key: tuple, fn, ttl: int = 600):
     with _LOCK:
         if gen == GEN:
             _MEMO[key] = (time.monotonic() + ttl, gen, val)
-            while len(_MEMO) > 12:
+            while len(_MEMO) > 64:
                 _MEMO.popitem(last=False)
     return val

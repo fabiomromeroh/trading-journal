@@ -401,19 +401,77 @@ def _fetch(db: Session, prov: str, trade: Trade, interval: str, start: datetime,
         ykw["ccy"] = ccy
     if scale not in (None, 1, 1.0):
         ykw["price_scale"] = scale
-    candles = (_schwab(db, symbol, interval, start, end) if prov == "schwab" else
-               _polygon(symbol, interval, start, end) if prov == "polygon" else
-               _yahoo(symbol, interval, start, end, **ykw)
-               if prov == "yahoo" else [])
-    if candles:
-        if persistent:
+    if persistent:
+        candles = _download(db, prov, symbol, interval, start, end, ykw)
+        if candles:
             db.add(PriceCache(cache_key=key, provider=prov, payload=json.dumps(candles)))
             db.commit()
-        elif not _stale(candles, interval, now):  # never memoise a result that misses the latest session
+        return candles
+    # A window that ends "now": the last download is stored (key without the end) and served at once;
+    # when it is older than RECENT_FRESH it is refreshed in the background for the next view.
+    rkey = f"recent|{CACHE_VERSION}|{prov}|{symbol}|{interval}|{start:%Y%m%d}"
+    row = db.scalar(select(PriceCache).where(PriceCache.cache_key == rkey))
+    stored = json.loads(row.payload) if row is not None else None
+    age = ((utcnow() - row.created_at).total_seconds() if row is not None and row.created_at else 1e9)
+    if stored and (not _stale(stored, interval, now) or (row.provider.endswith(":nonew") and age < RECENT_FRESH)):
+        if age > RECENT_FRESH:
+            _refresh_later(prov, symbol, interval, start, end, ykw, rkey)
+        _MEM[mem_key] = (_time.monotonic(), stored)
+        return stored
+    candles = _download(db, prov, symbol, interval, start, end, ykw)
+    if candles:
+        nonew = bool(stored) and candles[-1].get("time") == stored[-1].get("time")
+        _store_recent(db, rkey, prov + (":nonew" if nonew else ""), candles)
+        if not _stale(candles, interval, now):  # never memoise a result that misses the latest session
             if len(_MEM) > 200:
                 _MEM.clear()
             _MEM[mem_key] = (_time.monotonic(), candles)
     return candles
+
+
+RECENT_FRESH = 600  # seconds before a stored "until now" window is re-downloaded (in the background)
+_REFRESHING: set[str] = set()
+
+
+def _download(db, prov, symbol, interval, start, end, ykw):
+    return (_schwab(db, symbol, interval, start, end) if prov == "schwab" else
+            _polygon(symbol, interval, start, end) if prov == "polygon" else
+            _yahoo(symbol, interval, start, end, **ykw)
+            if prov == "yahoo" else [])
+
+
+def _store_recent(db, rkey, prov, candles):
+    try:
+        row = db.scalar(select(PriceCache).where(PriceCache.cache_key == rkey))
+        if row is None:
+            db.add(PriceCache(cache_key=rkey, provider=prov, payload=json.dumps(candles)))
+        else:
+            row.payload, row.created_at, row.provider = json.dumps(candles), utcnow(), prov
+        db.commit()
+    except Exception:  # noqa: BLE001 - a concurrent writer stored it first
+        db.rollback()
+
+
+def _refresh_later(prov, symbol, interval, start, end, ykw, rkey):
+    import os
+    import threading
+    if rkey in _REFRESHING or os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    _REFRESHING.add(rkey)
+
+    def work():
+        from app.db import SessionLocal
+        db = SessionLocal()
+        try:
+            candles = _download(db, prov, symbol, interval, start, end, ykw)
+            if candles:
+                _store_recent(db, rkey, prov, candles)
+        except Exception as exc:  # noqa: BLE001 - keep the stored copy
+            log.info("background candle refresh failed for %s: %s", symbol, exc)
+        finally:
+            db.close()
+            _REFRESHING.discard(rkey)
+    threading.Thread(target=work, daemon=True).start()
 
 
 def get_chart(db: Session, trade: Trade, tf: str | None = None, now: datetime | None = None) -> dict:
@@ -764,3 +822,38 @@ def excursion_note(res: dict | None) -> str:
         s += (f" {res['estimated']} fill(s) have no time of day, so each is placed at the first bar that traded "
               "at its price that day: an approximation.")
     return base + s
+
+
+def prefetch_recent(limit: int = 30) -> None:
+    """After a sync: make sure the default chart of the most recent trades is stored, so a first visit
+    reads candles from the database instead of waiting for Yahoo. Background thread, one trade at a time."""
+    import os
+    import threading
+    if os.environ.get("PYTEST_CURRENT_TEST") or _PREFETCH["busy"]:
+        return
+    _PREFETCH["busy"] = True
+
+    def work():
+        from app.db import SessionLocal
+        from app.web import trade_options
+        db = SessionLocal()
+        try:
+            ids = list(db.scalars(select(Trade.id).where(Trade.is_demo.is_(False))
+                                  .order_by(Trade.opened_at.desc()).limit(limit)))
+            for tid in ids:
+                t = db.scalars(select(Trade).where(Trade.id == tid).options(*trade_options())).first()
+                if t is None:
+                    continue
+                try:
+                    get_chart(db, t)
+                except Exception as exc:  # noqa: BLE001
+                    db.rollback()
+                    log.info("candle prefetch failed for trade %s: %s", tid, exc)
+                _time.sleep(0.3)  # gentle on the free providers
+        finally:
+            db.close()
+            _PREFETCH["busy"] = False
+    threading.Thread(target=work, daemon=True).start()
+
+
+_PREFETCH = {"busy": False}

@@ -187,8 +187,11 @@ def apply_trade_filters(stmt, f: Filters):
 
 
 def _attention_marks(db: Session) -> set[str]:
+    """Symbols needing attention (the sidebar dots). Reads every trade, so it is computed once per data
+    version and reused by every page until something is written."""
+    from app import pagecache
     from app.adjustments import attention_marks
-    return attention_marks(db)
+    return set(pagecache.memo(("attention_marks",), lambda: frozenset(attention_marks(db))))
 
 
 def provisional_trade_ids(db: Session) -> set[int]:
@@ -203,7 +206,8 @@ def provisional_trade_ids(db: Session) -> set[int]:
 def base_context(request: Request, db: Session, **kw) -> dict:
     from app.sources import all_sources
     accounts = list(db.scalars(select(Account).order_by(Account.name)))
-    has_demo = db.scalar(select(func.count(Trade.id)).where(Trade.is_demo.is_(True))) or 0
+    from app import pagecache
+    has_demo = pagecache.memo(("has_demo",), lambda: db.scalar(select(func.count(Trade.id)).where(Trade.is_demo.is_(True))) or 0)
     banners = []
     for src in all_sources():
         try:
@@ -221,12 +225,12 @@ def base_context(request: Request, db: Session, **kw) -> dict:
                             "link": "/settings", "link_text": "Reconnect"})
     from app import currency
     display = currency.get_display(db)
-    fx_problem = currency.problem(db, display)
+    fx_problem = pagecache.memo(("fx_problem", display), lambda: currency.problem(db, display), ttl=120)
     if fx_problem:
         banners.append({"level": "warning", "text": fx_problem, "link": "/settings#brokers", "link_text": "Details"})
     cur_f = parse_filters(request)
     fx_note = None
-    if currency.needs_conversion(db, display):
+    if pagecache.memo(("needs_conversion", display), lambda: currency.needs_conversion(db, display)):
         fx_note = (f"Amounts are shown in {display}, {currency.FX_PHRASE}. "
                    f"Realized P&L and fees use the broker rate stored on each fill when there is one, otherwise the ECB "
                    f"reference rate that day, from the instrument currency through the account currency into {display}. "
@@ -235,7 +239,7 @@ def base_context(request: Request, db: Session, **kw) -> dict:
     ctx = {"display_currency": display, "display_symbol": currency.symbol(display), "active_account": cur_f.account_id, "fx_note": fx_note,
            "currency_choices": currency.CHOICES,
            "request": request, "accounts": accounts, "has_demo": has_demo, "banners": banners,
-           "nav": kw.pop("nav", ""), "presets": PRESETS, "provisional_trades": provisional_trade_ids(db),
+           "nav": kw.pop("nav", ""), "presets": PRESETS, "provisional_trades": set(pagecache.memo(("provisional",), lambda: frozenset(provisional_trade_ids(db)))),
            "attention_marks": _attention_marks(db)}
     ctx.update(kw)
     return ctx
