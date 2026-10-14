@@ -42,6 +42,15 @@ _APP = None
 _WARM = {"timer": None}
 _USER = {"busy": 0, "last": -999.0}   # real (non-warming) requests in flight / when the last one ended
 WARM_IDLE = 2.0                       # seconds of quiet before each warming render
+
+
+def yield_to_user(max_wait: float = 30.0) -> None:
+    """For background threads (warming, candle prefetch, company names): wait while the user's requests
+    are being served, so a click never queues behind background work on the single slow CPU."""
+    waited = 0.0
+    while (_USER["busy"] or time.monotonic() - _USER["last"] < WARM_IDLE) and waited < max_wait:
+        time.sleep(0.25)
+        waited += 0.25
 WARM_PAGES = 6
 WARM_DELAY = 4.0   # seconds after the last write (a sync commits many times)
 

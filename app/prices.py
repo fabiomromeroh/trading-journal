@@ -840,7 +840,9 @@ def prefetch_recent(limit: int = 30) -> None:
         try:
             ids = list(db.scalars(select(Trade.id).where(Trade.is_demo.is_(False))
                                   .order_by(Trade.opened_at.desc()).limit(limit)))
+            from app.pagecache import yield_to_user
             for tid in ids:
+                yield_to_user()
                 t = db.scalars(select(Trade).where(Trade.id == tid).options(*trade_options())).first()
                 if t is None:
                     continue
