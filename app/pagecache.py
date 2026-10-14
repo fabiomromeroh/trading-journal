@@ -27,7 +27,7 @@ MAX_ENTRIES = 80
 PAGES = [(re.compile(r"^/$"), 600), (re.compile(r"^/trades$"), 600), (re.compile(r"^/reports$"), 600),
          (re.compile(r"^/settings$"), 90), (re.compile(r"^/trades/\d+$"), 120)]
 # writes that never change a page: price candles cache, raw sync files
-_IGNORE = re.compile(r"^\s*(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+\"?(price_cache|sync_payloads)\b", re.I)
+_IGNORE = re.compile(r"^\s*(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+\"?(price_cache|sync_payloads|trade_results)\b", re.I)
 _WRITE = re.compile(r"^\s*(INSERT|UPDATE|DELETE|REPLACE|ALTER|CREATE|DROP)\b", re.I)
 stats = {"hit": 0, "miss": 0}
 _PLAIN_SESSION = {"auth", "av", "test_email_at"}

@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app import results as _results
 from app import metrics, widgets
 from app.config import get_settings
 from app.db import get_db
@@ -64,7 +65,7 @@ def filtered_trades(request: Request, db: Session):
     from app import companies, currency
     stmt = companies.restrict(apply_extra_filters(apply_trade_filters(select(Trade), f), request.query_params),
                               db, request.query_params)
-    trades = currency.view(db, load_trades(db, stmt))
+    trades = _results.trades(db, stmt)
     companies.annotate(db, trades)
     return f, trades
 

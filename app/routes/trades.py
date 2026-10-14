@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app import results as _results
 from app import stops
 from app.db import get_db
 from app.models import Tag, Trade, TradeFill, TradeMistake
@@ -38,7 +39,7 @@ def realized_on_day(db: Session, f, day) -> dict:
     from app.config import get_settings
     tz = get_settings().display_tz
     from app import currency
-    trades = currency.view(db, load_trades(db, apply_trade_filters(select(Trade), replace(f, start=None, end=None))))
+    trades = _results.trades(db, apply_trade_filters(select(Trade), replace(f, start=None, end=None)))
     per: dict[int, dict] = {}
     for e in rz.clip(rz.events(trades), tz, day, day):
         if not e.is_close and abs(e.fees) < 0.004:
@@ -124,11 +125,11 @@ def trades_list(request: Request, db: Session = Depends(get_db)):
     rows = load_trades(db, stmt.offset((page - 1) * PAGE).limit(PAGE))
     if currency.needs_conversion(db):  # mixed currencies: convert each trade, then total in Python
         if total <= PAGE and page == 1:
-            rows = currency.view(db, rows)
+            rows = _results.trades(db, stmt.offset((page - 1) * PAGE).limit(PAGE))
             summed = rows
         else:
-            rows = currency.view(db, rows)
-            summed = currency.view(db, load_trades(db, stmt.order_by(None)))
+            rows = _results.trades(db, stmt.offset((page - 1) * PAGE).limit(PAGE))
+            summed = _results.trades(db, stmt.order_by(None))
         by_status: dict[str, tuple[float, int]] = {}
         for t in summed:
             p_, n_ = by_status.get(t.status, (0.0, 0))
@@ -183,7 +184,7 @@ def trade_detail(trade_id: int, request: Request, db: Session = Depends(get_db))
                                   Trade.status, Trade.net_pnl, Trade.time_known, Trade.is_demo)
     from app import currency
     if currency.needs_conversion(db):  # list amounts in the display currency (the page itself stays native)
-        nav_rows = currency.view(db, load_trades(db, stmt.limit(SIDEBAR_LIMIT)))
+        nav_rows = _results.trades(db, stmt.limit(SIDEBAR_LIMIT))
     else:
         nav_rows = db.execute(cols.limit(SIDEBAR_LIMIT)).all()
     ids = [r.id for r in nav_rows]

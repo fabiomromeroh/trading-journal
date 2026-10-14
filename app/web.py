@@ -11,6 +11,7 @@ from jinja2 import pass_context
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
+from app import results as _results
 from app.config import get_settings
 from app.models import Account, Trade, TradeFill
 from app.stats import fmt_td
@@ -156,7 +157,7 @@ def realized_scope(db: Session, f: Filters, extra=None):
     if extra:
         stmt = extra(stmt)
     from app import currency
-    trades = currency.view(db, load_trades(db, stmt))  # display-currency view (no-op for same-currency data)
+    trades = _results.trades(db, stmt)  # display-currency view (no-op for same-currency data)
     evs = rz.events(trades)
     return rz.clip(evs, get_settings().display_tz, f.start, f.end), evs, trades
 

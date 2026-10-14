@@ -178,6 +178,12 @@ def execute_run(run_id: int, sources=None, send_reminders: bool = False, only: s
         if touched:  # stored balance curve (deposits + realized + dividends + unrealized at daily closes)
             from app import balance
             balance.after_sync(db, touched)
+            try:  # stored per-trade results for the touched accounts (pages then only read them)
+                from app import results
+                results.rebuild(db, sorted(touched) if all(isinstance(x, int) for x in touched) else None)
+            except Exception as exc:  # noqa: BLE001 - pages rebuild stale rows on read anyway
+                db.rollback()
+                log.warning("trade results rebuild failed: %s", exc)
         summary = summarize(run.inserted, run.merged, before, _trade_snapshot(db)) if used else None
         run.sources = ", ".join(used) or None
         if not used and not errors:

@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app import results as _results
 from app import outcome
 from app.config import get_settings
 from app.db import get_db
@@ -28,7 +29,7 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
     from app import currency
     from app import quotes as qmod
     from app import realized as rz
-    trades = currency.view(db, load_trades(db, stmt))
+    trades = _results.trades(db, stmt)
     open_count = sum(1 for t in trades if t.status == "OPEN")
     # No date filter: this list is already every trade the calendar needs. A date filter still
     # reloads the wider set so a partial exit inside the window counts.
@@ -149,9 +150,9 @@ def dashboard_live(request: Request, db: Session = Depends(get_db)):
         stmt = apply_trade_filters(select(Trade), f)
         if f.start or f.end:
             evs, _, _ = realized_scope(db, f)
-            trades = currency.view(db, load_trades(db, stmt))
+            trades = _results.trades(db, stmt)
         else:
-            trades = currency.view(db, load_trades(db, stmt))
+            trades = _results.trades(db, stmt)
             evs = rz.events(trades)
         open_count = sum(1 for t in trades if t.status == "OPEN")
         st = compute(trades, tz, open_count=open_count, events=evs)
@@ -189,8 +190,8 @@ def _anchor(db: Session, f, trades, st, *, quotes: bool = True, open_trades=None
     from app import currency
     if open_trades is None:
         from app.web import load_trades
-        open_trades = currency.view(db, load_trades(db, apply_trade_filters(
-            select(Trade).where(Trade.status == "OPEN"), replace(f, start=None, end=None))))
+        open_trades = _results.trades(db, apply_trade_filters(
+            select(Trade).where(Trade.status == "OPEN"), replace(f, start=None, end=None)))
     usd_fx = currency.RateBook(db).rate("USD", currency.get_display(db), datetime.now().date()) or 1.0
     accts = [a.id for a in db.scalars(select(Account).where(Account.is_demo.is_(False)))
              if not f.account_id or a.id == f.account_id]

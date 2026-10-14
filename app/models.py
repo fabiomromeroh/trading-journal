@@ -457,3 +457,27 @@ class InboundEmail(Base):
     fills: Mapped[int] = mapped_column(Integer, default=0)
     note: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+class TradeResult(Base):
+    """Stored result of one trade for page loads: the native snapshot (currency NATIVE) and its
+    USD / EUR conversion. ``sig`` fingerprints the inputs; a row whose sig differs is rebuilt."""
+    __tablename__ = "trade_results"
+    __table_args__ = (Index("ix_trade_results_account", "account_id", "currency"),)
+    trade_id: Mapped[int] = mapped_column(ForeignKey("trades.id", ondelete="CASCADE"), primary_key=True)
+    currency: Mapped[str] = mapped_column(String(6), primary_key=True)
+    sig: Mapped[str] = mapped_column(String(64))
+    account_id: Mapped[int | None] = mapped_column(Integer)
+    symbol: Mapped[str | None] = mapped_column(String(64))
+    status: Mapped[str | None] = mapped_column(String(10))
+    direction: Mapped[str | None] = mapped_column(String(10))
+    setup: Mapped[str | None] = mapped_column(String(120))
+    opened_at: Mapped[datetime | None] = mapped_column(DateTime)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    net: Mapped[float | None] = mapped_column(Float)
+    gross: Mapped[float | None] = mapped_column(Float)
+    fees: Mapped[float | None] = mapped_column(Float)
+    mfe: Mapped[float | None] = mapped_column(Float)
+    mae: Mapped[float | None] = mapped_column(Float)
+    risk: Mapped[float | None] = mapped_column(Float)
+    payload: Mapped[str] = mapped_column(Text)
+    computed_at: Mapped[datetime | None] = mapped_column(DateTime, default=utcnow)
