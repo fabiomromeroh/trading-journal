@@ -646,10 +646,28 @@ def prune_unused_tags(db: Session) -> None:
     db.flush()
 
 
+def _drop_state_keys(session, *_a):
+    session.info.pop("_state_keys", None)
+
+
+from sqlalchemy import event as _event  # noqa: E402
+
+for _name in ("after_commit", "after_rollback", "after_soft_rollback"):
+    _event.listen(Session, _name, _drop_state_keys)
+
+
 def get_state(db: Session, key: str, default: str | None = None) -> str | None:
+    """One query loads every app_state row into the session (a page reads ~20 keys, most of them absent);
+    later reads use the identity map, and a key that is not stored costs no query."""
     from app.models import AppState
-    row = db.get(AppState, key)
-    return row.value if row else default
+    if not db.info.get("state_cache") or db.new or db.dirty or db.deleted:  # not a request session / unflushed state changes: read through the session as before
+        row = db.get(AppState, key)
+        return row.value if row else default
+    vals = db.info.get("_state_keys")
+    if vals is None:
+        vals = db.info["_state_keys"] = dict(db.execute(select(AppState.key, AppState.value)).all())
+    v = vals.get(key, default) if key in vals else default
+    return v
 
 
 def set_state(db: Session, key: str, value: str | None) -> None:
@@ -658,5 +676,7 @@ def set_state(db: Session, key: str, value: str | None) -> None:
     if row is None:
         db.add(AppState(key=key, value=value))
         db.flush()  # so a later get_state/set_state in the same session sees it
+        db.info.pop("_state_keys", None)
     else:
         row.value = value
+    db.info.pop("_state_keys", None)

@@ -1,7 +1,10 @@
 {% extends "base.html" %}
 {% block title %}{{ t.symbol }} · Trade #{{ t.id }}{% endblock %}
-{% block head %}<script src="https://unpkg.com/lightweight-charts@5.2.1/dist/lightweight-charts.standalone.production.js"></script>{% endblock %}
+{% set no_boost = true %}
 {% block content %}
+<script>(function () { try {  // candles in parallel with the rest of the page (trade_chart.js picks this up)
+  const tf = localStorage.getItem('tj.chart.tf.{{ t.id }}'); const u = '/trades/{{ t.id }}/chart.json' + (tf ? '?tf=' + encodeURIComponent(tf) : '');
+  window.TJ_CHART_PRE = { url: u, req: fetch(u) }; } catch (e) {} })();</script>
 <div id="trade-page" x-data="{ journal: localStorage.getItem('tj.journalPanel') !== '0', tlist: localStorage.getItem('tj.tradeList') !== '0', tdrawer: false,
                toggleList() { if (window.matchMedia('(min-width: 1024px)').matches) this.tlist = !this.tlist; else this.tdrawer = !this.tdrawer; } }"
      x-init="$watch('journal', v => localStorage.setItem('tj.journalPanel', v ? '1' : '0')); $watch('tlist', v => localStorage.setItem('tj.tradeList', v ? '1' : '0'))"
@@ -171,8 +174,9 @@ window.TJ_CHART = { tradeId: {{ t.id }}, symbol: {{ chart_symbol|tojson }}, tz: 
   rLevels: {{ r_cfg.levels|tojson }}, showR: {{ r_cfg.show|tojson }}, stopAuto: {{ (t.stop_auto or false)|tojson }}, open: {{ 'true' if t.status == 'OPEN' else 'false' }} };
 </script>
 <script src="/static/journal.js?v=2"></script>
-<script src="/static/trade_chart.js?v=15"></script>
-<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js"></script>
+<script src="/static/vendor/lightweight-charts-5.2.1.standalone.production.js"></script>
+<script src="/static/trade_chart.js?v=16"></script>
+<script src="/static/vendor/sortable-1.15.6.min.js"></script>
 <script src="/static/widgets.js?v=1"></script>
 <script>WidgetEditor({ grid: '#trade-stats', toolbar: '#trade-page' });</script>
 <script>

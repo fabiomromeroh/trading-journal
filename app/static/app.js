@@ -156,6 +156,7 @@
   document.body.addEventListener('htmx:beforeRequest', (e) => {
     start();
     const detail = e.detail || {};
+    if (detail.boosted) return;  // page navigation: only the top bar, never dim the page
     const elt = detail.elt;
     const target = detail.target;
     if (target) mark(target);
@@ -170,4 +171,59 @@
     document.body.addEventListener(name, clearAll);
   });
   window.addEventListener('pageshow', clearAll);
+})();
+
+
+/* Boosted navigation (sidebar links): HTMX swaps only <main>; page scripts inside it are re-run here in
+   document order (libraries already on the page are not loaded twice, inline scripts run in their own
+   block scope so a revisit cannot clash with the last visit's constants). Any script error -> full reload,
+   so a page is never left half-initialised. Back / forward always reload the page (no stale snapshots).
+   Trade detail links: prefetched on hover so the full load comes from the browser cache. */
+(function () {
+  if (!window.htmx) return;
+  htmx.config.historyCacheSize = 0;
+  htmx.config.refreshOnHistoryMiss = true;
+  htmx.config.scrollIntoViewOnBoost = false;
+  const loaded = new Set([...document.scripts].map((s) => s.src).filter(Boolean));
+  document.body.addEventListener('htmx:beforeSwap', (e) => {
+    const d = e.detail;
+    if (!d.boosted || !d.xhr) return;
+    if (!/<main[\s>]/.test(d.serverResponse) || /data-boost="off"/.test(d.serverResponse)) {  // opt-out page: plain load
+      e.preventDefault(); location.assign(d.pathInfo && d.pathInfo.finalRequestPath || d.xhr.responseURL); return;
+    }
+    d.serverResponse = d.serverResponse.replace(/<script(?![^>]*\btype=)(?=[\s>])/g, '<script type="tj/boost"');
+  });
+  function run(list, i) {
+    if (i >= list.length) { document.dispatchEvent(new CustomEvent('tj:page')); return; }
+    const old = list[i], s = document.createElement('script');
+    if (old.src) {
+      const src = new URL(old.getAttribute('src'), location.href).href;
+      if (loaded.has(src)) return run(list, i + 1);
+      loaded.add(src); s.src = src; s.onload = () => run(list, i + 1); s.onerror = () => location.reload();
+      old.replaceWith(s);
+    } else {
+      s.textContent = '{\n' + old.textContent + '\n}';
+      old.replaceWith(s);
+      run(list, i + 1);
+    }
+  }
+  document.body.addEventListener('htmx:afterSettle', (e) => {
+    const main = document.querySelector('main');
+    const list = main ? [...main.querySelectorAll('script[type="tj/boost"]')] : [];
+    if (!list.length) return;
+    list.forEach((sc) => sc.setAttribute('type', 'tj/boost-run'));  // afterSettle also fires for the OOB swaps
+    let failed = false;
+    const onErr = () => { failed = true; };
+    window.addEventListener('error', onErr);
+    run(list, 0);
+    setTimeout(() => { window.removeEventListener('error', onErr); if (failed) location.reload(); }, 0);
+  });
+  const seen = new Set();
+  document.addEventListener('mouseover', (e) => {
+    const a = e.target.closest && e.target.closest('a[href^="/trades/"]');
+    if (!a || seen.has(a.href) || !/^\/trades\/\d+/.test(a.getAttribute('href'))) return;
+    seen.add(a.href);
+    const l = document.createElement('link'); l.rel = 'prefetch'; l.href = a.href; l.as = 'document';
+    document.head.appendChild(l);
+  });
 })();

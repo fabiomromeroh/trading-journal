@@ -84,6 +84,17 @@ from app import metric_info as _mi  # noqa: E402
 templates.env.globals.update(settings=get_settings, metric_info=_mi.info)
 
 
+def _tw_css() -> str:
+    """Prebuilt Tailwind file name (scripts/build_css.sh writes it with a content hash)."""
+    try:
+        return (Path(__file__).parent / "static" / "tw.manifest").read_text().strip()
+    except OSError:
+        return "tw.css"
+
+
+templates.env.globals["tw_css"] = _tw_css()
+
+
 @dataclass
 class Filters:
     preset: str = "all"

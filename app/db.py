@@ -61,6 +61,7 @@ def configure(url: str) -> None:
 
 def get_db() -> Iterator[Session]:
     db = SessionLocal()
+    db.info["state_cache"] = True  # request session: app_state read once (services.get_state)
     from app import outcome
     outcome.load(db)  # break-even range for this request (Settings > Break-even range)
     try:

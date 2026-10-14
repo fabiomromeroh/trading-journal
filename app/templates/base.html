@@ -5,19 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Trading Journal{% endblock %}</title>
   {% include "partials/pwa_head.html" %}
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = { darkMode: 'class', theme: { extend: { fontFamily: { sans: ['Inter', 'ui-sans-serif', 'system-ui'] } } } }
-  </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
-  <script defer src="https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <script defer src="/static/vendor/htmx-2.0.4.min.js"></script>
+  <script defer src="/static/vendor/alpine-3.14.8.min.js"></script>
   <link rel="stylesheet" href="/static/app.css?v=11">
-  <script defer src="/static/app.js?v=6"></script>
+  <script defer src="/static/app.js?v=7"></script>
   <script>window.CUR = {{ (display_symbol or '$')|tojson }};</script>
   {% block head %}{% endblock %}
+  <link rel="stylesheet" href="/static/{{ tw_css }}">{# last, where the Play CDN used to inject its styles #}
 </head>
 <body class="bg-[#0b0f17] text-slate-200 font-sans antialiased{{ ' side-collapsed' if fullscreen else '' }}"
       x-data="{ side: {{ 'false' if fullscreen else 'true' }}, mnav: false,
@@ -28,7 +24,7 @@
   <button type="button" @click="mnav = !mnav" class="h-10 w-10 -ml-1 grid place-items-center rounded-lg text-slate-300 hover:bg-slate-800" aria-label="Open menu">
     <svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" d="M4 6h16M4 12h16M4 18h16"/></svg>
   </button>
-  <a href="/" class="flex items-center gap-2 min-w-0"><span class="h-7 w-7 rounded-lg bg-gradient-to-br from-indigo-500 to-cyan-400 grid place-items-center font-bold text-slate-900 text-xs">TJ</span><span class="font-semibold text-white truncate">{% block mobile_title %}Trading Journal{% endblock %}</span></a>
+  <a href="/" class="flex items-center gap-2 min-w-0"><span class="h-7 w-7 rounded-lg bg-gradient-to-br from-indigo-500 to-cyan-400 grid place-items-center font-bold text-slate-900 text-xs">TJ</span><span id="mobile-title" class="font-semibold text-white truncate">{% block mobile_title %}Trading Journal{% endblock %}</span></a>
   <button type="button" @click="mnav = true" class="ml-auto text-[11px] rounded-md border border-slate-700 px-2 py-1 text-slate-300" id="mobile-chip">{{ (accounts|selectattr('id','equalto',active_account)|first).name if active_account else 'All' }} · {{ display_symbol|trim }}</button>
   <button hx-post="/sync" hx-target="#sync-toast" hx-swap="innerHTML" @click="mnav = true"
           hx-vals='{"mode":"new"{% if active_account %},"account":"{{ active_account }}"{% endif %}}'
@@ -45,7 +41,7 @@
       </div>
     </div>
     <form method="post" action="/prefs" id="prefs-form" class="px-4 pb-3 space-y-2" aria-label="Account and currency">
-      <input type="hidden" name="next" value="{{ request.url.path }}{{ '?' ~ request.url.query if request.url.query else '' }}">
+      <input type="hidden" id="prefs-next" name="next" value="{{ request.url.path }}{{ '?' ~ request.url.query if request.url.query else '' }}">
       <label class="block text-[10px] uppercase tracking-wide text-slate-500">Account
         <select name="account" id="acct-switch" class="inp text-xs w-full mt-0.5" onchange="this.form.submit()">
           <option value="">All accounts</option>
@@ -62,14 +58,14 @@
         </div>
       </div>
     </form>
-    <nav class="px-3 space-y-1 text-sm">
+    <nav id="side-nav" class="px-3 space-y-1 text-sm"{% if not no_boost %} hx-boost="true" hx-target="main" hx-select="main" hx-swap="outerHTML show:window:top" hx-select-oob="#side-nav,#prefs-next,#mobile-title"{% endif %}>
       {% set items = [('dashboard','/','Dashboard','M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z'),
                       ('trades','/trades','Trades','M4 6h16M4 12h16M4 18h10'),
                       ('reports','/reports','Reports','M4 20V10m6 10V4m6 16v-7m4 7H2'),
                       ('import','/import','Import','M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2'),
                       ('settings','/settings','Settings & Sync','M10.3 4.3c.4-1.7 3-1.7 3.4 0a1.7 1.7 0 002.6 1.1c1.5-.9 3.3.8 2.4 2.4a1.7 1.7 0 001 2.5c1.8.4 1.8 3 0 3.4a1.7 1.7 0 00-1 2.6c.9 1.5-.9 3.3-2.4 2.4a1.7 1.7 0 00-2.6 1c-.4 1.8-3 1.8-3.4 0a1.7 1.7 0 00-2.5-1c-1.6.9-3.3-.9-2.4-2.4a1.7 1.7 0 00-1.1-2.6c-1.7-.4-1.7-3 0-3.4a1.7 1.7 0 001.1-2.5c-.9-1.6.8-3.3 2.4-2.4a1.7 1.7 0 002.5-1.1zM15 12a3 3 0 11-6 0 3 3 0 016 0z')] %}
       {% for key, href, label, icon in items %}
-      <a href="{{ href }}" class="flex items-center gap-3 px-3 py-2.5 md:py-2 rounded-lg {{ 'bg-indigo-500/15 text-white' if nav == key else 'text-slate-400 hover:text-white hover:bg-slate-800/60' }}">
+      <a href="{{ href }}"{% if key == 'settings' %} hx-boost="false"{% endif %} class="flex items-center gap-3 px-3 py-2.5 md:py-2 rounded-lg {{ 'bg-indigo-500/15 text-white' if nav == key else 'text-slate-400 hover:text-white hover:bg-slate-800/60' }}">
         <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="{{ icon }}"/></svg>
         {{ label }}
       </a>
@@ -90,7 +86,7 @@
       <form method="post" action="/logout"><button class="w-full text-xs text-slate-500 hover:text-slate-300">Log out</button></form>
     </div>
   </aside>
-  <main class="flex-1 min-w-0">
+  <main class="flex-1 min-w-0" data-boost="{{ 'off' if no_boost else 'on' }}">
     {% if has_demo %}
     <div class="bg-amber-500/15 border-b border-amber-500/30 text-amber-200 text-sm px-4 md:px-6 py-2 flex flex-wrap items-center gap-x-3 gap-y-1">
       <span class="font-semibold uppercase tracking-wide text-[11px] bg-amber-500/25 rounded px-2 py-0.5">Sample data</span>
@@ -107,8 +103,9 @@
     <div id="page" class="{{ 'px-2 md:px-3 py-2 md:py-3' if fullscreen else 'px-3 md:px-6 py-4 md:py-6' }}">
       {% block content %}{% endblock %}
     </div>
+    <script src="/static/vendor/chart-4.4.7.umd.min.js" data-once></script>
+    {% block scripts %}{% endblock %}
   </main>
 </div>
-{% block scripts %}{% endblock %}
 </body>
 </html>

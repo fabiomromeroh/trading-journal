@@ -115,6 +115,20 @@ def create_app() -> FastAPI:
         finally:
             currency.VIEW_ACCOUNT.reset(tok)
 
+    @app.middleware("http")
+    async def static_cache(request, call_next):
+        # Versioned assets (vendor files and tw.<hash>.css carry the version in the name, our own files ?v=N):
+        # cache for a year. Anything else under /static keeps the default revalidation.
+        resp = await call_next(request)
+        p = request.url.path
+        if p.startswith("/static/") and resp.status_code == 200 and (
+                p.startswith("/static/vendor/") or p.startswith("/static/tw.") or "v" in request.query_params):
+            resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return resp
+
+    from starlette.middleware.gzip import GZipMiddleware
+    app.add_middleware(GZipMiddleware, minimum_size=1000)  # outermost: HTML, JSON and assets go out compressed
+
     app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
     for r in (auth.router, dashboard.router, trades.router, imports.router, settings_routes.router, email_sync.router, reports.router, security.router, pwa.router, backup_routes.router, journal_routes.router, ai_review_routes.router, prefs_routes.router, brokers_routes.router):
         app.include_router(r)

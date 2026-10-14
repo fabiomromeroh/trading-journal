@@ -62,14 +62,16 @@ ACCT_KEY = "display_currency:acct:"
 def get_display(db: Session, account_id: int | None = None) -> str:
     aid = account_id if account_id is not None else VIEW_ACCOUNT.get()
     if aid:
-        v = db.scalar(select(AppState.value).where(AppState.key == ACCT_KEY + str(aid)))
+        from app.services import get_state
+        v = get_state(db, ACCT_KEY + str(aid))
         if v in CHOICES:
             return v
         from app.models import Account
         acct = db.get(Account, aid)
         if acct is not None and (acct.currency or "").upper() in CHOICES:
             return acct.currency.upper()
-    v = db.scalar(select(AppState.value).where(AppState.key == "display_currency"))
+    from app.services import get_state
+    v = get_state(db, "display_currency")
     return v if v in CHOICES else "USD"
 
 
@@ -84,6 +86,7 @@ def set_display(db: Session, ccy: str, account_id: int | None = None) -> str:
         row.value = ccy
     else:
         db.add(AppState(key=key, value=ccy))
+        db.info.pop("_state_keys", None)
     db.commit()
     return ccy
 

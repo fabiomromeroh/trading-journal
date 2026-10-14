@@ -499,7 +499,10 @@
     ph.innerHTML = '<div class="text-slate-500 text-sm">Loading chart…</div>';
     let d;
     try {
-      const r = await fetch(`/trades/${C.tradeId}/chart.json` + (tf ? `?tf=${encodeURIComponent(tf)}` : ''));
+      const u = `/trades/${C.tradeId}/chart.json` + (tf ? `?tf=${encodeURIComponent(tf)}` : '');
+      const pre = window.TJ_CHART_PRE;  // started at the top of the page, while the scripts were still loading
+      window.TJ_CHART_PRE = null;
+      const r = await (pre && pre.url === u ? pre.req : fetch(u));
       d = await r.json();
     } catch (e) { d = { candles: [], timeframes: data ? data.timeframes : [], notes: ['Could not load price data.'] }; }
     if (my !== seq) return;
