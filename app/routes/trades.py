@@ -104,10 +104,14 @@ def filtered_trades(request: Request, db: Session | None = None):
     from app import companies
     stmt = companies.restrict(stmt, db, q)
     sort = q.get("sort", "opened")
-    sort = sort if sort in SORTS else "opened"
+    sort = sort if sort in SORTS or (sort in ("sector", "industry") and db is not None) else "opened"
     desc = q.get("dir", "desc") != "asc"
-    col = SORTS[sort]
-    stmt = stmt.order_by(col.desc() if desc else col.asc(), Trade.id.desc())
+    if sort in ("sector", "industry"):  # from the company profiles; unknown ('—') always last
+        col = companies.sort_expr(db, sort)
+        stmt = stmt.order_by(col.is_(None), col.desc() if desc else col.asc(), Trade.id.desc())
+    else:
+        col = SORTS[sort]
+        stmt = stmt.order_by(col.desc() if desc else col.asc(), Trade.id.desc())
     list_qs = urlencode([(k, v) for k, v in q.multi_items() if k in LIST_KEYS and v != ""])
     return stmt, f, q, sort, desc, list_qs
 

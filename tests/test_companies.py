@@ -242,9 +242,9 @@ def test_trades_list_detail_and_filters(db, client, monkeypatch):
     assert "No trades match" in client.get("/trades?sector=Utilities").text
     detail = client.get(f"/trades/{apple.id}").text
     assert ">AAPL <span" in detail and ">- Apple Inc.</span>" in detail
-    assert "Technology · Consumer Electronics" in detail
+    assert 'title="Sector">Technology</span>' in detail and 'title="Industry">Consumer Electronics</span>' in detail
     opt_page = client.get(f"/trades/{opt.id}").text
-    assert "Apple Inc." in opt_page and "Technology · Consumer Electronics" in opt_page
+    assert "Apple Inc." in opt_page and 'title="Industry">Consumer Electronics</span>' in opt_page
 
 
 def test_reports_sector_tables_follow_display_currency(db, client, monkeypatch):
@@ -280,3 +280,52 @@ def test_refresh_button_does_not_fetch_inline(db, client, monkeypatch):
     on = client.post("/settings/companies/refresh", follow_redirects=False)
     assert on.status_code == 303 and started == [1]
     assert "background" in client.get("/settings").text
+
+
+def test_name_only_row_is_retried_and_funds_count_as_complete():
+    now = utcnow()
+    name_only = SimpleNamespace(fetched_at=now - timedelta(days=2), name="Visa Inc.", sector=None, industry=None,
+                                source="yahoo", quote_type="EQUITY")
+    assert companies.needs_refresh(name_only, now)  # a throttled lookup stored only the name: try again
+    etf = SimpleNamespace(fetched_at=now - timedelta(days=2), name="Vanguard FTSE All-World", sector="ETF",
+                          industry=None, source="yahoo", quote_type="ETF")
+    assert not companies.needs_refresh(etf, now)
+    gone = SimpleNamespace(fetched_at=now - timedelta(days=2), name=None, sector=None, industry=None,
+                           source="yahoo", quote_type="NONE")
+    assert not companies.needs_refresh(gone, now)  # delisted: weekly
+    gone.fetched_at = now - timedelta(days=8)
+    assert companies.needs_refresh(gone, now)
+
+
+def test_renamed_ticker_uses_new_symbols_profile(db):
+    def fetch(sym):
+        if sym == "HONA":
+            return {"ok": True, "name": "Honeywell", "sector": "Industrials", "industry": "Conglomerates", "quote_type": "EQUITY"}
+        return {"ok": True, "name": None, "sector": None, "industry": None, "quote_type": "NONE"}
+    companies.fill_symbols(db, ["HONAV"], fetch=fetch, gap=0)
+    from app.models import CompanyProfile
+    row = db.get(CompanyProfile, "HONAV")
+    assert row.sector == "Industrials" and row.industry == "Conglomerates"
+
+
+
+def test_trades_list_sorts_by_sector_and_industry(db):
+    from fastapi.testclient import TestClient
+    from app.main import create_app
+    from app.models import Account, CompanyProfile, Trade
+    from datetime import datetime
+    a = Account(name="S", broker="schwab", currency="USD")
+    db.add(a); db.flush()
+    for sym, sec, ind in (("AAA", "Technology", "Software"), ("BBB", "Energy", "Oil"), ("CCC", None, None)):
+        db.add(Trade(key=sym, account_id=a.id, symbol=sym, underlying=sym, asset_type="STOCK", direction="LONG",
+                     status="CLOSED", opened_at=datetime(2026, 1, 2), closed_at=datetime(2026, 1, 3), quantity=1, net_pnl=1, entry_price=10, exit_price=11))
+        if sec:
+            db.add(CompanyProfile(yahoo_symbol=sym, name=sym + " Inc", sector=sec, industry=ind, source="yahoo", fetched_at=utcnow()))
+    db.commit()
+    c = TestClient(create_app()); c.post("/login", data={"password": "test-pass", "next": "/"})
+    import re
+    order = lambda html: [s for s in re.findall(r'hover:underline">(\w+)</a>', html) if s in ("AAA", "BBB", "CCC")]  # noqa: E731
+    assert order(c.get("/trades?sort=sector&dir=asc").text) == ["BBB", "AAA", "CCC"]   # unknown last
+    assert order(c.get("/trades?sort=industry&dir=desc").text) == ["AAA", "BBB", "CCC"]
+    html = c.get("/trades").text
+    assert "sort=sector" in html and "sort=industry" in html

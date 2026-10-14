@@ -29,6 +29,7 @@ log = logging.getLogger(__name__)
 
 STALE_DAYS = 90
 EMPTY_RETRY = timedelta(days=1)
+DELISTED_RETRY = timedelta(days=7)
 BATCH = 20
 GAP = 0.8  # seconds between Yahoo calls
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
@@ -99,19 +100,35 @@ def yahoo_key(t) -> str:
     return raw.replace(".", "-").replace("/", "-")[:64]
 
 
+def complete(row) -> bool:
+    """Name, sector and industry known (a fund has no industry unless Yahoo gives a category)."""
+    if row is None or not (row.name and row.sector):
+        return False
+    return bool(getattr(row, "industry", None)) or (getattr(row, "quote_type", None) or "").upper() in ("ETF", "MUTUALFUND") or row.sector == "ETF"
+
+
 def needs_refresh(row, now=None) -> bool:
-    """True when the row is missing, has no sector yet and is due, or is older than 90 days."""
+    """True when the row is missing, older than 90 days, or incomplete and due for another try.
+    Incomplete rows (a throttled or failed lookup stored only a name) are retried after a day, and a
+    ticker Yahoo no longer knows (delisted) after a week, so nothing stays empty for good by accident."""
     now = now or utcnow()
     if row is None or row.fetched_at is None:
         return True
     age = now - row.fetched_at
     if age >= timedelta(days=STALE_DAYS):
         return True
-    if row.source in _FRESH_SOURCES and (row.name or row.sector or row.industry):
+    if complete(row):
         return False
-    if row.sector or row.industry:
-        return False
+    if (getattr(row, "quote_type", None) or "").upper() == "NONE":
+        return age >= DELISTED_RETRY
     return age >= EMPTY_RETRY
+
+
+def _alias(symbol: str) -> str | None:
+    """The verified new ticker of a renamed one (symbols.BUILTIN, e.g. HONAV -> HONA)."""
+    from app.symbols import BUILTIN
+    hit = BUILTIN.get(symbol) or BUILTIN.get((symbol or "").upper())
+    return hit[0] if hit else None
 
 
 def fallback_for(symbol: str) -> tuple[str, str, str] | None:
@@ -294,6 +311,17 @@ def restrict(stmt, db: Session | None, q):
     return stmt.where(Trade.id.in_(ids or [-1]))
 
 
+def sort_expr(db: Session, field: str):
+    """SQL expression with each trade's sector / industry (for ORDER BY); NULL when unknown."""
+    from sqlalchemy import case, literal
+    _names, ids = _index(db)
+    prof = {r.yahoo_symbol: getattr(r, field) for r in db.scalars(select(CompanyProfile))}
+    whens = {tid: prof.get(key) for key, tids in ids.items() if prof.get(key) for tid in tids}
+    if not whens:
+        return literal(None)
+    return case(whens, value=Trade.id, else_=None)
+
+
 def choices(db: Session) -> tuple[list[str], list[str]]:
     sectors = [s for s in db.scalars(select(CompanyProfile.sector).where(CompanyProfile.sector.is_not(None)).distinct()) if s]
     industries = [s for s in db.scalars(select(CompanyProfile.industry).where(CompanyProfile.industry.is_not(None)).distinct()) if s]
@@ -398,6 +426,11 @@ def fill_symbols(db: Session, symbols: list[str] | None = None, *, fetch=None, g
                 time.sleep(gap)
             try:
                 yahoo = fetch(sym)
+                alias = _alias(sym)
+                if alias and not (isinstance(yahoo, dict) and yahoo.get("sector")):
+                    via = fetch(alias)  # renamed ticker: the new symbol's profile (same company)
+                    if isinstance(via, dict) and (via.get("sector") or via.get("name")):
+                        yahoo = via
             except Exception as exc:  # one symbol must not stop the batch
                 log.info("company lookup failed: %s", type(exc).__name__)
                 yahoo = None

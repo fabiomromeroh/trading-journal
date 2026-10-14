@@ -5,7 +5,7 @@
   <a href="?{{ p|urlencode }}" class="hover:text-white {{ 'text-indigo-300' if sort == key }}">{{ label }}{% if sort == key %} {{ '↓' if desc else '↑' }}{% endif %}</a>
 {% endmacro %}
 {% from "partials/info.html" import info %}
-{% from "partials/company.html" import name as company_name, pills as company_pills %}
+{% from "partials/company.html" import name as company_name, pills as company_pills, sector as company_sector, industry as company_industry %}
 {% block content %}
 <div id="trades-results">
 <div class="flex flex-wrap items-end justify-between gap-2 mb-3">
@@ -81,7 +81,7 @@
 <div class="card overflow-x-auto hidden md:block">
 <table class="w-full text-sm tbl">
   <thead><tr>
-    <th>{{ sort_link('opened', 'Opened') }}</th><th>{{ sort_link('closed', 'Closed') }}</th><th>{{ sort_link('symbol', 'Symbol') }}</th><th title="Sector and industry">Sector</th><th>Side</th><th>Status</th>
+    <th>{{ sort_link('opened', 'Opened') }}</th><th>{{ sort_link('closed', 'Closed') }}</th><th>{{ sort_link('symbol', 'Symbol') }}</th><th>{{ sort_link('sector', 'Sector') }}</th><th>{{ sort_link('industry', 'Industry') }}</th><th>Side</th><th>Status</th>
     <th class="text-right">{{ sort_link('qty', 'Qty') }}</th><th class="text-right">Entry</th><th class="text-right">Exit</th>
     <th class="text-right">{{ sort_link('fees', 'Fees') }}</th>{% if day %}<th class="text-right text-indigo-200">Realized {{ day.strftime('%b %d') }}</th>{% endif %}<th class="text-right">{{ sort_link('pnl', 'Net P&L') }}</th><th class="text-right">{{ sort_link('return', 'Return') }}</th>
     <th>Hold</th><th>Setup / tags</th><th>Rating</th>
@@ -92,7 +92,7 @@
     <td class="text-slate-400">{{ t.opened_at|local_dt('%Y-%m-%d %H:%M' if t.time_known else '%Y-%m-%d') }}</td>
     <td class="text-slate-400">{{ t.closed_at|local_dt('%Y-%m-%d %H:%M' if t.time_known else '%Y-%m-%d') if t.closed_at else '—' }}</td>
     <td><a href="/trades/{{ t.id }}{{ '?' ~ list_qs if list_qs }}" class="text-white font-medium hover:underline">{{ t.symbol }}</a>{% if t.is_demo %} <span class="pill bg-amber-500/20 text-amber-300">demo</span>{% endif %}{% if t.id in provisional_trades %} <span class="pill bg-amber-500/15 text-amber-300" title="Includes a same-day fill from a SnapTrade order. Fees post with tomorrow's activity data.">provisional (fees pending)</span>{% endif %}{{ company_name(t) }}</td>
-    <td>{{ company_pills(t) }}</td>
+    <td>{{ company_sector(t) }}</td><td>{{ company_industry(t) }}</td>
     <td><span class="pill {{ 'bg-emerald-500/15 text-emerald-300' if t.direction == 'LONG' else 'bg-rose-500/15 text-rose-300' }}">{{ t.direction }}</span></td>
     <td>{% if t.status == 'OPEN' %}<span class="pill bg-sky-500/15 text-sky-300">OPEN</span>{% else %}<span class="pill {{ {'WIN': 'bg-emerald-500/15 text-emerald-300', 'LOSS': 'bg-rose-500/15 text-rose-300'}.get(outcome_label(t), 'bg-slate-500/20 text-slate-300') }}">{{ outcome_label(t) }}</span>{% if t.close_reason and t.close_reason != 'TRADE' %} <span class="text-[10px] text-slate-500">{{ t.close_reason|lower }}</span>{% endif %}{% endif %}{% if (t.account_id ~ ':' ~ t.symbol) in attention_marks %} <a href="/settings#sync-attention" class="pill bg-amber-500/15 text-amber-300" onclick="event.stopPropagation()">Needs attention</a>{% endif %}</td>
     <td class="text-right">{{ t.quantity|qty }}</td><td class="text-right" title="{{ 'Price in ' ~ t.currency if t.currency else '' }}">{{ t.entry_price|num(2) }}{% if t.currency and t.currency != display_currency %} <span class="text-[10px] text-slate-500">{{ t.currency }}</span>{% endif %}</td><td class="text-right">{{ t.exit_price|num(2) }}{% if t.exit_price is not none and t.currency and t.currency != display_currency %} <span class="text-[10px] text-slate-500">{{ t.currency }}</span>{% endif %}</td>
@@ -105,7 +105,7 @@
     <td class="text-amber-300">{{ '★' * (t.rating or 0) }}</td>
   </tr>
   {% else %}
-  <tr><td colspan="{{ 16 if day else 15 }}" class="text-center text-slate-500 py-10">No trades match. <a class="text-indigo-300 underline" href="/import">Import a CSV</a></td></tr>
+  <tr><td colspan="{{ 17 if day else 16 }}" class="text-center text-slate-500 py-10">No trades match. <a class="text-indigo-300 underline" href="/import">Import a CSV</a></td></tr>
   {% endfor %}
   </tbody>
 </table>
