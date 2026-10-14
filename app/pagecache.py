@@ -40,6 +40,8 @@ def enabled() -> bool:
 _RECENT: "OrderedDict[tuple, list]" = OrderedDict()   # key -> request headers, most recent last (in memory only)
 _APP = None
 _WARM = {"timer": None}
+_USER = {"busy": 0, "last": -999.0}   # real (non-warming) requests in flight / when the last one ended
+WARM_IDLE = 2.0                       # seconds of quiet before each warming render
 WARM_PAGES = 6
 WARM_DELAY = 4.0   # seconds after the last write (a sync commits many times)
 
@@ -73,6 +75,13 @@ def _prewarm() -> None:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=_APP), base_url="http://warm") as c:
             for key, headers in reversed(jobs):
                 path, query = key[0], key[1]
+                waited = 0.0
+                # never compete with the user for the (single, slow) CPU: wait until requests are idle
+                while (_USER["busy"] or time.monotonic() - _USER["last"] < WARM_IDLE) and waited < 60:
+                    await asyncio.sleep(0.25)
+                    waited += 0.25
+                if waited >= 60:
+                    return
                 try:
                     await c.get(path + (("?" + query) if query else ""), headers=headers)
                 except Exception:  # noqa: BLE001 - warming is best effort
@@ -150,6 +159,17 @@ def install(app) -> None:
 
     @app.middleware("http")
     async def page_cache(request, call_next):
+        if not request.headers.get("x-tj-warm"):  # a real request: background warming waits for it
+            _USER["busy"] += 1
+            _USER["last"] = time.monotonic()
+            try:
+                return await _page_cache(request, call_next)
+            finally:
+                _USER["busy"] -= 1
+                _USER["last"] = time.monotonic()
+        return await _page_cache(request, call_next)
+
+    async def _page_cache(request, call_next):
         ttl = ttl_for(request.url.path) if request.method == "GET" and enabled() else None
         # one-time messages (flash, a backup token shown once, notices) live in the session: never
         # serve or store a cached page while the session carries anything but the login itself
