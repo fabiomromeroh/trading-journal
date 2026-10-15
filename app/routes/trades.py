@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app import results as _results
+from app import realized as _realized
 from app import stops
 from app.db import get_db
 from app.models import Tag, Trade, TradeFill, TradeMistake
@@ -243,7 +244,7 @@ def trade_detail(trade_id: int, request: Request, db: Session = Depends(get_db))
     symbol_override = {} if fx.show or native == currency.get_display(db) else {"display_symbol": currency.symbol(native)}
     return templates.TemplateResponse(request, "trade_detail.html", base_context(
         request, db, nav="trades", t=t, native_symbol=currency.symbol(native),
-        native_ccy=native, fx=fx, list_symbol=currency.symbol(currency.get_display(db)), prev_id=prev_id, next_id=next_id,
+        native_ccy=native, fx=fx, fill_real=_realized.fill_realized(t), list_symbol=currency.symbol(currency.get_display(db)), prev_id=prev_id, next_id=next_id,
         **symbol_override,
         saved=False, fullscreen=True, chart_symbol=chart_symbol, listing=listing, adjustments=adjustments,
         **journal_ctx(db, t), stop_rule=stops.get_rule(db), opened_ts=int(t.opened_at.replace(tzinfo=timezone.utc).timestamp()), mfe_note=excursion_note(excursion_basis(t)), nav_count=len(ids),

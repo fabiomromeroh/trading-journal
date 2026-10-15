@@ -233,3 +233,37 @@ def test_new_default_widget_appears_in_saved_layouts(db):
     assert widgets.get_layout(db, "dashboard") == ["realized", "total_pnl", "total_return", "dividends", "interest", "balance", "positions", "chart_balance", "win_rate", "coach"]
     widgets.save_layout(db, "dashboard", ["realized", "win_rate"])  # user hides it on purpose
     assert widgets.get_layout(db, "dashboard") == ["realized", "win_rate"]
+
+
+def test_fill_realized_sums_to_trade_pnl(db):
+    """ADD: buy 10 @100, sell 4 @110 (+40), buy 5 @104 (add), sell 6 @108 (FIFO: 6 of the first lot +48),
+    sell 5 @100 (0 left of lot 1 at 100 -> 0; 5 of the add @104 -> -20) -> gross 40 + 48 - 20 = 68.
+    SHT (short): sell 5 @50, sell 5 @48 (add), buy 3 @45 (+15), buy 7 @49 (2 @50 +2, 5 @48 -5) -> 12.
+    OPN: buy 10 @10, sell 3 @12 (+6), still open."""
+    acct = Account(name="A", broker="schwab")
+    db.add(acct)
+    db.flush()
+    ingest_records(db, acct.id, "tos_statement", [
+        rec(1, "ADD", "BUY", 10, 100.0, 1, fees=1.0), rec(2, "ADD", "SELL", 4, 110.0, 2, fees=0.5),
+        rec(3, "ADD", "BUY", 5, 104.0, 3, fees=0.7), rec(4, "ADD", "SELL", 6, 108.0, 4, fees=0.5),
+        rec(5, "ADD", "SELL", 5, 100.0, 5, fees=0.3),
+        rec(6, "SHT", "SELL", 5, 50.0, 1, position_effect="OPEN", fees=0.2),
+        rec(7, "SHT", "SELL", 5, 48.0, 2, position_effect="OPEN"),
+        rec(8, "SHT", "BUY", 3, 45.0, 3, position_effect="CLOSE", fees=0.1),
+        rec(9, "SHT", "BUY", 7, 49.0, 4, position_effect="CLOSE"),
+        rec(10, "OPN", "BUY", 10, 10.0, 1), rec(11, "OPN", "SELL", 3, 12.0, 2),
+    ])
+    rebuild_trades(db, [acct.id])
+    db.commit()
+    by = {t.symbol: t for t in db.scalars(select(Trade))}
+    expect = {"ADD": [40.0, 48.0, -20.0], "SHT": [15.0, -3.0], "OPN": [6.0]}
+    for sym, vals in expect.items():
+        t = by[sym]
+        fr = rz.fill_realized(t)
+        closes = [f for f in sorted(t.fills, key=lambda f: f.position) if f.role != "OPEN"]
+        assert set(fr) == {f.position for f in closes}  # opening fills: no value
+        assert [round(fr[f.position], 2) for f in closes] == vals
+        assert sum(fr.values()) == pytest.approx(t.gross_pnl, abs=1e-9)
+        fees = sum(f.fees or 0 for f in t.fills)
+        assert sum(fr.values()) - fees == pytest.approx(t.net_pnl, abs=1e-6)
+    assert by["OPN"].status == "OPEN"

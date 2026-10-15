@@ -181,3 +181,21 @@ def summary(evs: list[Event]) -> dict:
     return {"total": tot, "closed_part": tot - open_part, "open_part": open_part,
             "gross": sum(e.gross for e in evs), "fees": sum(e.fees for e in evs),
             "partial_exits": sum(1 for e in evs if e.is_close and not e.final)}
+
+
+def fill_realized(t) -> dict:
+    """Gross realized P&L locked in by each closing fill (native currency), keyed by the fill's position.
+
+    Same FIFO matching as ``trade_events`` (and the trade's stored P&L). Fees are left out: the values sum
+    to the trade's gross P&L, and gross - total fees = the trade's net P&L. A rounding residue goes on the
+    last closing fill so the sum matches the stored gross to the cent. Opening fills are not in the dict."""
+    fills = sorted(getattr(t, "fills", None) or [], key=lambda f: f.position)
+    if not fills:
+        return {}
+    native = getattr(t, "native_trade", None) or t
+    evs = trade_events(native)
+    out = {f.position: e.gross for f, e in zip(fills, evs) if e.is_close}
+    if out:
+        last = max(out)
+        out[last] += (native.gross_pnl or 0.0) - sum(out.values())
+    return out

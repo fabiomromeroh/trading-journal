@@ -110,7 +110,7 @@
     <div class="card p-4 overflow-x-auto">
       <div class="card-h mb-2">Executions</div>
       <table class="w-full text-sm tbl">
-        <thead><tr><th>Time ({{ settings().display_tz.split('/')[-1].replace('_',' ') }})</th><th>Action</th><th>Role</th><th class="text-right">Qty</th><th class="text-right">Price</th><th class="text-right">Value</th><th class="text-right">Fees</th><th>Source</th></tr></thead>
+        <thead><tr><th>Time ({{ settings().display_tz.split('/')[-1].replace('_',' ') }})</th><th>Action</th><th>Role</th><th class="text-right">Qty</th><th class="text-right">Price</th><th class="text-right">Value</th><th class="text-right">Fees</th><th class="text-right" title="Gross P&amp;L locked in by each closing fill (FIFO, same as the trade P&amp;L). Fees are not included; gross minus all fees = net P&amp;L.">Realized (gross)</th><th>Source</th></tr></thead>
         <tbody>
         {% for f in t.fills %}
         <tr>
@@ -122,13 +122,14 @@
           <td class="text-right">{{ f.quantity|qty }}</td><td class="text-right" title="Price in {{ native_ccy }}">{{ native_symbol }}{{ f.price|num(4 if f.price < 10 else 2) }}</td>
           <td class="text-right text-slate-400">{% set nv = f.quantity * f.price * t.multiplier %}{% if fx and fx.show %}{{ fx.fill_amount(f, nv)|money }} <span class="text-[10px] text-slate-500">({{ nv|money(sym=native_symbol) }})</span>{% else %}{{ nv|money }}{% endif %}</td>
           <td class="text-right text-slate-400">{% if fx and fx.show %}{{ fx.fill_amount(f, f.fees)|money }} <span class="text-[10px] text-slate-500">({{ f.fees|money(sym=native_symbol) }})</span>{% else %}{{ f.fees|money }}{% endif %}</td>
+          <td class="text-right">{% set rv = fill_real.get(f.position) %}{% if rv is none %}<span class="text-slate-600">—</span>{% elif fx and fx.show %}<span class="{{ rv|pnl_class }}">{{ fx.fill_amount(f, rv)|money(true) }}</span> <span class="text-[10px] text-slate-500">({{ rv|money(true, sym=native_symbol) }})</span>{% else %}<span class="{{ rv|pnl_class }}">{{ rv|money(true) }}</span>{% endif %}</td>
           <td class="text-xs text-slate-500">{% if f.execution and f.execution.source == 'snaptrade_order' %}<span class="pill bg-amber-500/15 text-amber-300" title="From today's executed order; fees and the final record arrive with tomorrow's SnapTrade transaction">provisional (fees pending)</span>{% else %}{{ f.execution.source if f.execution else '—' }}{% endif %}</td>
         </tr>
         {% if f.execution and f.execution.kind == 'SPLIT' and not adjustments.get(f.execution.id) %}
-        <tr><td colspan="8" class="text-xs text-slate-400 pb-2">Split ×{{ f.execution.quantity|qty }} on this date. Quantities and prices before the split are adjusted; cost basis is unchanged.</td></tr>
+        <tr><td colspan="9" class="text-xs text-slate-400 pb-2">Split ×{{ f.execution.quantity|qty }} on this date. Quantities and prices before the split are adjusted; cost basis is unchanged.</td></tr>
         {% endif %}
         {% if f.execution and adjustments.get(f.execution.id) %}{% set raw = adjustments[f.execution.id] %}
-        <tr><td colspan="8" class="text-xs text-slate-400 pb-2">
+        <tr><td colspan="9" class="text-xs text-slate-400 pb-2">
           {{ raw.note }}
           <form method="post" action="/trades/{{ t.id }}/adjustments/{{ f.execution.id }}" class="flex flex-wrap items-center gap-1 mt-1">
             <label>Qty <input name="quantity" value="{{ f.execution.quantity }}" class="inp text-xs w-28" inputmode="decimal"></label>
@@ -141,6 +142,11 @@
         {% endif %}
         {% endfor %}
         </tbody>
+        {% if fill_real %}{% set ns = namespace(d=0.0, n=0.0, ok=true) %}{% for f in t.fills %}{% set rv = fill_real.get(f.position) %}{% if rv is not none %}{% set ns.n = ns.n + rv %}{% if fx and fx.show %}{% set dv = fx.fill_amount(f, rv) %}{% if dv is none %}{% set ns.ok = false %}{% else %}{% set ns.d = ns.d + dv %}{% endif %}{% endif %}{% endif %}{% endfor %}
+        <tfoot><tr class="border-t border-slate-700/60" id="realized-total" data-native-sum="{{ '%.2f'|format(ns.n) }}" data-gross="{{ '%.2f'|format(t.gross_pnl or 0) }}" data-net="{{ '%.2f'|format(t.net_pnl or 0) }}">
+          <td colspan="7" class="text-right text-xs text-slate-400">Realized from closing fills (gross) · minus all fees {{ ((t.gross_pnl or 0) - (t.net_pnl or 0))|money(sym=native_symbol) }} = net {{ t.net_pnl|money(true, sym=native_symbol) }}</td>
+          <td class="text-right font-semibold">{% if fx and fx.show and ns.ok %}<span class="{{ ns.d|pnl_class }}">{{ ns.d|money(true) }}</span> <span class="text-[10px] text-slate-500">({{ ns.n|money(true, sym=native_symbol) }})</span>{% else %}<span class="{{ ns.n|pnl_class }}">{{ ns.n|money(true) }}</span>{% endif %}</td><td></td>
+        </tr></tfoot>{% endif %}
       </table>
       <div class="text-xs text-slate-500 mt-2">Account: {{ t.account.name }} · P&L uses FIFO matching{% if t.asset_type == 'OPTION' %} · multiplier ×{{ t.multiplier|qty }}{% endif %}{% if t.close_reason and t.close_reason != 'TRADE' %} · closed by {{ t.close_reason|lower }}{% endif %}</div>
     </div>
