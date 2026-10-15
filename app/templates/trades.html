@@ -78,38 +78,78 @@
   {% endfor %}
 </div>
 
+{% set col_ids = cols|map(attribute='id')|list %}
+{% macro day_th() %}<th class="text-right text-indigo-200">Realized {{ day.strftime('%b %d') }}</th>{% endmacro %}
+{% macro day_td(t) %}{% set dr = day_rows.get(t.id) %}<td class="text-right font-semibold {{ dr.net|pnl_class }}">{{ dr.net|money(true) }}<div class="text-[10px] text-slate-500 font-normal">{% if dr.exits %}{{ dr.qty|qty }} {{ 'final exit' if dr.final and not dr.partial else 'partial' if not dr.final else 'partial + final' }}{% else %}fees only{% endif %}</div></td>{% endmacro %}
+{% macro dash(v) %}{{ v if v not in (none, '') else '—' }}{% endmacro %}
+{% macro cell(c, t, m) %}{% set id = c.id %}
+{%- if id == 'opened' %}<td class="text-slate-400">{{ t.opened_at|local_dt('%Y-%m-%d %H:%M' if t.time_known else '%Y-%m-%d') }}</td>
+{%- elif id == 'closed' %}<td class="text-slate-400">{{ t.closed_at|local_dt('%Y-%m-%d %H:%M' if t.time_known else '%Y-%m-%d') if t.closed_at else '—' }}</td>
+{%- elif id == 'symbol' %}<td><a href="/trades/{{ t.id }}{{ '?' ~ list_qs if list_qs }}" class="text-white font-medium hover:underline">{{ t.symbol }}</a>{% if t.is_demo %} <span class="pill bg-amber-500/20 text-amber-300">demo</span>{% endif %}{% if t.id in provisional_trades %} <span class="pill bg-amber-500/15 text-amber-300" title="Includes a same-day fill from a SnapTrade order. Fees post with tomorrow's activity data.">provisional (fees pending)</span>{% endif %}{{ company_name(t) }}</td>
+{%- elif id == 'sector' %}<td>{{ company_sector(t) }}</td>
+{%- elif id == 'industry' %}<td>{{ company_industry(t) }}</td>
+{%- elif id == 'side' %}<td><span class="pill {{ 'bg-emerald-500/15 text-emerald-300' if t.direction == 'LONG' else 'bg-rose-500/15 text-rose-300' }}">{{ t.direction }}</span></td>
+{%- elif id == 'status' %}<td>{% if t.status == 'OPEN' %}<span class="pill bg-sky-500/15 text-sky-300">OPEN</span>{% else %}<span class="pill {{ {'WIN': 'bg-emerald-500/15 text-emerald-300', 'LOSS': 'bg-rose-500/15 text-rose-300'}.get(outcome_label(t), 'bg-slate-500/20 text-slate-300') }}">{{ outcome_label(t) }}</span>{% if t.close_reason and t.close_reason != 'TRADE' %} <span class="text-[10px] text-slate-500">{{ t.close_reason|lower }}</span>{% endif %}{% endif %}{% if (t.account_id ~ ':' ~ t.symbol) in attention_marks %} <a href="/settings#sync-attention" class="pill bg-amber-500/15 text-amber-300" onclick="event.stopPropagation()">Needs attention</a>{% endif %}</td>
+{%- elif id == 'qty' %}<td class="text-right">{{ t.quantity|qty }}</td>
+{%- elif id == 'entry' %}<td class="text-right" title="{{ 'Price in ' ~ t.currency if t.currency else '' }}">{{ t.entry_price|num(2) }}{% if t.currency and t.currency != display_currency %} <span class="text-[10px] text-slate-500">{{ t.currency }}</span>{% endif %}</td>
+{%- elif id == 'exit' %}<td class="text-right">{{ t.exit_price|num(2) }}{% if t.exit_price is not none and t.currency and t.currency != display_currency %} <span class="text-[10px] text-slate-500">{{ t.currency }}</span>{% endif %}</td>
+{%- elif id == 'fees' %}<td class="text-right text-slate-400">{{ t.fees|money }}</td>
+{%- elif id == 'pnl' %}<td class="text-right font-semibold {{ t.net_pnl|pnl_class }}">{{ t.net_pnl|money }}</td>
+{%- elif id == 'return' %}<td class="text-right {{ t.return_pct|pnl_class }}">{{ (t.return_pct|num(1) ~ '%') if t.return_pct is not none else '—' }}</td>
+{%- elif id == 'hold' %}<td class="text-slate-400">{{ ((t.closed_at - t.opened_at)|td) if t.closed_at else '—' }}</td>
+{%- elif id == 'setup_tags' %}<td class="text-slate-400 max-w-[220px] truncate">{{ t.setup or '' }}{% for tg in t.tags %} <span class="pill bg-indigo-500/15 text-indigo-300">{{ tg.name }}</span>{% endfor %}{% for mk in t.mistakes %} <span class="pill bg-rose-500/15 text-rose-300" title="Mistake">{{ mk }}</span>{% endfor %}</td>
+{%- elif id == 'rating' %}<td class="text-amber-300">{{ '★' * (t.rating or 0) }}</td>
+{%- elif id == 'account' %}<td class="text-slate-400">{{ t.account.name if t.account else '—' }}</td>
+{%- elif id == 'currency' %}<td class="text-slate-400">{{ t.currency or (t.account.currency if t.account else '') or '—' }}</td>
+{%- elif id == 'asset' %}<td class="text-slate-400">{{ t.asset_type|lower }}</td>
+{%- elif id == 'gross' %}<td class="text-right {{ t.gross_pnl|pnl_class }}">{{ t.gross_pnl|money }}</td>
+{%- elif id == 'stop' %}<td class="text-right text-slate-400">{{ t.initial_stop|num(2) if t.initial_stop is not none else '—' }}</td>
+{%- elif id == 'target' %}<td class="text-right text-slate-400">{{ t.profit_target|num(2) if t.profit_target is not none else '—' }}</td>
+{%- elif id == 'mfe' %}<td class="text-right text-emerald-300/80">{{ t.mfe|money if t.mfe is not none else '—' }}</td>
+{%- elif id == 'mae' %}<td class="text-right text-rose-300/80">{{ t.mae|money if t.mae is not none else '—' }}</td>
+{%- elif id == 'setup' %}<td class="text-slate-400">{{ t.setup or '—' }}</td>
+{%- elif id == 'tags' %}<td class="max-w-[220px] truncate">{% for tg in t.tags %}<span class="pill bg-indigo-500/15 text-indigo-300">{{ tg.name }}</span> {% else %}<span class="text-slate-600">—</span>{% endfor %}</td>
+{%- elif id == 'mistakes' %}<td class="max-w-[220px] truncate">{% for mk in t.mistakes %}<span class="pill bg-rose-500/15 text-rose-300">{{ mk }}</span> {% else %}<span class="text-slate-600">—</span>{% endfor %}</td>
+{%- elif id == 'exec_grade' %}<td class="text-slate-300">{{ t.exec_grade or '—' }}</td>
+{%- elif id in ('r_multiple', 'mfe_r', 'mae_r', 'planned_rr') %}{% set v = m.get(id) %}<td class="text-right {{ v|pnl_class if id != 'planned_rr' else 'text-slate-300' }}">{{ (v|num(2) ~ ('' if id == 'planned_rr' else 'R')) if v is not none else '—' }}</td>
+{%- elif id in ('mfe_eff', 'mae_eff') %}{% set v = m.get(id) %}<td class="text-right text-slate-300">{{ (v|num(0) ~ '%') if v is not none else '—' }}</td>
+{%- elif id == 'fills' %}<td class="text-right text-slate-400">{{ m.get('fills', '—') }}</td>
+{%- elif id == 'risk_source' %}<td class="text-slate-400">{{ m.get('risk_source') or '—' }}</td>
+{%- elif id in ('dividend', 'pnl_div', 'return_per_share', 'left_on_table') %}{% set v = m.get(id) %}<td class="text-right {{ v|pnl_class }}">{{ v|money if v is not none else '—' }}</td>
+{%- else %}{% set v = m.get(id) %}<td class="text-right text-slate-300">{{ v|money if v is not none else '—' }}</td>
+{%- endif %}{% endmacro %}
+
+<div class="justify-end mb-2 hidden md:flex">
+  <details class="relative" id="col-picker" data-default="{{ default_cols|join(',') }}">
+    <summary class="btn btn-s text-xs cursor-pointer select-none list-none">Columns ▾</summary>
+    <div class="absolute right-0 z-30 mt-1 w-72 max-h-[70vh] overflow-y-auto card p-3 text-xs shadow-xl">
+      <p class="text-slate-500 mb-2">Tick to show. Drag column headers to reorder.</p>
+      {% for g in all_cols|groupby('group')|sort(attribute='grouper') %}
+      <div class="mb-2"><div class="text-[10px] uppercase tracking-wide text-slate-500 mb-1">{{ g.grouper }}</div>
+        {% for c in g.list %}<label class="flex items-center gap-2 py-0.5 text-slate-300"><input type="checkbox" data-colpick="{{ c.id }}" {{ 'checked' if c.id in col_ids }}> {{ c.label }}</label>{% endfor %}
+      </div>{% endfor %}
+      <button type="button" class="btn btn-s text-xs w-full mt-1" data-colreset>Reset to default</button>
+    </div>
+  </details>
+</div>
 <div class="card overflow-x-auto hidden md:block">
-<table class="w-full text-sm tbl">
-  <thead><tr>
-    <th>{{ sort_link('opened', 'Opened') }}</th><th>{{ sort_link('closed', 'Closed') }}</th><th>{{ sort_link('symbol', 'Symbol') }}</th><th>{{ sort_link('sector', 'Sector') }}</th><th>{{ sort_link('industry', 'Industry') }}</th><th>Side</th><th>Status</th>
-    <th class="text-right">{{ sort_link('qty', 'Qty') }}</th><th class="text-right">Entry</th><th class="text-right">Exit</th>
-    <th class="text-right">{{ sort_link('fees', 'Fees') }}</th>{% if day %}<th class="text-right text-indigo-200">Realized {{ day.strftime('%b %d') }}</th>{% endif %}<th class="text-right">{{ sort_link('pnl', 'Net P&L') }}</th><th class="text-right">{{ sort_link('return', 'Return') }}</th>
-    <th>Hold</th><th>Setup / tags</th><th>Rating</th>
+<table class="w-full text-sm tbl" id="trades-table">
+  <thead><tr data-colrow="{{ col_ids|join(',') }}">
+    {% for c in cols %}{% if day and c.id == 'pnl' %}{{ day_th() }}{% endif %}<th data-col="{{ c.id }}" class="cursor-move {{ 'text-right' if c.right }}" title="Drag to reorder">{{ sort_link(c.sort, c.label) if c.sort else c.label }}</th>{% endfor %}{% if day and 'pnl' not in col_ids %}{{ day_th() }}{% endif %}
   </tr></thead>
   <tbody>
-  {% for t in trades %}
+  {% for t in trades %}{% set m = row_m.get(t.id, {}) %}
   <tr class="cursor-pointer" onclick="location='/trades/{{ t.id }}{{ '?' ~ list_qs if list_qs }}'">
-    <td class="text-slate-400">{{ t.opened_at|local_dt('%Y-%m-%d %H:%M' if t.time_known else '%Y-%m-%d') }}</td>
-    <td class="text-slate-400">{{ t.closed_at|local_dt('%Y-%m-%d %H:%M' if t.time_known else '%Y-%m-%d') if t.closed_at else '—' }}</td>
-    <td><a href="/trades/{{ t.id }}{{ '?' ~ list_qs if list_qs }}" class="text-white font-medium hover:underline">{{ t.symbol }}</a>{% if t.is_demo %} <span class="pill bg-amber-500/20 text-amber-300">demo</span>{% endif %}{% if t.id in provisional_trades %} <span class="pill bg-amber-500/15 text-amber-300" title="Includes a same-day fill from a SnapTrade order. Fees post with tomorrow's activity data.">provisional (fees pending)</span>{% endif %}{{ company_name(t) }}</td>
-    <td>{{ company_sector(t) }}</td><td>{{ company_industry(t) }}</td>
-    <td><span class="pill {{ 'bg-emerald-500/15 text-emerald-300' if t.direction == 'LONG' else 'bg-rose-500/15 text-rose-300' }}">{{ t.direction }}</span></td>
-    <td>{% if t.status == 'OPEN' %}<span class="pill bg-sky-500/15 text-sky-300">OPEN</span>{% else %}<span class="pill {{ {'WIN': 'bg-emerald-500/15 text-emerald-300', 'LOSS': 'bg-rose-500/15 text-rose-300'}.get(outcome_label(t), 'bg-slate-500/20 text-slate-300') }}">{{ outcome_label(t) }}</span>{% if t.close_reason and t.close_reason != 'TRADE' %} <span class="text-[10px] text-slate-500">{{ t.close_reason|lower }}</span>{% endif %}{% endif %}{% if (t.account_id ~ ':' ~ t.symbol) in attention_marks %} <a href="/settings#sync-attention" class="pill bg-amber-500/15 text-amber-300" onclick="event.stopPropagation()">Needs attention</a>{% endif %}</td>
-    <td class="text-right">{{ t.quantity|qty }}</td><td class="text-right" title="{{ 'Price in ' ~ t.currency if t.currency else '' }}">{{ t.entry_price|num(2) }}{% if t.currency and t.currency != display_currency %} <span class="text-[10px] text-slate-500">{{ t.currency }}</span>{% endif %}</td><td class="text-right">{{ t.exit_price|num(2) }}{% if t.exit_price is not none and t.currency and t.currency != display_currency %} <span class="text-[10px] text-slate-500">{{ t.currency }}</span>{% endif %}</td>
-    <td class="text-right text-slate-400">{{ t.fees|money }}</td>
-    {% if day %}{% set dr = day_rows.get(t.id) %}<td class="text-right font-semibold {{ dr.net|pnl_class }}">{{ dr.net|money(true) }}<div class="text-[10px] text-slate-500 font-normal">{% if dr.exits %}{{ dr.qty|qty }} {{ 'final exit' if dr.final and not dr.partial else 'partial' if not dr.final else 'partial + final' }}{% else %}fees only{% endif %}</div></td>{% endif %}
-    <td class="text-right font-semibold {{ t.net_pnl|pnl_class }}">{{ t.net_pnl|money }}</td>
-    <td class="text-right {{ t.return_pct|pnl_class }}">{{ (t.return_pct|num(1) ~ '%') if t.return_pct is not none else '—' }}</td>
-    <td class="text-slate-400">{{ ((t.closed_at - t.opened_at)|td) if t.closed_at else '—' }}</td>
-    <td class="text-slate-400 max-w-[220px] truncate">{{ t.setup or '' }}{% for tg in t.tags %} <span class="pill bg-indigo-500/15 text-indigo-300">{{ tg.name }}</span>{% endfor %}{% for m in t.mistakes %} <span class="pill bg-rose-500/15 text-rose-300" title="Mistake">{{ m }}</span>{% endfor %}</td>
-    <td class="text-amber-300">{{ '★' * (t.rating or 0) }}</td>
+    {% for c in cols %}{% if day and c.id == 'pnl' %}{{ day_td(t) }}{% endif %}{{ cell(c, t, m) }}{% endfor %}{% if day and 'pnl' not in col_ids %}{{ day_td(t) }}{% endif %}
   </tr>
   {% else %}
-  <tr><td colspan="{{ 17 if day else 16 }}" class="text-center text-slate-500 py-10">No trades match. <a class="text-indigo-300 underline" href="/import">Import a CSV</a></td></tr>
+  <tr><td colspan="{{ cols|length + (1 if day else 0) }}" class="text-center text-slate-500 py-10">No trades match. <a class="text-indigo-300 underline" href="/import">Import a CSV</a></td></tr>
   {% endfor %}
   </tbody>
 </table>
 </div>
+<script src="/static/vendor/sortable-1.15.6.min.js"></script>
+<script src="/static/trade_cols.js?v=1"></script>
 {% if pages > 1 %}
 <div class="flex justify-center gap-2 mt-4 text-sm">
   {% for p in range(1, pages + 1) %}{% set pp = dict(params) %}{% set _ = pp.update({'page': p, 'sort': sort, 'dir': 'desc' if desc else 'asc'}) %}

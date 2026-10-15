@@ -187,6 +187,62 @@ def for_trade(db: Session, t, display: str | None = None) -> dict:
     }
 
 
+def for_trades(db: Session, trades, display: str | None = None) -> dict:
+    """``for_trade`` for a page of trades with one dividend query and one rate book: trade id -> result."""
+    from app import currency
+    raws = [(t.id, currency.raw(t)) for t in trades]
+    raws = [(i, r) for i, r in raws if getattr(r, "asset_type", None) != "OPTION"]
+    blank = {"native": None, "display": None, "count": 0}
+    out = {t.id: dict(blank) for t in trades}
+    if not raws:
+        return out
+    accounts = {r.account_id for _, r in raws}
+    start = min(r.opened_at for _, r in raws)
+    rows = list(db.scalars(select(Dividend).where(Dividend.account_id.in_(accounts), Dividend.paid_on >= start)))
+    if not rows:
+        return out
+    display = (display or currency.get_display(db)).upper()
+    now = utcnow()
+    picked = {}
+    ccys = {display}
+    for tid, raw in raws:
+        end = raw.closed_at or now
+        mine = [d for d in rows if d.account_id == raw.account_id and d.paid_on is not None
+                and raw.opened_at <= d.paid_on <= end
+                and (d.symbol == raw.symbol or (raw.instrument_id and d.instrument_id == raw.instrument_id))]
+        if mine:
+            picked[tid] = (raw, mine)
+            ccys.add(currency.trade_ccy(raw))
+    if not picked:
+        return out
+    book = _book(db, [d for _, m in picked.values() for d in m], ccys)
+    for tid, (raw, mine) in picked.items():
+        out[tid] = _sum(mine, currency.trade_ccy(raw), display, book)
+    return out
+
+
+def _sum(rows, native_ccy: str, display: str, book) -> dict:
+    native = disp = 0.0
+    miss_n = miss_d = False
+    for d in rows:
+        n = convert_one(d, native_ccy, book)
+        if n is None:
+            miss_n = True
+        else:
+            native += n
+        if display == native_ccy:
+            continue
+        x = convert_one(d, display, book)
+        if x is None:
+            miss_d = True
+        else:
+            disp += x
+    if display == native_ccy:
+        disp, miss_d = native, miss_n
+    return {"native": None if miss_n and native == 0 else native, "display": None if miss_d else disp,
+            "count": len(rows)}
+
+
 def account_ids(db: Session, account_id: int | None) -> list[int]:
     if account_id:
         return [account_id]

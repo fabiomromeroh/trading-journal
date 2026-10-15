@@ -150,13 +150,34 @@ def trades_list(request: Request, db: Session = Depends(get_db)):
     companies.annotate(db, rows)
     sectors, industries = companies.choices(db)
     params = {k: v for k, v in q.items() if k not in ("sort", "dir", "page")}
+    from app import trade_columns as tc
+    cols = tc.get_columns(db)
     return templates.TemplateResponse(request, "trades.html", base_context(
-        request, db, nav="trades", f=f, trades=rows, total=total, page=page, pages=max(1, -(-total // PAGE)),
+        request, db, nav="trades", f=f, trades=rows, cols=[tc.BY_ID[c] for c in cols], all_cols=tc.COLUMNS,
+        row_m=tc.row_metrics(db, rows, cols), default_cols=tc.default_columns(), total=total, page=page, pages=max(1, -(-total // PAGE)),
         sort=sort, desc=desc, params=params, q=q, setups=setups, tags=tags, mistakes=mistakes,
         sectors=sectors, industries=industries, list_qs=list_qs,
         filtered_pnl=closed_pnl, n_closed=n_closed, n_open=n_open, open_realized=open_pnl,
         realized_pnl=closed_pnl + open_pnl, day=day, day_rows=day_rows or {},
         day_total=sum(r["net"] for r in (day_rows or {}).values())))
+
+
+@router.post("/trades/columns")
+async def save_trade_columns(request: Request, db: Session = Depends(get_db)):
+    """Trades-list columns, in order: {"columns": [id, ...]}."""
+    from app import trade_columns as tc
+    try:
+        body = json.loads(await request.body() or b"{}")
+        cols = tc.save_columns(db, body.get("columns") if isinstance(body, dict) else None)
+    except (ValueError, TypeError):
+        return JSONResponse({"ok": False, "error": "bad columns"}, status_code=400)
+    return {"ok": True, "columns": cols}
+
+
+@router.post("/trades/columns/reset")
+def reset_trade_columns(db: Session = Depends(get_db)):
+    from app import trade_columns as tc
+    return {"ok": True, "columns": tc.reset_columns(db)}
 
 
 def filter_options(db: Session):
