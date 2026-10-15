@@ -1,5 +1,10 @@
 """Company name, sector and industry, one row per Yahoo symbol.
 
+Finviz is the primary source for sector and industry (Finviz "industry" is its group). A Finviz row is
+kept for good (sector/industry rarely change); only tickers without one are looked up, about 1 request
+per second. Yahoo's quoteSummary is blocked from the EU host by Yahoo's consent wall, so it only gave
+names there; it stays as the fallback for tickers Finviz lacks (non-US listings), then the built-in map.
+
 Stored in ``company_profiles`` and read on the request path. Nothing here calls Yahoo while rendering.
 A background thread fills symbols that are missing, empty, or older than 90 days, with a short pause
 between requests. Trading 212's instrument name is used when it is a real company name. Otherwise the
@@ -31,7 +36,7 @@ STALE_DAYS = 90
 EMPTY_RETRY = timedelta(days=1)
 DELISTED_RETRY = timedelta(days=7)
 BATCH = 20
-GAP = 0.8  # seconds between Yahoo calls
+GAP = 1.0  # seconds between lookups (Finviz ~1 request/s)
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 _FRESH_SOURCES = {"yahoo", "t212+yahoo", "fallback", "t212+fallback"}
 
@@ -77,6 +82,16 @@ FALLBACK: dict[str, tuple[str, str, str]] = {
     "AZN.L": ("AstraZeneca PLC", "Healthcare", "Drug Manufacturers - General"),
     "SHEL.L": ("Shell plc", "Energy", "Oil & Gas Integrated"),
     "MC.PA": ("LVMH Moët Hennessy Louis Vuitton", "Consumer Cyclical", "Luxury Goods"),
+    "RKT.L": ("Reckitt Benckiser Group plc", "Consumer Defensive", "Household & Personal Products"),
+    "RB.L": ("Reckitt Benckiser Group plc", "Consumer Defensive", "Household & Personal Products"),
+    "PXD": ("Pioneer Natural Resources Company", "Energy", "Oil & Gas E&P"),
+}
+
+# Trading 212 / European symbols whose company has an obvious US listing on Finviz (same company).
+FINVIZ_US: dict[str, str] = {
+    "TTE.PA": "TTE", "FP.PA": "TTE",
+    "SNII": "RGTI", "XPOA": "QBTS", "MPT": "MPW", "HONAV": "HONA",
+    "CBS": "PSKY", "SKYD": "PSKY",
 }
 
 
@@ -84,6 +99,10 @@ def enabled() -> bool:
     if os.environ.get("COMPANY_FETCH", "on").lower() in ("none", "off", "0", ""):
         return False
     return os.environ.get("QUOTE_PROVIDER", "yahoo").lower() not in ("none", "off", "0", "")
+
+
+def finviz_enabled() -> bool:
+    return enabled() and os.environ.get("FINVIZ", "on").lower() not in ("none", "off", "0", "")
 
 
 def yahoo_key(t) -> str:
@@ -107,6 +126,15 @@ def complete(row) -> bool:
     return bool(getattr(row, "industry", None)) or (getattr(row, "quote_type", None) or "").upper() in ("ETF", "MUTUALFUND") or row.sector == "ETF"
 
 
+def from_finviz(row) -> bool:
+    return "finviz" in (getattr(row, "source", None) or "")
+
+
+def finviz_tried(row) -> bool:
+    src = getattr(row, "source", None) or ""
+    return "finviz" in src or src.startswith("fv-")
+
+
 def needs_refresh(row, now=None) -> bool:
     """True when the row is missing, older than 90 days, or incomplete and due for another try.
     Incomplete rows (a throttled or failed lookup stored only a name) are retried after a day, and a
@@ -114,6 +142,10 @@ def needs_refresh(row, now=None) -> bool:
     now = now or utcnow()
     if row is None or row.fetched_at is None:
         return True
+    if from_finviz(row) and complete(row):
+        return False  # stored for good
+    if not complete(row) and not finviz_tried(row) and finviz_enabled():
+        return True  # one-time Finviz backfill of blank rows filled before Finviz
     age = now - row.fetched_at
     if age >= timedelta(days=STALE_DAYS):
         return True
@@ -227,7 +259,13 @@ def merge(symbol: str, t212_name: str | None, yahoo: dict | None, previous=None)
     if ok:
         name = name or _clean(y.get("name"))
         sector, industry, qtype = y.get("sector"), y.get("industry"), y.get("quote_type")
-        source = "t212+yahoo" if _real_name(t212_name, symbol) else "yahoo"
+        base = y.get("source") or "yahoo"
+        source = f"t212+{base}" if _real_name(t212_name, symbol) else base
+        fb = fallback_for(symbol)
+        if not sector and fb:
+            sector, industry = fb[1], fb[2]
+            qtype = qtype or ("ETF" if sector == "ETF" else "EQUITY")
+            source = "t212+fallback" if _real_name(t212_name, symbol) else "fallback"
     else:
         fb = fallback_for(symbol)
         if fb:
@@ -246,6 +284,8 @@ def merge(symbol: str, t212_name: str | None, yahoo: dict | None, previous=None)
             qtype = qtype or previous.quote_type
             if source in ("miss", "t212") and previous.source:
                 source = previous.source
+    if y.get("finviz_tried") and "finviz" not in source:
+        source = "fv-" + source
     return {"name": _clip(name, 160), "sector": _clip(sector, 80), "industry": _clip(industry, 120),
             "quote_type": _clip(qtype, 20), "source": _clip(source, 20)}
 
@@ -411,7 +451,7 @@ def fill_symbols(db: Session, symbols: list[str] | None = None, *, fetch=None, g
     if fetch is None:
         if not enabled():
             return {"checked": len(todo), "filled": 0, "missed": 0, "skipped": len(todo)}
-        client = YahooProfiles()
+        client = Profiles(finviz=finviz_enabled())
         fetch = client.fetch
         if gap is None:
             gap = GAP
@@ -425,7 +465,8 @@ def fill_symbols(db: Session, symbols: list[str] | None = None, *, fetch=None, g
             if i and gap and i % BATCH == 0:
                 time.sleep(gap)
             try:
-                yahoo = fetch(sym)
+                hint = names.get(sym) or getattr(existing.get(sym), "name", None)
+                yahoo = fetch(sym, hint) if isinstance(client, Profiles) else fetch(sym)
                 alias = _alias(sym)
                 if alias and not (isinstance(yahoo, dict) and yahoo.get("sector")):
                     via = fetch(alias)  # renamed ticker: the new symbol's profile (same company)
@@ -557,6 +598,122 @@ class YahooProfiles:
         if not parsed.get("name"):
             parsed = parse_yahoo(summary, quote, self._chart(symbol))
         return parsed
+
+
+# -------------------------------------------------------------------------- finviz
+_STOP = {"inc", "corp", "corporation", "the", "plc", "ltd", "limited", "group", "holdings", "holding",
+         "company", "co", "sa", "nv", "se", "ag", "class", "and", "adr", "common", "technologies", "de"}
+
+
+def _tokens(name: str | None) -> set[str]:
+    import re
+    words = re.findall(r"[a-z0-9]+", (name or "").lower())
+    return {w for w in words if len(w) >= 3 and w not in _STOP}
+
+
+def name_matches(expected: str | None, found: str | None) -> bool:
+    """False only when both names are known and share no meaningful word (RKT Reckitt vs Rocket)."""
+    a, b = _tokens(expected), _tokens(found)
+    if not a or not b:
+        return True
+    if a & b:
+        return True
+    return any(x[:5] == y[:5] for x in a for y in b if len(x) >= 5 and len(y) >= 5)
+
+
+def finviz_symbol(symbol: str) -> str | None:
+    """Finviz ticker for a stored symbol, or None for a non-US listing without an obvious US twin."""
+    if not symbol:
+        return None
+    up = symbol.upper()
+    if up in FINVIZ_US:
+        return FINVIZ_US[up]
+    alias = _alias(up)
+    if "." in up:
+        return None
+    if alias and "." not in alias:
+        return alias
+    return up  # Finviz uses BRK-B style dashes like Yahoo
+
+
+def parse_finviz(html: str) -> dict:
+    import html as _html
+    import re
+    def link(kind):
+        m = re.search(r'f=%s_[^"]*"[^>]*>(.*?)</a>' % kind, html or "", re.S)
+        if not m:
+            return None
+        return _clean(_html.unescape(re.sub(r"<[^>]+>", " ", m.group(1))))
+    sector, industry = link("sec"), link("ind")
+    name = None
+    m = re.search(r'quote-header_ticker-wrapper_company[^>]*>(.*?)</h2>', html or "", re.S)
+    if m:
+        name = _clean(_html.unescape(re.sub(r"<[^>]+>", " ", m.group(1))))
+    qtype = "EQUITY"
+    if industry and industry.lower() == "exchange traded fund":
+        sector, industry, qtype = "ETF", None, "ETF"
+    ok = bool(sector)
+    return {"name": name, "sector": sector, "industry": industry, "quote_type": qtype if ok else None,
+            "ok": ok, "source": "finviz"}
+
+
+class FinvizProfiles:
+    def __init__(self, http: httpx.Client | None = None):
+        self.http = http or httpx.Client(headers={"User-Agent": _UA, "Accept": "text/html"}, timeout=12,
+                                         follow_redirects=True)
+        self._own = http is None
+
+    def close(self) -> None:
+        if self._own:
+            self.http.close()
+
+    def fetch(self, ticker: str) -> dict | None:
+        try:
+            r = self.http.get("https://finviz.com/quote.ashx", params={"t": ticker, "p": "d"})
+        except httpx.HTTPError:
+            return None
+        if r.status_code == 429:
+            time.sleep(5)
+            try:
+                r = self.http.get("https://finviz.com/quote.ashx", params={"t": ticker, "p": "d"})
+            except httpx.HTTPError:
+                return None
+        if r.status_code != 200:
+            return None
+        got = parse_finviz(r.text)
+        return got if got["ok"] else None
+
+
+class Profiles:
+    """Finviz first (US tickers and obvious US twins), Yahoo plus the built-in map otherwise."""
+
+    def __init__(self, finviz: bool = True, fv=None, yahoo=None):
+        self.fv = fv if fv is not None else (FinvizProfiles() if finviz else None)
+        self.yahoo = yahoo if yahoo is not None else YahooProfiles()
+
+    def close(self) -> None:
+        for c in (self.fv, self.yahoo):
+            if c is not None and hasattr(c, "close"):
+                c.close()
+
+    def fetch(self, symbol: str, hint: str | None = None) -> dict:
+        tried = False
+        if self.fv is not None:
+            tk = finviz_symbol(symbol)
+            if tk:
+                tried = True
+                got = self.fv.fetch(tk)
+                if got and name_matches(hint, got.get("name")):
+                    if got.get("sector") == "ETF":
+                        y = self.yahoo.fetch(symbol) or {}
+                        got["industry"] = y.get("industry") if y.get("sector") == "ETF" else None
+                    return got
+        y = self.yahoo.fetch(symbol)
+        y = dict(y) if isinstance(y, dict) else {"ok": False}
+        if not name_matches(hint, y.get("name")):  # same ticker, different company (T212 RKT = Reckitt)
+            y.update(name=None, sector=None, industry=None)
+        y["finviz_tried"] = self.fv is not None
+        return y
 
 
 # -------------------------------------------------------------------------- background

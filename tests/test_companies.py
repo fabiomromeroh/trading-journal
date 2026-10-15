@@ -329,3 +329,84 @@ def test_trades_list_sorts_by_sector_and_industry(db):
     assert order(c.get("/trades?sort=industry&dir=desc").text) == ["AAA", "BBB", "CCC"]
     html = c.get("/trades").text
     assert "sort=sector" in html and "sort=industry" in html
+
+
+# ---------------------------------------------------------------- finviz
+FV_HTML = '''<h2 class="quote-header_ticker-wrapper_company text-lg">
+<a class="tab-link" href="#">Dexcom Inc</a></h2>
+<a href="screener?v=111&f=sec_healthcare" class="quote-header_category">Healthcare</a>
+<a href="screener?v=111&f=ind_medicaldevices" class="quote-header_category" title="Medical Devices"><span class="min-w-0 truncate">Medical Devices</span></a>'''
+FV_ETF = FV_HTML.replace("sec_healthcare", "sec_financial").replace(">Healthcare<", ">Financial<").replace(
+    "Medical Devices", "Exchange Traded Fund")
+
+
+def test_parse_finviz():
+    got = companies.parse_finviz(FV_HTML)
+    assert (got["name"], got["sector"], got["industry"], got["ok"], got["source"]) == (
+        "Dexcom Inc", "Healthcare", "Medical Devices", True, "finviz")
+    etf = companies.parse_finviz(FV_ETF)
+    assert etf["sector"] == "ETF" and etf["quote_type"] == "ETF"
+    assert companies.parse_finviz("<html>not found</html>")["ok"] is False
+
+
+def test_finviz_symbol_and_name_guard():
+    assert companies.finviz_symbol("DXCM") == "DXCM"
+    assert companies.finviz_symbol("TTE.PA") == "TTE"
+    assert companies.finviz_symbol("VUSA.L") is None
+    assert companies.name_matches("Reckitt Benckiser", "Rocket Companies Inc") is False
+    assert companies.name_matches("Intel", "Intel Corp") is True
+    assert companies.name_matches(None, "Anything") is True
+
+
+class _FakeFv:
+    def __init__(self, data):
+        self.data, self.calls = data, []
+
+    def fetch(self, t):
+        self.calls.append(t)
+        return self.data.get(t)
+
+
+class _FakeY:
+    def __init__(self, data=None):
+        self.data, self.calls = data or {}, []
+
+    def fetch(self, s):
+        self.calls.append(s)
+        return self.data.get(s, {"name": None, "ok": False})
+
+
+def test_profiles_finviz_first_then_fallback():
+    dex = companies.parse_finviz(FV_HTML)
+    rocket = {"name": "Rocket Companies Inc", "sector": "Financial", "industry": "Mortgage Finance", "ok": True,
+              "source": "finviz", "quote_type": "EQUITY"}
+    fv, y = _FakeFv({"DXCM": dex, "RKT": rocket}), _FakeY()
+    p = companies.Profiles(fv=fv, yahoo=y)
+    assert p.fetch("DXCM", "DexCom, Inc.")["sector"] == "Healthcare" and y.calls == []
+    rec = companies.merge("DXCM", None, p.fetch("DXCM"))
+    assert rec["source"] == "finviz" and rec["industry"] == "Medical Devices"
+    miss = p.fetch("RKT", "Reckitt Benckiser")  # wrong company on Finviz -> Yahoo path
+    assert miss.get("finviz_tried") and y.calls == ["RKT"]
+    p.fetch("VUSA.L")
+    assert "VUSA.L" not in fv.calls
+    rec = companies.merge("RKT.L", None, {"name": "Reckitt", "ok": True, "finviz_tried": True})
+    assert rec["sector"] == "Consumer Defensive" and rec["source"] == "fv-fallback"
+
+
+def test_finviz_rows_permanent_and_blank_rows_backfilled(monkeypatch):
+    monkeypatch.setenv("COMPANY_FETCH", "on")
+    monkeypatch.setenv("QUOTE_PROVIDER", "yahoo")
+    now = datetime(2026, 10, 15)
+    old = now - timedelta(days=400)
+    fv = SimpleNamespace(name="X", sector="Technology", industry="Software", quote_type="EQUITY", source="finviz", fetched_at=old)
+    assert companies.needs_refresh(fv, now) is False
+    blank = SimpleNamespace(name="X", sector=None, industry=None, quote_type="EQUITY", source="yahoo", fetched_at=now)
+    assert companies.needs_refresh(blank, now) is True
+    tried = SimpleNamespace(name="X", sector=None, industry=None, quote_type="EQUITY", source="fv-yahoo", fetched_at=now)
+    assert companies.needs_refresh(tried, now) is False
+
+
+def test_yahoo_wrong_company_is_dropped():
+    y = _FakeY({"RKT": {"name": "Rocket Companies, Inc.", "sector": "Financial Services", "industry": "Mortgage Finance", "ok": True}})
+    got = companies.Profiles(fv=_FakeFv({}), yahoo=y).fetch("RKT", "Reckitt Benckiser")
+    assert got["sector"] is None and got["name"] is None
