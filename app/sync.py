@@ -75,13 +75,15 @@ def source_key_for_account(db, account: Account | None) -> str | None:
     ref = account.external_ref or ""
     if sk in {"t212", "trading212"} or broker in {"trading212", "t212", "trading 212"}:
         return "t212"
+    if sk in {"ibkr", "ibkr_flex"} or broker in {"ibkr", "ibkr_flex", "interactivebrokers", "interactive brokers"}:
+        return "ibkr_flex"
     if sk == "snaptrade" or ref.startswith("snaptrade:"):
         return "snaptrade"
     if sk == "schwab_api":
         return "schwab_api"
     found = db.scalar(select(SourceState.source).where(
         SourceState.account_id == account.id,
-        SourceState.source.in_(("snaptrade", "schwab_api", "t212"))))
+        SourceState.source.in_(("snaptrade", "schwab_api", "t212", "ibkr_flex"))))
     if found:
         return found
     # The Schwab API stores its account hash in external_ref. SnapTrade ids are prefixed and handled above.
@@ -101,22 +103,27 @@ def _clear_synced_through(db, source: str, account_id: int | None) -> None:
 def arm_full_history(db, account: Account | None) -> None:
     """Arm a one-off full re-scan. None means every connected source.
 
-    SnapTrade and the Schwab API forget synced_through. Trading 212 sets FULL_STATE, which the next
+    SnapTrade and the Schwab API forget synced_through. Trading 212 / IBKR set FULL_STATE, which the next
     sync consumes. Other accounts keep their cursors when one account is chosen.
     """
     from app.services import set_state
     from app.sources.snaptrade import full_resync
     from app.sources.trading212 import FULL_STATE
+    from app.sources.ibkr_flex import FULL_STATE as IBKR_FULL
 
     if account is None:
         full_resync(db)
         _clear_synced_through(db, "schwab_api", None)
         set_state(db, FULL_STATE, "1")
+        set_state(db, IBKR_FULL, "1")
         db.commit()
         return
     key = source_key_for_account(db, account)
     if key == "t212":
         set_state(db, FULL_STATE, "1")
+        db.commit()
+    elif key == "ibkr_flex":
+        set_state(db, IBKR_FULL, "1")
         db.commit()
     elif key == "snaptrade":
         full_resync(db, account.id)

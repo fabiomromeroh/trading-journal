@@ -1,4 +1,4 @@
-"""Settings > Brokers: connect / test / sync / disconnect Trading 212 and edit instrument mappings."""
+"""Settings > Brokers: connect / test / sync / disconnect Trading 212 and IBKR Flex; instrument mappings."""
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Form, Request
@@ -12,6 +12,7 @@ from app.db import get_db
 from app.models import Instrument
 from app.services import set_state
 from app.sources import trading212 as t212
+from app.sources import ibkr_flex as ibkr
 from app.sync import start_background
 from app.web import templates
 
@@ -120,12 +121,87 @@ def set_instrument(iid: int, request: Request, price_symbol: str = Form(""), sym
                            f"{inst.symbol}; existing trades keep theirs until the next rebuild.")
 
 
+@router.post("/settings/brokers/ibkr/connect")
+def ibkr_connect(request: Request, token: str = Form(""), query_id: str = Form(""),
+                 currency: str = Form("USD"), db: Session = Depends(get_db)):
+    if not get_settings().token_encryption_key:
+        return _flash(request, "Set TOKEN_ENCRYPTION_KEY on the server first: the Flex token is stored encrypted with it.")
+    existing = ibkr.load_credentials(db)
+    tok = token.strip() or ((existing or {}).get("token") or "")
+    qid = query_id.strip() or ((existing or {}).get("query_id") or "")
+    ccy = (currency.strip().upper() or ((existing or {}).get("currency") or "USD"))[:3]
+    if not tok or not qid:
+        return _flash(request, "Paste both the Flex token and the Flex Query ID.")
+    res = ibkr.test_connection(tok, qid)
+    if not res["ok"]:
+        ibkr._save_last(db, ok=False, error=res["error"], error_kind=res["kind"])
+        db.commit()
+        return _flash(request, f"Interactive Brokers not connected: {res['error']}")
+    ibkr.save_credentials(db, tok, qid, ccy)
+    src = ibkr.IbkrFlexSource()
+    acct = src.ensure_account(db, {"account_id": res["account_id"], "currency": res["currency"] or ccy}, ccy)
+    ibkr._save_last(db, reset=True, ok=True, error=None, error_kind=None, account_id=res["account_id"],
+                    currency=res["currency"] or ccy, query_id=qid)
+    db.commit()
+    return _flash(request, f"Interactive Brokers connected: account {res['account_id'] or acct.name} in "
+                           f"{res['currency'] or ccy} → “{acct.name}”. Press Sync to import the Flex query period.")
+
+
+@router.post("/settings/brokers/ibkr/test")
+def ibkr_test(request: Request, db: Session = Depends(get_db)):
+    creds = ibkr.load_credentials(db)
+    if not creds:
+        return _flash(request, "Interactive Brokers is not connected.")
+    res = ibkr.test_connection(creds["token"], creds["query_id"])
+    ibkr._save_last(db, ok=res["ok"], error=res["error"], error_kind=res["kind"],
+                    account_id=res["account_id"] or ibkr.last_status(db).get("account_id"),
+                    currency=res["currency"] or ibkr.last_status(db).get("currency"))
+    db.commit()
+    if res["ok"]:
+        return _flash(request, f"Interactive Brokers connection OK (account {res['account_id']}, "
+                               f"{res['currency'] or creds.get('currency') or 'USD'}).")
+    return _flash(request, f"Interactive Brokers test failed: {res['error']}")
+
+
+@router.post("/settings/brokers/ibkr/disconnect")
+def ibkr_disconnect(request: Request, db: Session = Depends(get_db)):
+    ibkr.clear_credentials(db)
+    ibkr._save_last(db, reset=True)
+    db.commit()
+    return _flash(request, "Interactive Brokers disconnected. The Flex token is deleted from the server; imported trades are kept. "
+                           "Also delete or rotate the token in Client Portal → Flex Web Service.")
+
+
+@router.post("/settings/brokers/ibkr/sync")
+def ibkr_sync(request: Request, db: Session = Depends(get_db)):
+    from app.models import SyncRun
+    run_id = start_background("manual", only={"ibkr_flex"})
+    run = db.get(SyncRun, run_id)
+    return templates.TemplateResponse(request, "partials/sync_status.html", {"request": request, "run": run})
+
+
+@router.post("/settings/brokers/ibkr/resync")
+def ibkr_resync(request: Request, db: Session = Depends(get_db)):
+    from app.models import SyncRun
+    set_state(db, ibkr.FULL_STATE, "1")
+    db.commit()
+    run_id = start_background("manual", only={"ibkr_flex"})
+    run = db.get(SyncRun, run_id)
+    return templates.TemplateResponse(request, "partials/sync_status.html", {"request": request, "run": run})
+
+
 def settings_ctx(db: Session) -> dict:
     from app.corporate import audit_instruments
     creds = t212.load_credentials(db)
     insts = list(db.scalars(select(Instrument).where(Instrument.source_key == "t212").order_by(Instrument.symbol)))
+    ib = ibkr.load_credentials(db)
+    ib_insts = list(db.scalars(select(Instrument).where(Instrument.source_key == "ibkr_flex").order_by(Instrument.symbol)))
     return {"t212": {"connected": creds is not None, "masked": t212.mask(creds["key"]) if creds else None,
                      "practice": bool(creds and creds.get("env") == "demo"), "last": t212.last_status(db),
                      "instruments": insts, "instrument_issues": audit_instruments(db, fix=False),
                      "scope_help": t212.SCOPE_HELP,
+                     "enc_key": bool(get_settings().token_encryption_key)},
+            "ibkr": {"connected": ib is not None, "query_id": (ib or {}).get("query_id"),
+                     "currency": (ib or {}).get("currency") or "USD", "last": ibkr.last_status(db),
+                     "instruments": ib_insts, "how_to": ibkr.HOW_TO,
                      "enc_key": bool(get_settings().token_encryption_key)}}

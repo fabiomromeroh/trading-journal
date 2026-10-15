@@ -42,6 +42,27 @@ def upsert_t212(db: Session, ticker: str, isin: str | None, name: str | None, cu
     return row
 
 
+def upsert_ibkr(db: Session, broker_symbol: str, isin: str | None, name: str | None, currency: str | None,
+                exchange: str | None, display_symbol: str | None = None) -> Instrument:
+    """Create/refresh the Instrument row for an IBKR conid or ticker. Manual overrides are never overwritten."""
+    key = (broker_symbol or "").strip()
+    sym = (display_symbol or key).strip().upper() or key
+    ccy = (currency or "").upper() or None
+    if ccy == "GBX":
+        ccy = "GBP"
+    ysym = markets.yahoo_symbol_for(sym, exchange)
+    row = db.scalar(select(Instrument).where(Instrument.source_key == "ibkr_flex", Instrument.broker_symbol == key))
+    if row is None:
+        row = Instrument(source_key="ibkr_flex", broker_symbol=key, isin=isin, symbol=sym, name=name,
+                         exchange=exchange, currency=ccy, asset_type="STOCK", price_symbol=ysym, price_scale=1.0)
+        db.add(row)
+    elif not row.user_override:
+        row.isin, row.name, row.currency = isin or row.isin, name or row.name, ccy or row.currency
+        row.symbol, row.exchange, row.price_symbol = sym, exchange or row.exchange, ysym or row.price_symbol
+    db.flush()
+    return row
+
+
 def instrument_of(t) -> Instrument | None:
     return getattr(t, "instrument", None)
 

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FlexStatementResponse timestamp="15 October, 2026 12:00 PM EDT">
+  <Status>Fail</Status>
+  <ErrorCode>1099</ErrorCode>
+  <ErrorMessage>Token expired or invalid. IBKR_FLEX_TOKEN_SECRET_XYZ must never leak from production.</ErrorMessage>
+</FlexStatementResponse>

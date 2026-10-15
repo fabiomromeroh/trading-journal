@@ -30,6 +30,7 @@ log = logging.getLogger(__name__)
 CURRENCIES = ("USD", "EUR")
 CARRY_DAYS = 6           # weekends / holidays: the last real close stays valid this many days
 T212_SUMMARY_STATE = "balance:t212:"   # + account id: latest real cash / invested / total (no secrets)
+IBKR_SUMMARY_STATE = "balance:ibkr:"   # + account id: latest Flex equity summary (no secrets)
 FLOW_KINDS = ("deposit", "withdrawal", "transfer")   # count as net deposits
 OTHER_KINDS = ("interest", "fee")                     # count as return (cash the broker paid / charged)
 
@@ -151,6 +152,21 @@ def save_t212_summary(db: Session, account_id: int, summary: dict, cash_fallback
         "cash": c, "invested": invested, "total": total}))
 
 
+def save_ibkr_summary(db: Session, account_id: int, equity: dict, account_ccy: str | None = None) -> None:
+    """Keep the latest Flex EquitySummaryInBase money fields (cash / stock / total)."""
+    def num(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+    total = num(equity.get("total"))
+    if total is None:
+        return
+    set_state(db, IBKR_SUMMARY_STATE + str(account_id), json.dumps({
+        "as_of": utcnow().isoformat(), "currency": (equity.get("currency") or account_ccy or "").upper() or None,
+        "cash": num(equity.get("cash")), "invested": num(equity.get("invested")), "total": total}))
+
+
 def broker_snapshots(db: Session, account_ids: list[int]) -> dict[int, dict]:
     """{account id: {total, cash, invested, currency, as_of, source}} from the latest sync of each broker."""
     from app.sources.snaptrade import PORTFOLIO_STATE
@@ -162,6 +178,14 @@ def broker_snapshots(db: Session, account_ids: list[int]) -> dict[int, dict]:
             acct = db.get(Account, aid)
             d["currency"] = d.get("currency") or (acct.currency if acct else "EUR")
             d["source"] = "Trading 212"
+            out[aid] = d
+            continue
+        raw = get_state(db, IBKR_SUMMARY_STATE + str(aid))
+        if raw:
+            d = json.loads(raw)
+            acct = db.get(Account, aid)
+            d["currency"] = d.get("currency") or (acct.currency if acct else "USD")
+            d["source"] = "Interactive Brokers"
             out[aid] = d
             continue
         raw = get_state(db, PORTFOLIO_STATE + str(aid))

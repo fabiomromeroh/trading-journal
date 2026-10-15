@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FlexStatementResponse timestamp="15 October, 2026 12:00 PM EDT">
+  <Status>Success</Status>
+  <ReferenceCode>9876543210</ReferenceCode>
+  <Url>https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService/GetStatement</Url>
+</FlexStatementResponse>

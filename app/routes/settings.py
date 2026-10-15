@@ -146,7 +146,7 @@ def sync_now(request: Request, account: str = Form(""), mode: str = Form("new"),
         key = source_key_for_account(db, acct)
         if key is None:
             run = _sync_note(db, f"{acct.name} has no broker connection. Sync new and Full history run for a "
-                             "connected account (SnapTrade, Schwab API, or Trading 212).")
+                             "connected account (SnapTrade, Schwab API, Trading 212, or Interactive Brokers).")
             return templates.TemplateResponse(request, "partials/sync_status.html", {"request": request, "run": run})
         only = {key}
     if mode == "full":

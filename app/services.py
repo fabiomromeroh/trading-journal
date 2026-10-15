@@ -324,7 +324,7 @@ def ingest_records(db: Session, account_id: int, source: str, records: list[Exec
                 if row is not None:
                     row.fees, row.price, row.quantity = rec.fees, rec.price, rec.quantity
                     row.match_key = rec.match_key()
-                    if source == "t212":  # a later sync must correct a pence FX rate, not only price and fees
+                    if source in ("t212", "ibkr_flex"):  # a later sync must correct FX / currency, not only price and fees
                         if rec.fx_to_account is not None:
                             row.fx_to_account = rec.fx_to_account
                         if rec.currency:

@@ -1,0 +1,51 @@
+{% set last = ibkr.last %}
+<div class="mt-3 text-sm space-y-2" id="ibkr-box">
+  {% if ibkr.connected %}
+    <div class="text-xs text-slate-400">
+      Flex token <b class="text-slate-200">saved</b>
+      {% if ibkr.query_id %}· query <b class="text-slate-200">{{ ibkr.query_id }}</b>{% endif %}
+      · {{ ibkr.currency or 'USD' }}
+      {% if last.synced_at %}· last sync <b class="text-slate-200">{{ last.synced_at }}</b> · {{ last.fetched or 0 }} fills read, {{ last.inserted or 0 }} new{% if last.skipped %} · skipped {% for k, n in last.skipped.items() %}{{ n }} {{ k }}{{ ', ' if not loop.last }}{% endfor %}{% endif %}{% else %}· never synced yet.{% endif %}
+    </div>
+    {% if last.skipped_detail %}
+    <details class="text-xs">
+      <summary class="cursor-pointer text-slate-400">Skipped rows, by reason and ticker</summary>
+      <ul class="mt-1 space-y-1 text-slate-400">
+      {% for reason, tickers in last.skipped_detail.items() %}
+        <li><span class="text-slate-200">{{ last.skipped.get(reason, tickers|length) }} {{ reason }}</span>
+          — {{ tickers|join(', ') }}</li>
+      {% endfor %}
+      </ul>
+    </details>
+    {% endif %}
+    {% if last.error %}<div class="text-xs text-rose-300 whitespace-pre-line">{{ last.error }}</div>{% endif %}
+    {% if last.adjustments %}<div class="text-xs text-amber-300">Corporate / holdings:<ul class="list-disc ml-5">{% for r in last.adjustments %}<li>{{ r }}</li>{% endfor %}</ul></div>{% endif %}
+    <form method="post" action="/settings/brokers/ibkr/connect" class="space-y-2" autocomplete="off">
+      <input name="token" type="password" class="inp w-full text-xs" placeholder="New Flex token (leave blank to keep saved)" autocomplete="new-password">
+      <input name="query_id" class="inp w-full text-xs" value="{{ ibkr.query_id or '' }}" placeholder="Flex Query ID" autocomplete="off">
+      <input name="currency" class="inp w-full text-xs" value="{{ ibkr.currency or 'USD' }}" placeholder="Account currency" maxlength="3" autocomplete="off">
+      <div class="flex flex-wrap gap-2">
+        <button class="btn btn-s text-xs">Save</button>
+        <button type="button" hx-post="/settings/brokers/ibkr/sync" hx-target="#ibkr-sync" class="btn btn-p text-xs">Sync new</button>
+        <button type="button" hx-post="/settings/brokers/ibkr/resync" hx-target="#ibkr-sync" hx-confirm="Re-read the Flex query period? Existing fills are kept. Lengthen the query in Client Portal for older history." class="btn btn-s text-xs">Full history</button>
+        <button type="submit" form="ibkr-test" class="btn btn-s text-xs">Test connection</button>
+        <button type="submit" form="ibkr-disconnect" class="btn btn-d text-xs" onclick="return confirm('Delete the stored Flex token? Imported trades stay.')">Disconnect</button>
+      </div>
+    </form>
+    <form id="ibkr-test" method="post" action="/settings/brokers/ibkr/test" class="hidden"></form>
+    <form id="ibkr-disconnect" method="post" action="/settings/brokers/ibkr/disconnect" class="hidden"></form>
+    <div id="ibkr-sync"></div>
+  {% else %}
+    {% if not ibkr.enc_key %}<div class="text-xs text-amber-300">Set TOKEN_ENCRYPTION_KEY on the server before connecting (the Flex token is stored encrypted).</div>{% endif %}
+    <details class="text-xs text-slate-400">
+      <summary class="cursor-pointer">How to create the Flex query and token</summary>
+      <p class="mt-1 leading-relaxed">{{ ibkr.how_to }}</p>
+    </details>
+    <form method="post" action="/settings/brokers/ibkr/connect" class="space-y-2" autocomplete="off">
+      <input name="token" type="password" class="inp w-full text-xs" placeholder="Flex token" autocomplete="new-password" spellcheck="false">
+      <input name="query_id" class="inp w-full text-xs" placeholder="Flex Query ID" autocomplete="off" spellcheck="false">
+      <input name="currency" class="inp w-full text-xs" value="USD" placeholder="Account currency (default USD)" maxlength="3" autocomplete="off">
+      <button class="btn btn-p text-xs">Save Interactive Brokers (tests the token first)</button>
+    </form>
+  {% endif %}
+</div>

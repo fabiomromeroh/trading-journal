@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FlexQueryResponse queryName="Activity365" type="AF">
+  <FlexStatements count="1">
+    <FlexStatement accountId="U1234567" fromDate="20250901" toDate="20261014" period="Last365CalendarDays" whenGenerated="20261015;120000">
+      <AccountInformation accountId="U1234567" currency="USD" accountType="Individual" />
+      <Trades>
+        <Trade accountId="U1234567" currency="USD" fxRateToBase="1" assetCategory="STK" symbol="AAPL" description="APPLE INC" conid="265598" isin="US0378331005" listingExchange="NASDAQ" tradeID="1" dateTime="20260902;143100" quantity="100" tradePrice="150" ibCommission="-1.00" taxes="0" buySell="BUY" openCloseIndicator="O" levelOfDetail="ORDER" multiplier="1" />
+        <Trade accountId="U1234567" currency="USD" fxRateToBase="1" assetCategory="STK" symbol="AAPL" description="APPLE INC" conid="265598" isin="US0378331005" listingExchange="NASDAQ" tradeID="1001" dateTime="20260902;143100" settleDateTarget="20260904" quantity="100" tradePrice="150" ibCommission="-1.00" taxes="-0.05" buySell="BUY" openCloseIndicator="O" levelOfDetail="EXECUTION" multiplier="1" />
+        <Trade accountId="U1234567" currency="USD" fxRateToBase="1" assetCategory="STK" symbol="AAPL" description="APPLE INC" conid="265598" isin="US0378331005" listingExchange="NASDAQ" tradeID="1002" dateTime="20260910;154500" quantity="-40" tradePrice="160" ibCommission="-0.40" taxes="0" buySell="SELL" openCloseIndicator="C" levelOfDetail="EXECUTION" multiplier="1" />
+        <Trade accountId="U1234567" currency="USD" fxRateToBase="1" assetCategory="STK" symbol="AAPL" description="APPLE INC" conid="265598" isin="US0378331005" listingExchange="NASDAQ" tradeID="1003" dateTime="20260912;150100" quantity="-60" tradePrice="155" ibCommission="-0.60" taxes="0" buySell="SELL" openCloseIndicator="C" levelOfDetail="EXECUTION" multiplier="1" />
+        <Trade accountId="U1234567" currency="USD" fxRateToBase="1" assetCategory="STK" symbol="TSLA" description="TESLA INC" conid="76792991" isin="US88160R1014" listingExchange="NASDAQ" tradeID="2001" dateTime="20260903;093100" quantity="-10" tradePrice="250" ibCommission="-1.00" taxes="0" buySell="SELL" openCloseIndicator="O" levelOfDetail="EXECUTION" multiplier="1" />
+        <Trade accountId="U1234567" currency="USD" fxRateToBase="1" assetCategory="STK" symbol="TSLA" description="TESLA INC" conid="76792991" isin="US88160R1014" listingExchange="NASDAQ" tradeID="2002" dateTime="20260908;160000" quantity="10" tradePrice="240" ibCommission="-1.00" taxes="0" buySell="BUY" openCloseIndicator="C" levelOfDetail="EXECUTION" multiplier="1" />
+        <Trade accountId="U1234567" currency="USD" fxRateToBase="1" assetCategory="OPT" symbol="AAPL  260117C00150000" description="AAPL 17JAN26 150 C" conid="7001" listingExchange="CBOE" underlyingSymbol="AAPL" tradeID="3001" dateTime="20260904;100000" quantity="2" tradePrice="3.50" ibCommission="-1.30" taxes="0" buySell="BUY" openCloseIndicator="O" putCall="C" strike="150" expiry="20260117" multiplier="100" levelOfDetail="EXECUTION" />
+        <Trade accountId="U1234567" currency="USD" fxRateToBase="1" assetCategory="OPT" symbol="AAPL  260117C00150000" description="AAPL 17JAN26 150 C" conid="7001" listingExchange="CBOE" underlyingSymbol="AAPL" tradeID="3002" dateTime="20260918;143000" quantity="-2" tradePrice="4.25" ibCommission="-1.30" taxes="0" buySell="SELL" openCloseIndicator="C" putCall="C" strike="150" expiry="20260117" multiplier="100" levelOfDetail="EXECUTION" />
+        <Trade accountId="U1234567" currency="EUR" fxRateToBase="1.08" assetCategory="STK" symbol="SAP" description="SAP SE" conid="4741" isin="DE0007164600" listingExchange="IBIS" tradeID="4001" dateTime="20260918;090500" quantity="5" tradePrice="180" ibCommission="-0.50" taxes="0" buySell="BUY" openCloseIndicator="O" levelOfDetail="EXECUTION" multiplier="1" />
+        <Trade accountId="U1234567" currency="USD" fxRateToBase="1" assetCategory="FUT" symbol="ES" description="E-mini S&amp;P 500" conid="11004958" listingExchange="CME" tradeID="5001" dateTime="20260905;093000" quantity="1" tradePrice="5800" ibCommission="-2.15" buySell="BUY" openCloseIndicator="O" levelOfDetail="EXECUTION" multiplier="50" />
+        <Trade accountId="U1234567" currency="USD" fxRateToBase="1" assetCategory="STK" symbol="AAPL" conid="265598" tradeID="8001" quantity="100" tradePrice="150" buySell="BUY" levelOfDetail="SYMBOL_SUMMARY" />
+        <Trade>
+          <accountId>U1234567</accountId>
+          <currency>USD</currency>
+          <fxRateToBase>1</fxRateToBase>
+          <assetCategory>STK</assetCategory>
+          <symbol>MSFT</symbol>
+          <description>MICROSOFT CORP</description>
+          <conid>272093</conid>
+          <isin>US5949181045</isin>
+          <listingExchange>NASDAQ</listingExchange>
+          <tradeID>6001</tradeID>
+          <dateTime>2026-09-02 14:45:00</dateTime>
+          <quantity>5</quantity>
+          <tradePrice>400</tradePrice>
+          <ibCommission>-0.35</ibCommission>
+          <taxes>0</taxes>
+          <buySell>BUY</buySell>
+          <openCloseIndicator>O</openCloseIndicator>
+          <levelOfDetail>EXECUTION</levelOfDetail>
+        </Trade>
+      </Trades>
+      <CashTransactions>
+        <CashTransaction accountId="U1234567" currency="USD" fxRateToBase="1" assetCategory="" symbol="" conid="" description="WIRE IN" dateTime="20260901;090000" amount="1000" type="Deposits/Withdrawals" transactionID="C1" />
+        <CashTransaction accountId="U1234567" currency="USD" fxRateToBase="1" assetCategory="" symbol="" conid="" description="WIRE OUT" dateTime="20260920;110000" amount="-200" type="Deposits/Withdrawals" transactionID="C2" />
+        <CashTransaction accountId="U1234567" currency="USD" fxRateToBase="1" assetCategory="STK" symbol="AAPL" conid="265598" description="AAPL (US0378331005) CASH DIVIDEND 1.00 USD PER SHARE" dateTime="20260915;202000" amount="10.00" type="Dividends" transactionID="C3" />
+        <CashTransaction accountId="U1234567" currency="USD" fxRateToBase="1" assetCategory="STK" symbol="AAPL" conid="265598" description="AAPL (US0378331005) WITHHOLDING" dateTime="20260915;202000" amount="-1.50" type="Withholding Tax" transactionID="C4" />
+        <CashTransaction accountId="U1234567" currency="USD" fxRateToBase="1" assetCategory="" symbol="" conid="" description="USD CREDIT INT" dateTime="20260930;202000" amount="2.25" type="Broker Interest Received" transactionID="C5" />
+        <CashTransaction accountId="U1234567" currency="USD" fxRateToBase="1" assetCategory="" symbol="" conid="" description="USD DEBIT INT" dateTime="20260930;202000" amount="-0.10" type="Broker Interest Paid" transactionID="C6" />
+        <CashTransaction accountId="U1234567" currency="USD" fxRateToBase="1" assetCategory="STK" symbol="IBM" conid="8314" description="IBM WITHHOLDING" dateTime="20260916;202000" amount="-0.75" type="Withholding Tax" transactionID="C7" />
+        <CashTransaction>
+          <currency>USD</currency>
+          <fxRateToBase>1</fxRateToBase>
+          <symbol>MSFT</symbol>
+          <conid>272093</conid>
+          <description>MSFT PAYMENT IN LIEU OF DIVIDEND</description>
+          <dateTime>20260911;202000</dateTime>
+          <amount>1.25</amount>
+          <type>Payment In Lieu Of Dividends</type>
+          <transactionID>C8</transactionID>
+        </CashTransaction>
+      </CashTransactions>
+      <OpenPositions>
+        <OpenPosition accountId="U1234567" currency="USD" assetCategory="STK" symbol="MSFT" conid="272093" isin="US5949181045" listingExchange="NASDAQ" position="5" markPrice="410" costBasisPrice="400" levelOfDetail="SUMMARY" />
+        <OpenPosition accountId="U1234567" currency="USD" assetCategory="STK" symbol="MSFT" conid="272093" position="5" markPrice="410" levelOfDetail="LOT" />
+        <OpenPosition accountId="U1234567" currency="USD" assetCategory="STK" symbol="NVDA" conid="4815747" isin="US67066G1040" listingExchange="NASDAQ" position="10" markPrice="120" costBasisPrice="100" levelOfDetail="SUMMARY" />
+        <OpenPosition accountId="U1234567" currency="EUR" assetCategory="STK" symbol="SAP" conid="4741" isin="DE0007164600" listingExchange="IBIS" position="5" markPrice="182" costBasisPrice="180" levelOfDetail="SUMMARY" />
+      </OpenPositions>
+      <CorporateActions>
+        <CorporateAction accountId="U1234567" currency="USD" assetCategory="STK" symbol="AAPL" description="AAPL(US0378331005) SPLIT 4 FOR 1 (AAPL, APPLE INC, US0378331005)" conid="265598" isin="US0378331005" listingExchange="NASDAQ" reportDate="20260831" dateTime="20260831;202000" type="FS" quantity="300" amount="0" transactionID="CA1" />
+        <CorporateAction accountId="U1234567" currency="USD" assetCategory="STK" symbol="FB" description="FB(US30303M1027) CUSIP/ISIN CHANGE TO META PLATFORMS INC (META, US30303M1027)" conid="10773268" isin="US30303M1027" listingExchange="NASDAQ" reportDate="20211028" dateTime="20211028;202000" type="IC" quantity="0" amount="0" transactionID="CA2" />
+        <CorporateAction accountId="U1234567" currency="USD" assetCategory="STK" symbol="ABCD" description="ABCD(US0000000001) MERGED FOR CASH CONSIDERATION" conid="999" listingExchange="NYSE" reportDate="20260701" dateTime="20260701;202000" type="MA" quantity="-10" amount="250" transactionID="CA3" />
+      </CorporateActions>
+      <EquitySummaryInBase>
+        <EquitySummaryByReportDateInBase accountId="U1234567" reportDate="20261014" cash="5000" stock="8000" total="13000" />
+      </EquitySummaryInBase>
+    </FlexStatement>
+  </FlexStatements>
+</FlexQueryResponse>
