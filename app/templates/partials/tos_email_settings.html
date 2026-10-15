@@ -9,7 +9,7 @@
     </form>
   </div>
   <p class="text-sm text-slate-400 mb-3">Same-day fills with exact times, no clicking: thinkorswim emails each fill, a small script in
-    your own Google account forwards it here every minute, then files the email away. The next-day SnapTrade activity merges
+    your own Google account forwards it here every 5 minutes, then files the email away. The next-day SnapTrade activity merges
     into the same fill (keeping the email's time, adding fees).</p>
   <div class="text-sm mb-3" data-testid="tos-email-status">
     {% if t.status.emails %}
@@ -57,7 +57,7 @@
         <li>Replace everything in <code>Code.gs</code> with the script › <b>Save</b> (name it e.g. “Trading Journal fills”).</li>
         <li>In the function menu pick <b>setup</b> › <b>Run</b> (once).</li>
         <li><b>Authorize</b>: Review permissions › your account › <i>Advanced › Go to project (unsafe)</i> (it's your own script) › <b>Allow</b> (Gmail + external requests).</li>
-        <li>Done: it checks every minute. Each forwarded fill email is labelled <b>Trading Journal/Fills</b>, marked read and archived.
+        <li>Done: it checks every 5 minutes. Each forwarded fill email is labelled <b>Trading Journal/Fills</b>, marked read and archived.
           An email whose upload fails stays in the inbox, unlabelled, and is retried. Check runs under <b>Executions</b>.</li>
       </ol>
       <div class="card-h mb-1">3 · Optional: hide fill emails instantly (Gmail filter)</div>

@@ -139,7 +139,7 @@ def test_settings_section_renders(db, web):  # noqa: F811
 
 def test_apps_script_contract():
     js = email_sync.apps_script("https://example.test/api/ingest/tos-email", "TKN")
-    assert "const TOKEN = 'TKN'" in js and "everyMinutes(1)" in js and "from:' + SENDER" in js
+    assert "const TOKEN = 'TKN'" in js and "everyMinutes(5)" in js and "from:' + SENDER" in js
     assert "if (allOk && anyFill)" in js and "thread.moveToArchive()" in js and "markRead" in js
     assert "getUserLabelByName('Trading Journal')" in js and "in:inbox" not in js
     assert "console.log(TOKEN" not in js and "TOKEN)" not in js.replace("'Bearer ' + TOKEN }", "")

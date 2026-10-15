@@ -248,7 +248,7 @@ What to expect:
 ## Same-day fills with exact times: thinkorswim fill emails
 
 thinkorswim can email every fill (from `alerts@thinkorswim.com`). A free Google Apps Script in your own
-Gmail account forwards each one to `POST /api/ingest/tos-email` every minute, then labels it
+Gmail account forwards each one to `POST /api/ingest/tos-email` every 5 minutes, then labels it
 `Trading Journal/Fills`, marks it read and archives it. Settings › *thinkorswim email sync* has the
 ready-to-paste script (endpoint and token prefilled), the token regenerate button, setup steps and status.
 

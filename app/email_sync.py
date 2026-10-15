@@ -309,7 +309,7 @@ def status(db: Session) -> dict:
 
 APPS_SCRIPT = r"""/**
  * Trading Journal: thinkorswim fill emails -> journal (runs in your own Google account).
- * Setup: run setup() once and authorize. It then runs every minute.
+ * Setup: run setup() once and authorize. It then runs every 5 minutes.
  */
 const ENDPOINT = '__ENDPOINT__';
 const TOKEN = '__TOKEN__';          // keep private: anyone with it can add fills to your journal
@@ -322,7 +322,7 @@ function setup() {
   ScriptApp.getProjectTriggers().forEach(function (t) {
     if (t.getHandlerFunction() === 'syncFills') ScriptApp.deleteTrigger(t);
   });
-  ScriptApp.newTrigger('syncFills').timeBased().everyMinutes(1).create();
+  ScriptApp.newTrigger('syncFills').timeBased().everyMinutes(5).create();
   label_();
   syncFills();
 }
@@ -363,7 +363,7 @@ function syncFills() {
           remember_(props, id, fills);
           if (fills > 0) anyFill = true;
         } else {
-          allOk = false;              // leave it in the inbox, unlabelled: retried next minute
+          allOk = false;              // leave it in the inbox, unlabelled: retried next run
           console.warn('Journal returned HTTP ' + code);
         }
       });
