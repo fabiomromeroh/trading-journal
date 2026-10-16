@@ -14,7 +14,9 @@ from sqlalchemy import select
 
 from app.config import get_settings
 from app.instruments import ExecRecord
-from app.models import Account, BalancePoint, CashFlow, CorporateAdjustment, Dividend, Execution, SyncRun, Trade
+from app.models import (
+    Account, BalancePoint, CashFlow, CorporateAdjustment, Dividend, Execution, Instrument, SyncPayload, SyncRun, Trade,
+)
 from app.services import get_state
 from app.sources.base import SyncContext
 from app.sources import ibkr_flex as ibkr
@@ -505,7 +507,8 @@ def test_multi_account_creates_maps_and_dedupes(db, enc, monkeypatch):
     assert trades[by["U1111111"].id, "9001"] == "AAPL"
     assert trades[by["U2222222"].id, "9001"] == "SAP"
     assert trades[by["U3333333"].id, "9001"] == "MSFT"
-    assert "GHOST" not in {e.symbol for e in db.scalars(select(Execution))}
+    ghost = [e for e in db.scalars(select(Execution)) if e.symbol == "GHOST"]
+    assert len(ghost) == 1 and ghost[0].kind == "TRANSFER" and ghost[0].quantity == pytest.approx(1)
     assert db.query(Execution).filter(Execution.account_id == by["U1111111"].id,
                                       Execution.kind == "SPLIT", Execution.symbol == "IBM").count() == 1
 
@@ -856,8 +859,8 @@ def test_flex_error_log_has_code_not_token_or_url(enc, caplog):
     assert any(r.message.startswith("IBKR Flex error 1015:") for r in warnings)
 
 
-def test_1003_window_is_skipped_and_next_window_imports(db, enc, monkeypatch, caplog):
-    """1003 on window 1 is an empty statement. Window 2 still imports. Cursor moves on."""
+def test_1003_year_is_queued_and_next_window_imports(db, enc, monkeypatch, caplog):
+    """1003 on a year window is recorded (no auto-retry). The next year still imports."""
     caplog.set_level(logging.DEBUG)
     _freeze(monkeypatch)
     _no_fx(monkeypatch)
@@ -871,12 +874,13 @@ def test_1003_window_is_skipped_and_next_window_imports(db, enc, monkeypatch, ca
     db.commit()
     src = ibkr.IbkrFlexSource(transport=fake.transport(), sleep=sleeps.append, split_fetch=lambda *a: [])
     res = src.sync(db, SyncContext())
-    note = "no statement for 20250101\u201320251231 (IBKR 1003)"
+    note = "IBKR 1003 for 20250101\u201320251231; will retry as quarters on the next Sync"
     hist = ibkr.load_history(db)
     assert fake.sent == [("20250101", "20251231"), ("20260101", "20261016")]
     assert fake.n_get == 1  # the 1003 window never fetched a statement
     assert sleeps == [ibkr.history_gap(1)]
     assert note in hist.get("notes", [])
+    assert any(x.get("code") == "1003" and x.get("fd") == "2025-01-01" for x in hist.get("failed_windows") or [])
     assert note in ibkr.progress_line(hist)
     assert note in res.message
     assert hist["status"] == "done" and hist["done_windows"] == 2
@@ -946,3 +950,377 @@ def test_save_credentials_strips_whitespace_and_newlines(db, enc, monkeypatch):
     assert sends and sends[0].url.params.get("t") == TOKEN
     assert sends[0].url.params.get("q") == QUERY_ID
     assert TOKEN not in r.text
+
+
+# ---------------------------------------------------------------- ibkr4: quarters, upload, conid, CA, parse extras
+def _stmt(inner: str, account="U1") -> str:
+    return (f'<?xml version="1.0" encoding="UTF-8"?>\n<FlexQueryResponse>\n'
+            f'<FlexStatements count="1"><FlexStatement accountId="{account}" '
+            f'fromDate="20220101" toDate="20261016">\n'
+            f'<AccountInformation accountId="{account}" currency="USD"/>\n'
+            f'{inner}\n</FlexStatement></FlexStatements></FlexQueryResponse>')
+
+
+def test_iter_quarters_are_at_most_92_days():
+    q = ibkr.iter_quarters(date(2022, 1, 1), date(2022, 12, 31))
+    assert q[0] == (date(2022, 1, 1), date(2022, 3, 31))
+    assert q[1] == (date(2022, 4, 1), date(2022, 6, 30))
+    assert q[-1] == (date(2022, 10, 1), date(2022, 12, 31))
+    assert all(1 <= (td - fd).days + 1 <= 92 for fd, td in q)
+    assert ibkr.is_year_sized(date(2022, 1, 1), date(2022, 12, 31))
+    assert not ibkr.is_year_sized(date(2022, 1, 1), date(2022, 3, 31))
+    assert ibkr.mask_account_id("U1234567") == "U***4567"
+
+
+def test_1003_year_retried_as_quarters_then_quarter_gap(db, enc, monkeypatch):
+    _freeze(monkeypatch)
+    _no_fx(monkeypatch)
+    fail = _flex_fail("1003", "Statement is not available.")
+    fake = ScriptedFlex(TINY, send_bodies=[fail])
+    ibkr.save_credentials(db, TOKEN, QUERY_ID, "USD")
+    ibkr.save_history_start(db, date(2025, 1, 1))
+    from app.services import set_state
+    set_state(db, ibkr.FULL_STATE, "1")
+    db.commit()
+    src = ibkr.IbkrFlexSource(transport=fake.transport(), sleep=nop_sleep, split_fetch=lambda *a: [])
+    src.sync(db, SyncContext())
+    hist = ibkr.load_history(db)
+    assert any(x.get("fd") == "2025-01-01" and x.get("code") == "1003" for x in hist["failed_windows"])
+    ibkr._GATE.update(last=0.0, until=0.0)
+    fake2 = ScriptedFlex(TINY, send_bodies=[fail])  # first quarter 1003; rest succeed
+    src = ibkr.IbkrFlexSource(transport=fake2.transport(), sleep=nop_sleep, split_fetch=lambda *a: [])
+    src.sync(db, SyncContext())
+    expect_q = [(ibkr._ymd(a), ibkr._ymd(b)) for a, b in ibkr.iter_quarters(date(2025, 1, 1), date(2025, 12, 31))]
+    assert fake2.sent[0] == expect_q[0]
+    assert fake2.sent[:4] == expect_q
+    hist = ibkr.load_history(db)
+    assert any(g.get("fd") == "2025-01-01" for g in hist.get("gaps") or [])
+    flags = list(db.scalars(select(CorporateAdjustment).where(CorporateAdjustment.status == "needs_attention")))
+    assert any("history gap" in (a.note or "").lower() for a in flags)
+    assert TOKEN not in json.dumps(hist)
+
+
+def test_1001_is_recorded_and_retried_without_advancing(db, enc, monkeypatch):
+    _freeze(monkeypatch)
+    _no_fx(monkeypatch)
+    fail = _flex_fail("1001", "Statement could not be generated at this time. Please try again shortly.")
+    fake = ScriptedFlex(TINY, send_bodies=[fail])
+    ibkr.save_credentials(db, TOKEN, QUERY_ID, "USD")
+    ibkr.save_history_start(db, date(2025, 1, 1))
+    from app.services import set_state
+    set_state(db, ibkr.FULL_STATE, "1")
+    db.commit()
+    src = ibkr.IbkrFlexSource(transport=fake.transport(), sleep=nop_sleep, split_fetch=lambda *a: [])
+    with pytest.raises(RuntimeError):
+        src.sync(db, SyncContext())
+    hist = ibkr.load_history(db)
+    assert hist["status"] == "error" and hist["next_fd"] == "2025-01-01"
+    assert any(x.get("code") == "1001" for x in hist.get("failed_windows") or [])
+    ibkr._GATE.update(last=0.0, until=0.0)
+    src.sync(db, SyncContext())
+    assert fake.sent[1] == ("20250101", "20251231")
+
+
+def test_upload_xml_feeds_parser_and_dedupes(db, enc, monkeypatch):
+    _no_fx(monkeypatch)
+    src = ibkr.IbkrFlexSource(sleep=nop_sleep, split_fetch=lambda *a: [])
+    xml = load("statement.xml")
+    res = src.import_xml(db, xml, filename="stmt.xml")
+    assert res.inserted > 0
+    n = db.query(Execution).count()
+    payloads = list(db.scalars(select(SyncPayload)))
+    xml_rows = [p for p in payloads if p.content_type == "application/xml"]
+    assert xml_rows and xml_rows[0].gzipped
+    from app.adjustments import payload_body
+    raw = payload_body(xml_rows[0])
+    assert raw.startswith(b"<?xml") or b"<FlexQueryResponse" in raw[:80]
+    res2 = src.import_xml(db, xml, filename="stmt.xml")
+    assert res2.inserted == 0
+    assert db.query(Execution).count() == n
+
+
+def test_upload_rejects_doctype_and_non_xml(db, enc, monkeypatch):
+    src = ibkr.IbkrFlexSource(sleep=nop_sleep, split_fetch=lambda *a: [])
+    with pytest.raises(ibkr.FlexError):
+        src.import_xml(db, '<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY x "y">]><x/>')
+    c = _client()
+    r = c.post("/settings/brokers/ibkr/upload", files={"file": ("note.txt", b"not xml", "text/plain")},
+               follow_redirects=True)
+    assert "XML" in r.text
+    assert "DOCTYPE" not in r.text or "not" in r.text.lower()
+
+
+def test_conid_maps_beri_beril(db, enc, monkeypatch):
+    _no_fx(monkeypatch)
+    xml = _stmt("""
+      <Trades>
+        <Trade accountId="U1" currency="USD" assetCategory="STK" symbol="BERIL" conid="80575143"
+               tradeID="B1" dateTime="20260301;100000" quantity="8" tradePrice="10" ibCommission="0"
+               buySell="BUY" openCloseIndicator="O" levelOfDetail="EXECUTION"/>
+        <Trade accountId="U1" currency="USD" assetCategory="STK" symbol="BERI" conid="80575143"
+               tradeID="B2" dateTime="20260310;100000" quantity="-3" tradePrice="12" ibCommission="0"
+               buySell="SELL" openCloseIndicator="C" levelOfDetail="EXECUTION"/>
+      </Trades>
+      <OpenPositions>
+        <OpenPosition accountId="U1" currency="USD" assetCategory="STK" symbol="BERI" conid="80575143"
+                      position="5" markPrice="11" levelOfDetail="SUMMARY"/>
+      </OpenPositions>""")
+    src = ibkr.IbkrFlexSource(sleep=nop_sleep, split_fetch=lambda *a: [])
+    src.import_xml(db, xml)
+    insts = list(db.scalars(select(Instrument).where(Instrument.source_key == ibkr.SOURCE_KEY)))
+    assert len(insts) == 1 and insts[0].conid == "80575143"
+    execs = list(db.scalars(select(Execution).where(Execution.kind == "TRADE")))
+    assert {e.instrument_id for e in execs} == {insts[0].id}
+    assert {e.symbol for e in execs} == {insts[0].symbol}
+    flags = [a for a in db.scalars(select(CorporateAdjustment)) if a.status == "needs_attention"]
+    assert not any("BERI" in (a.symbol or "") and "qty" in (a.external_key or "") for a in flags)
+
+
+def test_corporate_dedupe_by_action_id():
+    rows = [
+        {"symbol": "PARA", "conid": "1", "type": "TC", "quantity": "-17", "actionID": "A1",
+         "levelOfDetail": "SUMMARY", "description": "X(PSKY, Y) 1 FOR 1", "dateTime": "20250806;200000"},
+        {"symbol": "PARA", "conid": "1", "type": "TC", "quantity": "-17", "actionID": "A1",
+         "levelOfDetail": "DETAIL", "description": "X(PSKY, Y) 1 FOR 1", "dateTime": "20250806;200000"},
+        {"symbol": "PARA", "conid": "1", "type": "TC", "quantity": "-17", "actionID": "A1",
+         "levelOfDetail": "SUMMARY", "description": "X(PSKY, Y) 1 FOR 1", "dateTime": "20250806;200000"},
+        {"symbol": "PSKY", "conid": "2", "type": "TC", "quantity": "17", "actionID": "A1",
+         "levelOfDetail": "DETAIL", "description": "X(PSKY, Y) 1 FOR 1", "dateTime": "20250806;200000"},
+        {"symbol": "PSKY", "conid": "2", "type": "TC", "quantity": "17", "actionID": "A1",
+         "levelOfDetail": "SUMMARY", "description": "X(PSKY, Y) 1 FOR 1", "dateTime": "20250806;200000"},
+    ]
+    got = ibkr.dedupe_corporate(rows)
+    assert len(got) == 2
+    assert {ibkr._lod(r) for r in got} == {"DETAIL"}
+    events, recs = ibkr.corporate_events(rows)
+    sells = [r for r in recs if r.side == "SELL"]
+    buys = [r for r in recs if r.side == "BUY"]
+    assert len(sells) == 1 and len(buys) == 1
+    assert sells[0].symbol == "PARA" and buys[0].symbol == "PSKY"
+    assert any(e.get("kind") == "RENAME" and e.get("new_symbol") == "PSKY" for e in events)
+
+
+def test_para_psky_one_for_one_carries_cost(db, enc, monkeypatch):
+    _no_fx(monkeypatch)
+    xml = _stmt("""
+      <Trades>
+        <Trade accountId="U1" currency="USD" assetCategory="STK" symbol="PARA" conid="393897513"
+               tradeID="P1" dateTime="20250701;100000" quantity="17" tradePrice="20" ibCommission="0"
+               buySell="BUY" openCloseIndicator="O" levelOfDetail="EXECUTION"/>
+      </Trades>
+      <CorporateActions>
+        <CorporateAction accountId="U1" currency="USD" assetCategory="STK" symbol="PARA" conid="393897513"
+          type="TC" quantity="-17" actionID="M1" levelOfDetail="DETAIL" dateTime="20250806;200000"
+          description="PARAMOUNT GLOBAL(PARA) MERGED WITH PARAMOUNT SKYDANCE(PSKY, US123) 1 FOR 1"/>
+        <CorporateAction accountId="U1" currency="USD" assetCategory="STK" symbol="PSKY" conid="804144296"
+          type="TC" quantity="17" actionID="M1" levelOfDetail="DETAIL" dateTime="20250806;200000"
+          description="PARAMOUNT GLOBAL(PARA) MERGED WITH PARAMOUNT SKYDANCE(PSKY, US123) 1 FOR 1"/>
+        <CorporateAction accountId="U1" currency="USD" assetCategory="STK" symbol="PARA" conid="393897513"
+          type="TC" quantity="-17" actionID="M1" levelOfDetail="SUMMARY" dateTime="20250806;200000"
+          description="PARAMOUNT GLOBAL(PARA) MERGED WITH PARAMOUNT SKYDANCE(PSKY, US123) 1 FOR 1"/>
+      </CorporateActions>""")
+    src = ibkr.IbkrFlexSource(sleep=nop_sleep, split_fetch=lambda *a: [])
+    src.import_xml(db, xml)
+    conv = list(db.scalars(select(Execution).where(Execution.kind == "CONVERSION")))
+    assert len(conv) == 2
+    buy = next(e for e in conv if e.side == "BUY")
+    sell = next(e for e in conv if e.side == "SELL")
+    assert buy.symbol == "PSKY" and sell.symbol == "PARA"
+    assert buy.quantity == pytest.approx(17) and sell.quantity == pytest.approx(17)
+    assert buy.price == pytest.approx(20)
+    trades = list(db.scalars(select(Trade)))
+    psky = next(t for t in trades if t.symbol == "PSKY" and t.status == "OPEN")
+    assert psky.open_quantity == pytest.approx(17)
+    assert psky.entry_price == pytest.approx(20) or psky.cost_basis == pytest.approx(340)
+    para = next((t for t in trades if t.symbol == "PARA"), None)
+    if para is not None:
+        assert para.status == "CLOSED"
+        assert abs(para.net_pnl or 0) < 1e-4 or abs(para.gross_pnl or 0) < 1e-4
+
+
+def test_hbi_gil_cash_and_stock(db, enc, monkeypatch):
+    _no_fx(monkeypatch)
+    xml = _stmt("""
+      <Trades>
+        <Trade accountId="U1" currency="USD" assetCategory="STK" symbol="HBI" conid="40369429"
+               tradeID="H1" dateTime="20251001;100000" quantity="15" tradePrice="10" ibCommission="0"
+               buySell="BUY" openCloseIndicator="O" levelOfDetail="EXECUTION"/>
+      </Trades>
+      <CorporateActions>
+        <CorporateAction accountId="U1" currency="USD" assetCategory="STK" symbol="HBI" conid="40369429"
+          type="TC" quantity="-15" proceeds="12.00" actionID="HBI1" levelOfDetail="DETAIL"
+          dateTime="20251201;200000"
+          description="HANESBRANDS(HBI) MERGED WITH GILDAN(GIL, CA) 102 FOR 1000 AND USD 0.80"/>
+        <CorporateAction accountId="U1" currency="USD" assetCategory="STK" symbol="GIL" conid="6227314"
+          type="TC" quantity="1.53" actionID="HBI1" levelOfDetail="DETAIL" dateTime="20251201;200000"
+          description="HANESBRANDS(HBI) MERGED WITH GILDAN(GIL, CA) 102 FOR 1000 AND USD 0.80"/>
+      </CorporateActions>""")
+    src = ibkr.IbkrFlexSource(sleep=nop_sleep, split_fetch=lambda *a: [])
+    src.import_xml(db, xml)
+    buy = next(e for e in db.scalars(select(Execution).where(Execution.kind == "CONVERSION", Execution.side == "BUY")))
+    assert buy.symbol == "GIL" and buy.quantity == pytest.approx(1.53)
+    assert buy.price == pytest.approx(150 / 1.53)
+    cash = list(db.scalars(select(CashFlow).where(CashFlow.kind == "proceeds")))
+    assert len(cash) == 1 and cash[0].amount == pytest.approx(12.0)
+
+
+def test_merger_missing_buy_flags_and_does_not_invent(db, enc, monkeypatch):
+    _no_fx(monkeypatch)
+    xml = _stmt("""
+      <CorporateActions>
+        <CorporateAction accountId="U1" currency="USD" assetCategory="STK" symbol="PARA" conid="393897513"
+          type="TC" quantity="-17" actionID="M9" levelOfDetail="DETAIL" dateTime="20250806;200000"
+          description="PARA MERGED WITH PSKY(PSKY, US) 1 FOR 1"/>
+        <CorporateAction accountId="U1" currency="USD" assetCategory="STK" symbol="PSKY" conid="804144296"
+          type="TC" quantity="17" actionID="M9" levelOfDetail="DETAIL" dateTime="20250806;200000"
+          description="PARA MERGED WITH PSKY(PSKY, US) 1 FOR 1"/>
+      </CorporateActions>""")
+    src = ibkr.IbkrFlexSource(sleep=nop_sleep, split_fetch=lambda *a: [])
+    src.import_xml(db, xml)
+    buys = [e for e in db.scalars(select(Execution)) if e.side == "BUY" and e.kind == "TRADE"]
+    assert buys == []
+    flags = list(db.scalars(select(CorporateAdjustment).where(CorporateAdjustment.status == "needs_attention")))
+    assert any("outside" in (a.note or "").lower() or "opening fill" in (a.note or "").lower() for a in flags)
+    assert any(a.kind == "RENAME" or (a.new_symbol == "PSKY") for a in
+               db.scalars(select(CorporateAdjustment)))
+    psky = [e for e in db.scalars(select(Execution)) if e.symbol == "PSKY"]
+    assert psky and psky[0].kind == "CONVERSION"
+
+
+def test_fs_rs_so_sd_dw_types():
+    rows = [
+        {"symbol": "AAA", "type": "FS", "description": "AAA SPLIT 2 FOR 1", "quantity": "2",
+         "dateTime": "20260101;200000", "actionID": "1"},
+        {"symbol": "BBB", "type": "RS", "description": "BBB REVERSE SPLIT 1 FOR 10", "quantity": "-9",
+         "dateTime": "20260102;200000", "actionID": "2"},
+        {"symbol": "CCC", "type": "SO", "description": "CCC SPIN-OFF OF DDD(DDD, US1)", "quantity": "4",
+         "dateTime": "20260103;200000", "actionID": "3", "conid": "30"},
+        {"symbol": "EEE", "type": "SD", "description": "EEE STOCK DIVIDEND", "quantity": "2",
+         "dateTime": "20260104;200000", "actionID": "4"},
+        {"symbol": "FFF", "type": "DW", "description": "FFF WORTHLESS", "quantity": "-5",
+         "dateTime": "20260105;200000", "actionID": "5"},
+        {"symbol": "GGG", "type": "ZZ", "description": "mystery", "quantity": "1",
+         "dateTime": "20260106;200000", "actionID": "6"},
+    ]
+    events, recs = ibkr.corporate_events(rows)
+    kinds = {r.kind for r in recs}
+    assert "SPLIT" in kinds and "SPIN_OFF" in kinds and "DISTRIBUTION" in kinds and "ADJUST" in kinds
+    assert any(e["kind"] == "ATTENTION" and e["symbol"] == "GGG" for e in events)
+    so = next(r for r in recs if r.kind == "SPIN_OFF")
+    assert so.symbol == "DDD" and so.quantity == pytest.approx(4)
+
+
+def test_equity_and_cash_report_balance_check(db, enc, monkeypatch):
+    _no_fx(monkeypatch)
+    xml = _stmt("""
+      <Trades>
+        <Trade accountId="U1" currency="USD" assetCategory="STK" symbol="AAPL" conid="265598"
+               tradeID="1" dateTime="20260902;100000" quantity="1" tradePrice="10" ibCommission="0"
+               buySell="BUY" openCloseIndicator="O" levelOfDetail="EXECUTION"/>
+      </Trades>
+      <CashTransactions>
+        <CashTransaction accountId="U1" currency="USD" description="WIRE IN" dateTime="20260901;090000"
+                         amount="100" type="Deposits/Withdrawals" transactionID="C1"/>
+      </CashTransactions>
+      <EquitySummaryInBase>
+        <EquitySummaryByReportDateInBase accountId="U1" reportDate="20261014" cash="40" stock="60" total="100"/>
+      </EquitySummaryInBase>
+      <CashReport>
+        <CashReportCurrency accountId="U1" currency="USD" endingCash="42" toDate="20261014" levelOfDetail="Currency"/>
+      </CashReport>""")
+    parsed = ibkr.parse_statement(xml)
+    assert parsed.equity and parsed.equity["total"] == 100
+    assert parsed.cash_report and ibkr._latest_cash_report(parsed.cash_report) == pytest.approx(42)
+    src = ibkr.IbkrFlexSource(sleep=nop_sleep, split_fetch=lambda *a: [])
+    src.import_xml(db, xml)
+    from app.balance import IBKR_SUMMARY_STATE
+    acct = db.scalar(select(Account).where(Account.source_key == ibkr.SOURCE_KEY))
+    raw = get_state(db, IBKR_SUMMARY_STATE + str(acct.id))
+    snap = json.loads(raw)
+    assert snap["total"] == 100 and snap["cash"] == pytest.approx(42)
+    c = _client()
+    page = c.get("/settings").text
+    assert "journal NAV" in page and "IBKR" in page
+
+
+def test_option_eae_and_skip_duplicate_trade_code():
+    eae = {"transactionType": "Expiration", "symbol": "AAPL  260117C00150000", "underlyingSymbol": "AAPL",
+           "quantity": "2", "dateTime": "20260117;160000", "transactionID": "E1", "putCall": "C",
+           "strike": "150", "expiry": "20260117", "multiplier": "100"}
+    recs = [r for r in ibkr.option_eae_to_records(eae) if not isinstance(r, ibkr.Skip)]
+    assert recs and recs[0].kind == "EXPIRATION" and recs[0].asset_type == "OPTION"
+    covered = {("AAPL  260117C00150000", date(2026, 1, 17), 2.0)}
+    day = (ibkr._when_of(eae)[0] or datetime.min).date()
+    assert ((eae.get("symbol") or "").upper(), day, round(abs(ibkr._num(eae.get("quantity")) or 0), 4)) in covered
+    assert "EP" in ibkr._EAE_TRADE_CODES
+
+
+def test_option_eae_skipped_when_trade_has_code(db, enc, monkeypatch):
+    _no_fx(monkeypatch)
+    xml = _stmt("""
+      <Trades>
+        <Trade accountId="U1" currency="USD" assetCategory="OPT" symbol="AAPL  260117C00150000"
+               underlyingSymbol="AAPL" tradeID="T9" dateTime="20260117;160000" quantity="-2" tradePrice="0"
+               ibCommission="0" buySell="SELL" openCloseIndicator="C" putCall="C" strike="150"
+               expiry="20260117" multiplier="100" levelOfDetail="EXECUTION" code="Ep"/>
+      </Trades>
+      <OptionEAE>
+        <OptionEAE accountId="U1" transactionType="Expiration" symbol="AAPL  260117C00150000"
+                   underlyingSymbol="AAPL" quantity="2" dateTime="20260117;160000" transactionID="E1"
+                   putCall="C" strike="150" expiry="20260117" multiplier="100"/>
+      </OptionEAE>""")
+    src = ibkr.IbkrFlexSource(sleep=nop_sleep, split_fetch=lambda *a: [])
+    src.import_xml(db, xml)
+    eae = [e for e in db.scalars(select(Execution)) if str(e.external_id).startswith("eae:")]
+    assert eae == []
+    assert db.query(Execution).filter(Execution.external_id == "T9").count() == 1
+
+
+def test_co_indicator_splits_close_and_open(db, enc, monkeypatch):
+    _no_fx(monkeypatch)
+    xml = _stmt("""
+      <Trades>
+        <Trade accountId="U1" currency="USD" assetCategory="STK" symbol="TSLA" conid="76792991"
+               tradeID="T1" dateTime="20260903;093100" quantity="10" tradePrice="250" ibCommission="0"
+               buySell="BUY" openCloseIndicator="O" levelOfDetail="EXECUTION"/>
+        <Trade accountId="U1" currency="USD" assetCategory="STK" symbol="TSLA" conid="76792991"
+               tradeID="T2" dateTime="20260908;160000" quantity="-15" tradePrice="240" ibCommission="-1.50"
+               buySell="SELL" openCloseIndicator="C;O" levelOfDetail="EXECUTION"/>
+      </Trades>""")
+    src = ibkr.IbkrFlexSource(sleep=nop_sleep, split_fetch=lambda *a: [])
+    src.import_xml(db, xml)
+    tsla = list(db.scalars(select(Execution).where(Execution.symbol == "TSLA", Execution.kind == "TRADE")))
+    tsla.sort(key=lambda e: (e.executed_at, e.external_id))
+    assert [e.external_id for e in tsla] == ["T1", "T2", "T2:O"]
+    assert tsla[1].quantity == pytest.approx(10) and tsla[1].position_effect == "CLOSE"
+    assert tsla[2].quantity == pytest.approx(5) and tsla[2].position_effect == "OPEN"
+    trades = [t for t in db.scalars(select(Trade)) if t.symbol == "TSLA"]
+    assert any(t.status == "CLOSED" and t.direction == "LONG" for t in trades)
+    assert any(t.status == "OPEN" and t.direction == "SHORT" for t in trades)
+
+
+def test_reprocess_is_idempotent(db, enc, monkeypatch):
+    _no_fx(monkeypatch)
+    xml = load("statement.xml")
+    src = ibkr.IbkrFlexSource(sleep=nop_sleep, split_fetch=lambda *a: [])
+    src.import_xml(db, xml)
+    n_exec = db.query(Execution).count()
+    n_div = db.query(Dividend).count()
+    n_cash = db.query(CashFlow).count()
+    res = ibkr.reprocess_stored_payloads(db)
+    assert "Reprocessed" in res.message
+    assert db.query(Execution).count() == n_exec
+    assert db.query(Dividend).count() == n_div
+    assert db.query(CashFlow).count() == n_cash
+    res2 = ibkr.reprocess_stored_payloads(db)
+    assert db.query(Execution).count() == n_exec
+    assert get_state(db, ibkr.REPROCESS_STATE) == ibkr.REPROCESS_VERSION
+
+
+def test_upload_form_on_card(db, enc, monkeypatch):
+    c = _client()
+    page = c.get("/settings").text
+    assert "Upload IBKR Activity Statement (XML)" in page
+    assert 'enctype="multipart/form-data"' in page
+    assert "/settings/brokers/ibkr/upload" in page
+    assert "Reprocess stored history" in page or "ibkr/reprocess" in page

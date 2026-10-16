@@ -43,22 +43,46 @@ def upsert_t212(db: Session, ticker: str, isin: str | None, name: str | None, cu
 
 
 def upsert_ibkr(db: Session, broker_symbol: str, isin: str | None, name: str | None, currency: str | None,
-                exchange: str | None, display_symbol: str | None = None) -> Instrument:
-    """Create/refresh the Instrument row for an IBKR conid or ticker. Manual overrides are never overwritten."""
+                exchange: str | None, display_symbol: str | None = None, conid: str | None = None) -> Instrument:
+    """Create/refresh the Instrument row for an IBKR conid or ticker. Manual overrides are never overwritten.
+
+    Lookup is conid first, then broker_symbol. Two IBKR tickers with the same conid (BERI / BERIL)
+    share one row; the first-seen display ticker is kept so fills stay on one journal symbol.
+    """
     key = (broker_symbol or "").strip()
+    conid_s = str(conid or "").strip() or None
+    if conid_s is None and key.isdigit():
+        conid_s = key
     sym = (display_symbol or key).strip().upper() or key
+    if sym.isdigit() and not display_symbol:
+        sym = key
     ccy = (currency or "").upper() or None
     if ccy == "GBX":
         ccy = "GBP"
-    ysym = markets.yahoo_symbol_for(sym, exchange)
-    row = db.scalar(select(Instrument).where(Instrument.source_key == "ibkr_flex", Instrument.broker_symbol == key))
+    ysym = markets.yahoo_symbol_for(sym, exchange) if not sym.isdigit() else None
+    row = None
+    if conid_s:
+        row = db.scalar(select(Instrument).where(
+            Instrument.source_key == "ibkr_flex", Instrument.conid == conid_s))
+    if row is None and key:
+        row = db.scalar(select(Instrument).where(
+            Instrument.source_key == "ibkr_flex", Instrument.broker_symbol == key))
     if row is None:
-        row = Instrument(source_key="ibkr_flex", broker_symbol=key, isin=isin, symbol=sym, name=name,
-                         exchange=exchange, currency=ccy, asset_type="STOCK", price_symbol=ysym, price_scale=1.0)
+        store_key = key or conid_s or sym
+        row = Instrument(source_key="ibkr_flex", broker_symbol=store_key, isin=isin, symbol=sym, name=name,
+                         exchange=exchange, currency=ccy, asset_type="STOCK", price_symbol=ysym, price_scale=1.0,
+                         conid=conid_s)
         db.add(row)
     elif not row.user_override:
         row.isin, row.name, row.currency = isin or row.isin, name or row.name, ccy or row.currency
-        row.symbol, row.exchange, row.price_symbol = sym, exchange or row.exchange, ysym or row.price_symbol
+        row.exchange = exchange or row.exchange
+        if conid_s:
+            row.conid = conid_s
+        # Same conid: keep the journal symbol already stored (BERI vs BERIL).
+        if not row.symbol or row.symbol.isdigit():
+            row.symbol = sym
+        if not row.price_symbol and ysym:
+            row.price_symbol = ysym
     db.flush()
     return row
 

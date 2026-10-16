@@ -15,6 +15,31 @@
     {% for a in ibkr.mapped %}<b class="text-slate-200">{{ a.name }}</b> ({{ a.currency }}){{ ', ' if not loop.last }}{% endfor %}
   </div>
   {% endif %}
+  {% if ibkr.balance_checks %}
+  <div class="text-xs text-slate-400 space-y-1">
+    {% for c in ibkr.balance_checks %}
+    <div>{{ c.name }}: journal NAV
+      {% if c.journal_nav is not none %}<b class="text-slate-200">{{ '%.2f'|format(c.journal_nav) }}</b>{% else %}—{% endif %}
+      vs IBKR
+      {% if c.ibkr_nav is not none %}<b class="text-slate-200">{{ '%.2f'|format(c.ibkr_nav) }}</b>{% else %}—{% endif %}
+      {% if c.diff is not none %} (diff <b class="{{ 'text-emerald-300' if c.diff|abs < 1 else 'text-amber-300' }}">{{ '%+.2f'|format(c.diff) }}</b>){% endif %}
+      {% if c.ibkr_cash is not none %} · IBKR cash {{ '%.2f'|format(c.ibkr_cash) }}{% endif %}
+      {{ c.currency }}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+  <form method="post" action="/settings/brokers/ibkr/upload" enctype="multipart/form-data" class="flex flex-wrap items-end gap-2">
+    <label class="text-xs text-slate-400">Upload IBKR Activity Statement (XML)
+      <input type="file" name="file" accept=".xml,application/xml,text/xml" class="inp text-xs mt-1" required>
+    </label>
+    <button class="btn btn-s text-xs">Upload XML</button>
+  </form>
+  <p class="text-xs text-slate-500">XML is parsed locally (same mapping and dedupe as Flex sync). 25 MB max. A re-upload of the same statement adds nothing.</p>
+  <form method="post" action="/settings/brokers/ibkr/reprocess" class="flex flex-wrap gap-2"
+        onsubmit="return confirm('Re-read stored IBKR JSON/XML (no call to Interactive Brokers). Existing fills stay; duplicates are skipped.')">
+    <button class="btn btn-s text-xs">Reprocess stored history</button>
+  </form>
   {% if ibkr.connected %}
     <div class="text-xs text-slate-400">
       Flex token <b class="text-slate-200">saved</b>
@@ -42,7 +67,7 @@
       <div class="flex flex-wrap gap-2">
         <button class="btn btn-s text-xs">Save</button>
         <button type="button" hx-post="/settings/brokers/ibkr/sync" hx-target="#ibkr-sync" class="btn btn-p text-xs">Sync new</button>
-        <button type="button" hx-post="/settings/brokers/ibkr/resync" hx-target="#ibkr-sync" hx-confirm="Full history fetches year-sized windows from the history start date to today. If a window was paused, it resumes there. Existing fills are kept." class="btn btn-s text-xs">Full history</button>
+        <button type="button" hx-post="/settings/brokers/ibkr/resync" hx-target="#ibkr-sync" hx-confirm="Full history fetches year-sized windows from the history start date to today. Failed windows (1001/1003) are retried; a 1003 year is retried as quarters. Existing fills are kept." class="btn btn-s text-xs">Full history</button>
         <button type="submit" form="ibkr-test" class="btn btn-s text-xs">Test connection</button>
         <button type="submit" form="ibkr-disconnect" class="btn btn-d text-xs" onclick="return confirm('Delete the stored Flex token? Imported trades stay.')">Disconnect</button>
       </div>

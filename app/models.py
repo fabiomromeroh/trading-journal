@@ -73,6 +73,7 @@ class Instrument(Base):
     price_symbol: Mapped[str | None] = mapped_column(String(32))  # Yahoo symbol, e.g. "VUSA.L"
     price_scale: Mapped[float] = mapped_column(Float, default=1.0)  # 0.01 when the price feed quotes pence (GBX)
     user_override: Mapped[bool] = mapped_column(Boolean, default=False)  # symbol/price_symbol typed by the user
+    conid: Mapped[str | None] = mapped_column(String(32), index=True)  # IBKR contract id; same conid = one security
 
 
 class CompanyProfile(Base):

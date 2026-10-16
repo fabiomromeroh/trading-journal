@@ -32,7 +32,7 @@ CARRY_DAYS = 6           # weekends / holidays: the last real close stays valid 
 T212_SUMMARY_STATE = "balance:t212:"   # + account id: latest real cash / invested / total (no secrets)
 IBKR_SUMMARY_STATE = "balance:ibkr:"   # + account id: latest Flex equity summary (no secrets)
 FLOW_KINDS = ("deposit", "withdrawal", "transfer")   # count as net deposits
-OTHER_KINDS = ("interest", "fee")                     # count as return (cash the broker paid / charged)
+OTHER_KINDS = ("interest", "fee", "proceeds")         # count as return (cash the broker paid / charged / CA cash)
 
 
 # ------------------------------------------------------------------ cash flows

@@ -218,14 +218,27 @@ def _as_view(e, symbol: str):
 
 
 def _canonical_groups(execs, aliases) -> tuple[dict[str, list], dict[str, set[str]]]:
+    from collections import Counter, defaultdict
+
     from app.symbols import canonical_symbol
+    iid_counts: dict[int, Counter] = defaultdict(Counter)
+    for e in execs:
+        if not _is_stock(e) or not e.instrument_id:
+            continue
+        iid_counts[e.instrument_id][(e.symbol or "").upper()] += 1
+    iid_symbol = {iid: max(counts.items(), key=lambda kv: (kv[1], kv[0]))[0]
+                  for iid, counts in iid_counts.items() if counts}
     groups: dict[str, list] = {}
     members: dict[str, set[str]] = {}
     for e in execs:
         if not _is_stock(e):
             continue
         raw = (e.symbol or "").upper()
-        canon = canonical_symbol(raw, aliases).upper()
+        if e.instrument_id and e.instrument_id in iid_symbol:
+            seed = iid_symbol[e.instrument_id]
+        else:
+            seed = raw
+        canon = canonical_symbol(seed, aliases).upper()
         groups.setdefault(canon, []).append(_as_view(e, canon))
         members.setdefault(canon, set()).add(raw)
     return groups, members
@@ -775,7 +788,10 @@ def _scrub(obj):
 
 def record_payload(db: Session, account_id: int, source: str, payload, *, run_id: int | None = None,
                    kind: str = "json", filename: str | None = None) -> SyncPayload | None:
-    """Store the records this sync received. Large bodies are gzipped. The latest 50 are kept."""
+    """Store the records this sync received. Large bodies are gzipped. The latest 50 are kept.
+
+    ``kind="xml"`` is always gzipped (IBKR Flex raw statements). Never log the body.
+    """
     if payload is None:
         return None
     if kind == "csv":
@@ -783,16 +799,24 @@ def record_payload(db: Session, account_id: int, source: str, payload, *, run_id
         raw = text.encode("utf-8", errors="replace")
         content_type = "text/csv"
         ext = "csv"
+        gzipped = len(raw) >= GZIP_AT
+        body = gzip.compress(raw, compresslevel=6) if gzipped else raw
+    elif kind == "xml":
+        raw = payload if isinstance(payload, bytes) else str(payload).encode("utf-8", errors="replace")
+        content_type = "application/xml"
+        ext = "xml"
+        gzipped = True
+        body = gzip.compress(raw, compresslevel=6)
     else:
         raw = json.dumps(_scrub(payload), default=str, separators=(",", ":")).encode("utf-8")
         content_type = "application/json"
         ext = "json"
+        gzipped = len(raw) >= GZIP_AT
+        body = gzip.compress(raw, compresslevel=6) if gzipped else raw
     stamp = utcnow().strftime("%Y%m%d-%H%M%S")
     safe = re.sub(r"[^A-Za-z0-9._-]+", "-", (filename or f"{source}-{account_id}-{stamp}.{ext}"))[:110]
     if not safe.lower().endswith(f".{ext}"):
         safe = f"{safe}.{ext}"[:120]
-    gzipped = len(raw) >= GZIP_AT
-    body = gzip.compress(raw, compresslevel=6) if gzipped else raw
     row = SyncPayload(
         account_id=account_id, sync_run_id=run_id, source=source[:30], filename=safe,
         content_type=content_type, gzipped=gzipped, nbytes=len(raw), body=body,

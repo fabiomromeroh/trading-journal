@@ -1,7 +1,7 @@
 """Settings > Brokers: connect / test / sync / disconnect Trading 212 and IBKR Flex; instrument mappings."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -213,6 +213,32 @@ def ibkr_resync(request: Request, db: Session = Depends(get_db)):
     return templates.TemplateResponse(request, "partials/sync_status.html", {"request": request, "run": run})
 
 
+@router.post("/settings/brokers/ibkr/upload")
+async def ibkr_upload(request: Request, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """Activity Statement XML. Same parser/dedupe as Flex sync. Never sent to IBKR."""
+    name = (file.filename or "").lower()
+    ctype = (file.content_type or "").lower()
+    data = await file.read()
+    if len(data) > ibkr.MAX_UPLOAD_BYTES:
+        return _flash(request, "File too large (25 MB max).")
+    if not (name.endswith(".xml") or "xml" in ctype):
+        return _flash(request, "Upload an IBKR Activity Statement as XML.")
+    text = data.decode("utf-8", errors="replace")
+    src = ibkr.IbkrFlexSource(sleep=lambda _n: None, split_fetch=lambda *_a, **_k: [])
+    try:
+        res = src.import_xml(db, text, filename=file.filename)
+    except ibkr.FlexError as exc:
+        return _flash(request, str(exc))
+    return _flash(request, res.message or "Uploaded IBKR statement.")
+
+
+@router.post("/settings/brokers/ibkr/reprocess")
+def ibkr_reprocess(request: Request, db: Session = Depends(get_db)):
+    """Replay stored Flex JSON/XML. Does not call Interactive Brokers."""
+    res = ibkr.reprocess_stored_payloads(db)
+    return _flash(request, res.message or "Reprocessed stored IBKR history.")
+
+
 def settings_ctx(db: Session) -> dict:
     from app.corporate import audit_instruments
     creds = t212.load_credentials(db)
@@ -231,4 +257,31 @@ def settings_ctx(db: Session) -> dict:
                      "history_start": ibkr.history_start_date(db).isoformat(),
                      "progress": ibkr.progress_line(ibkr.load_history(db)),
                      "mapped": mapped,
+                     "balance_checks": _ibkr_balance_checks(db, mapped),
                      "enc_key": bool(get_settings().token_encryption_key)}}
+
+
+def _ibkr_balance_checks(db: Session, mapped) -> list[dict]:
+    """Per-account journal NAV vs IBKR ending NAV/cash. No estimation."""
+    from app.balance import broker_snapshots
+    from app.models import BalancePoint
+    if not mapped:
+        return []
+    snaps = broker_snapshots(db, [a.id for a in mapped])
+    out = []
+    for a in mapped:
+        snap = snaps.get(a.id) or {}
+        latest = db.scalar(select(BalancePoint).where(
+            BalancePoint.account_id == a.id).order_by(BalancePoint.day.desc()))
+        journal_nav = latest.balance if latest is not None else None
+        ibkr_nav = snap.get("total")
+        ibkr_cash = snap.get("cash")
+        diff = None
+        if journal_nav is not None and ibkr_nav is not None:
+            diff = round(float(journal_nav) - float(ibkr_nav), 2)
+        out.append({
+            "name": a.name, "currency": a.currency or snap.get("currency") or "USD",
+            "journal_nav": journal_nav, "ibkr_nav": ibkr_nav, "ibkr_cash": ibkr_cash,
+            "diff": diff, "as_of": snap.get("as_of"),
+        })
+    return out
