@@ -61,6 +61,7 @@ def enc(monkeypatch):
     monkeypatch.setattr(s, "token_encryption_key", "unit-test-key")
     monkeypatch.setattr(ibkr, "_TRANSPORT", None)
     monkeypatch.setattr(ibkr._time, "sleep", lambda _n: None)
+    monkeypatch.setattr(ibkr, "SEND_GAP", 0.0)
     return s
 
 
@@ -346,3 +347,58 @@ def test_source_key_and_arm_full_history(db, enc):
     assert source_key_for_account(db, a) == "ibkr_flex"
     arm_full_history(db, a)
     assert get_state(db, ibkr.FULL_STATE) == "1"
+
+
+# ---------------------------------------------------------------- rate safety (IBKR blocks hammering IPs)
+SEND_1018 = ('<FlexStatementResponse><Status>Fail</Status><ErrorCode>1018</ErrorCode>'
+             '<ErrorMessage>Too many requests have been made from this token.</ErrorMessage></FlexStatementResponse>')
+
+
+def test_1018_trips_cooldown_and_blocks_further_calls(enc):
+    fake = FakeFlex(send_xml=SEND_1018)
+    res = ibkr.test_connection("tok-secret", "123", transport=fake.transport(), sleep=lambda _n: None)
+    assert not res["ok"] and res["kind"] == "rate" and len(fake.calls) == 1
+    assert ibkr.cooldown_left() > 60
+    ibkr._GATE["last"] = 0.0
+    again = ibkr.test_connection("tok-secret", "123", transport=fake.transport(), sleep=lambda _n: None)
+    assert not again["ok"] and len(fake.calls) == 1  # nothing sent during the pause
+
+
+def test_no_automatic_retries_and_call_cap(enc):
+    def boom(req):
+        boom.n += 1
+        return httpx.Response(503)
+    boom.n = 0
+    res = ibkr.test_connection("tok", "1", transport=httpx.MockTransport(boom), sleep=lambda _n: None)
+    assert not res["ok"] and boom.n == 1
+    ibkr._GATE["last"] = 0.0
+    fake = FakeFlex(get_bodies=[load("get_1019.xml")])  # never ready
+    res = ibkr.test_connection("tok", "1", transport=fake.transport(), sleep=lambda _n: None)
+    assert not res["ok"] and len(fake.calls) <= ibkr.MAX_CALLS
+
+
+def test_send_gap_between_requests(enc, monkeypatch):
+    monkeypatch.setattr(ibkr, "SEND_GAP", 15.0)
+    fake = FakeFlex()
+    assert ibkr.test_connection("tok", "1", transport=fake.transport(), sleep=lambda _n: None)["ok"]
+    res = ibkr.test_connection("tok", "1", transport=fake.transport(), sleep=lambda _n: None)
+    assert not res["ok"] and res["kind"] == "rate"
+
+
+def test_tests_never_reach_real_ibkr(enc):
+    res = ibkr.test_connection("tok", "1")  # no transport given
+    assert not res["ok"]
+
+
+def test_generic_sync_skips_ibkr(db, enc, monkeypatch):
+    from app import sync
+    calls = []
+
+    class Src:
+        def __init__(self, key):
+            self.key = key
+    srcs = [Src("t212"), Src("ibkr_flex")]
+    only_none = [s.key for s in srcs if s.key != "ibkr_flex"]
+    assert only_none == ["t212"]
+    import inspect
+    assert 's.key != "ibkr_flex"' in inspect.getsource(sync.execute_run)

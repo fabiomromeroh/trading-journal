@@ -146,6 +146,8 @@ def execute_run(run_id: int, sources=None, send_reminders: bool = False, only: s
         sources = sources if sources is not None else all_sources()
         if only:  # per-broker "Sync now"
             sources = [s for s in sources if s.key in only]
+        else:  # IBKR Flex is rate-limited (IP blocks): only its own Sync buttons call it
+            sources = [s for s in sources if s.key != "ibkr_flex"]
         statuses, errors, used, touched = [], [], [], set()
         before = _trade_snapshot(db)
         for src in sources:

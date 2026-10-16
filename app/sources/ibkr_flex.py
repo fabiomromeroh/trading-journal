@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import threading
 import time as _time
 import xml.etree.ElementTree as ET
 from collections import Counter
@@ -46,7 +48,28 @@ TRADE_LOD = {"", "EXECUTION"}
 CASH_LOD = {"", "DETAIL"}
 POS_LOD = {"", "SUMMARY"}
 CA_LOD = {"", "DETAIL", "SUMMARY"}
-RETRY_1019 = 6
+RETRY_1019 = 3                    # GetStatement polls per fetch (5 s apart)
+POLL_GAP = 5.0
+MAX_CALLS = 5                     # hard cap on HTTP requests per FlexClient (one fetch = 1 send + <=3 polls)
+SEND_GAP = 15.0                   # minimum seconds between SendRequest calls (IBKR: 1/s, 10/min)
+COOLDOWN = 15 * 60                # pause all IBKR calls after a 1018 / 429 / 403 answer
+_GATE = {"last": 0.0, "until": 0.0}
+_GATE_LOCK = threading.Lock()
+
+
+def cooldown_left() -> float:
+    return max(0.0, _GATE["until"] - _time.monotonic())
+
+
+def _trip(seconds: float = COOLDOWN) -> None:
+    with _GATE_LOCK:
+        _GATE["until"] = max(_GATE["until"], _time.monotonic() + seconds)
+
+
+class _NoNetwork(httpx.BaseTransport):
+    """Used under pytest when no fake transport is given: the real IBKR host is never called from tests."""
+    def handle_request(self, request):
+        raise httpx.ConnectError(f"test tried to reach {request.url.host}; pass a MockTransport", request=request)
 HOW_TO = (
     "Client Portal → Performance & Reports → Flex Queries → Activity Flex Query (create): "
     "sections Trades (Executions level; fields incl. TradeID, Date/Time, Symbol, Underlying Symbol, "
@@ -173,9 +196,10 @@ class FlexClient:
                  sleep=_time.sleep, timeout: float = 30):
         self.token = token
         self.sleep = sleep
+        self.calls = 0
         self.http = httpx.Client(
             timeout=httpx.Timeout(timeout),
-            transport=transport or _TRANSPORT,
+            transport=transport or _TRANSPORT or (_NoNetwork() if os.environ.get("PYTEST_CURRENT_TEST") else None),
             headers={"User-Agent": "trading-journal/1.0", "Accept": "application/xml"},
         )
 
@@ -189,32 +213,41 @@ class FlexClient:
         self.close()
 
     def _get(self, url: str, extra: dict) -> str:
+        """One HTTP request, no automatic retries (IBKR blocks IPs that hammer the Flex service)."""
+        left = cooldown_left()
+        if left > 0:
+            raise FlexError("rate", f"IBKR calls are paused for {int(left // 60) + 1} more minute(s) after a rate-limit answer. "
+                                    "Try again later.", "1018")
+        if self.calls >= MAX_CALLS:
+            raise FlexError("temporary", "IBKR is still generating the statement. Wait a few minutes and press Sync again.", "1019")
+        self.calls += 1
         params = {"t": self.token, "v": "3", **extra}
-        last: Exception | None = None
-        for attempt in range(4):
-            try:
-                resp = self.http.get(url, params=params)
-            except httpx.HTTPError as exc:
-                last = exc
-                self.sleep(2 ** attempt)
-                continue
-            sc = resp.status_code
-            if sc in (408, 500, 502, 503, 504):
-                last = FlexError("temporary", f"Interactive Brokers is temporarily unavailable ({sc}). Try again in a few minutes.")
-                self.sleep(2 ** attempt)
-                continue
-            if sc == 401:
-                raise FlexError("auth", "IBKR rejected the Flex token (401). Generate a new token in Client Portal.", "401")
-            if sc >= 400:
-                raise FlexError("api", f"IBKR Flex HTTP {sc}.", str(sc))
-            return resp.text or ""
-        if isinstance(last, FlexError):
-            raise last
-        raise FlexError("network", "Could not reach Interactive Brokers (network error).") from last
+        try:
+            resp = self.http.get(url, params=params)
+        except httpx.HTTPError as exc:
+            raise FlexError("network", "Could not reach Interactive Brokers (network error). Try again later.") from exc
+        sc = resp.status_code
+        if sc in (403, 429):
+            _trip()
+            raise FlexError("rate", f"IBKR refused the request (HTTP {sc}); pausing IBKR calls for 15 minutes.", str(sc))
+        if sc in (408, 500, 502, 503, 504):
+            raise FlexError("temporary", f"Interactive Brokers is temporarily unavailable ({sc}). Try again in a few minutes.")
+        if sc == 401:
+            raise FlexError("auth", "IBKR rejected the Flex token (401). Generate a new token in Client Portal.", "401")
+        if sc >= 400:
+            raise FlexError("api", f"IBKR Flex HTTP {sc}.", str(sc))
+        return resp.text or ""
 
     def send_request(self, query_id: str) -> tuple[str, str]:
+        with _GATE_LOCK:
+            wait = SEND_GAP - (_time.monotonic() - _GATE["last"])
+            if _GATE["last"] and wait > 0:
+                raise FlexError("rate", f"Please wait {int(wait) + 1} s before the next IBKR request.", "1018")
+            _GATE["last"] = _time.monotonic()
         xml = self._get(SEND_URL, {"q": str(query_id)})
         status, code, message, ref, url = parse_flex_response(xml, self.token)
+        if code == "1018":
+            _trip()
         if code == "1019":
             raise FlexError("temporary", _error_text(code, message), code)
         if (status or "").lower() != "success" or not ref:
@@ -231,8 +264,11 @@ class FlexClient:
             status, code, message, _ref, _url = parse_flex_response(xml, self.token)
             if code == "1019":
                 last = FlexError("temporary", _error_text(code, message), code)
-                self.sleep(2)
+                if attempt + 1 < RETRY_1019:
+                    self.sleep(POLL_GAP)
                 continue
+            if code == "1018":
+                _trip()
             raise FlexError(_kind_for_code(code), _error_text(code, message), code)
         raise last or FlexError("temporary", _error_text("1019", None), "1019")
 

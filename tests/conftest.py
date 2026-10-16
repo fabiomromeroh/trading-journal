@@ -37,3 +37,12 @@ def db(tmp_path):
 @pytest.fixture()
 def fixture_text():
     return lambda name: (FIX / name).read_text()
+
+
+@pytest.fixture(autouse=True)
+def _ibkr_gate_reset():
+    """IBKR rate gate is process-wide; every test starts with it open."""
+    from app.sources import ibkr_flex
+    ibkr_flex._GATE.update(last=0.0, until=0.0)
+    yield
+    ibkr_flex._GATE.update(last=0.0, until=0.0)
