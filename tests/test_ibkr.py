@@ -767,3 +767,182 @@ def test_ibkr_card_and_account_sync_are_the_only_callers(db, enc, monkeypatch):
     card = c.post("/settings/brokers/ibkr/sync")
     assert card.status_code == 200 and seen["only"] == {"ibkr_flex"} and seen["account_id"] is None
     assert "window 1 of 5 done" in card.text
+
+
+def _flex_fail(code: str, message: str) -> str:
+    return (f"<FlexStatementResponse><Status>Fail</Status><ErrorCode>{code}</ErrorCode>"
+            f"<ErrorMessage>{message}</ErrorMessage></FlexStatementResponse>")
+
+
+# Official table: https://www.interactivebrokers.com/docs/web-api/flex-web-service/error-codes.md
+# 1003 is "statement not available" (not a bad token). 1099 stands in for any other code.
+FLEX_CODES = [
+    ("1001", "temporary", "Statement could not be generated at this time. Please try again shortly."),
+    ("1003", "unavailable", "Statement is not available."),
+    ("1004", "temporary", "Statement is incomplete. Please try again shortly."),
+    ("1005", "temporary", "Settlement data is not ready."),
+    ("1006", "temporary", "FIFO P/L data is not ready."),
+    ("1007", "temporary", "MTM P/L data is not ready."),
+    ("1008", "temporary", "MTM and FIFO P/L data is not ready."),
+    ("1009", "temporary", "The server is under heavy load."),
+    ("1010", "query", "Legacy Flex queries are not supported."),
+    ("1011", "auth", "Service account is inactive."),
+    ("1012", "auth", "Token has expired."),
+    ("1013", "ip", "IP restriction."),
+    ("1014", "query", "Query is invalid."),
+    ("1015", "auth", "Token is invalid."),
+    ("1016", "query", "Account is invalid."),
+    ("1017", "api", "Reference code is invalid."),
+    ("1018", "rate", "Too many requests have been made from this token."),
+    ("1019", "temporary", "Statement generation in progress. Please try again shortly."),
+    ("1020", "api", "Invalid request or unable to validate."),
+    ("1021", "temporary", "Statement could not be retrieved. Please try again shortly."),
+    ("1099", "api", "Query failed."),
+]
+
+
+@pytest.mark.parametrize("code,kind,message", FLEX_CODES)
+def test_flex_error_code_maps_to_kind_and_message(enc, code, kind, message):
+    """Each Flex code uses IBKR's kind. One SendRequest, no retry, no token in the text."""
+    assert ibkr._kind_for_code(code) == kind
+    fake = FakeFlex(send_xml=_flex_fail(code, message))
+    res = ibkr.test_connection(TOKEN, QUERY_ID, transport=fake.transport(), sleep=nop_sleep)
+    expected = f"IBKR error {code}: {message}"
+    if code == "1013":
+        expected += (" The token has an IP restriction; remove it in Client Portal → Flex Web Service, "
+                     "or allow Render's outbound IPs.")
+    assert res["kind"] == kind
+    assert res["error"] == expected
+    assert TOKEN not in (res["error"] or "")
+    assert len(fake.calls) == 1  # no automatic retry
+    if code == "1003":
+        assert res["error"] == "IBKR error 1003: Statement is not available."
+        assert "rejected the Flex token" not in res["error"]
+    if code == "1015":
+        assert res["kind"] == "auth"
+    if code == "1018":
+        assert ibkr.cooldown_left() > 60
+    else:
+        assert ibkr.cooldown_left() == 0
+
+
+def test_get_statement_1004_is_temporary_and_not_retried(enc):
+    fake = FakeFlex(get_bodies=[_flex_fail("1004", "Statement is incomplete. Please try again shortly.")])
+    cl = ibkr.FlexClient(TOKEN, transport=fake.transport(), sleep=nop_sleep)
+    with pytest.raises(ibkr.FlexError) as ei:
+        cl.fetch(QUERY_ID)
+    cl.close()
+    assert ei.value.kind == "temporary" and ei.value.code == "1004"
+    assert str(ei.value) == "IBKR error 1004: Statement is incomplete. Please try again shortly."
+    assert TOKEN not in str(ei.value)
+    gets = [c for c in fake.calls if "GetStatement" in c.url.path]
+    assert len(gets) == 1 and len(fake.calls) == 2  # send + one get, not the 1019 poll loop
+
+
+def test_flex_error_log_has_code_not_token_or_url(enc, caplog):
+    caplog.set_level(logging.DEBUG)
+    leaked = (f"Token is invalid. {TOKEN} "
+              f"https://ndcdyn.interactivebrokers.com/x?t={TOKEN}&amp;q=1")
+    fake = FakeFlex(send_xml=_flex_fail("1015", leaked))
+    res = ibkr.test_connection(TOKEN, QUERY_ID, transport=fake.transport(), sleep=nop_sleep)
+    assert res["kind"] == "auth"
+    assert res["error"].startswith("IBKR error 1015:")
+    assert "Token is invalid" in res["error"]
+    assert TOKEN not in res["error"]
+    assert TOKEN not in caplog.text
+    assert "t=" not in caplog.text
+    assert "ndcdyn" not in caplog.text
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any(r.message.startswith("IBKR Flex error 1015:") for r in warnings)
+
+
+def test_1003_window_is_skipped_and_next_window_imports(db, enc, monkeypatch, caplog):
+    """1003 on window 1 is an empty statement. Window 2 still imports. Cursor moves on."""
+    caplog.set_level(logging.DEBUG)
+    _freeze(monkeypatch)
+    _no_fx(monkeypatch)
+    sleeps: list[float] = []
+    fail = _flex_fail("1003", f"Statement is not available. {TOKEN}")
+    fake = ScriptedFlex(TINY, send_bodies=[fail])
+    ibkr.save_credentials(db, TOKEN, QUERY_ID, "USD")
+    ibkr.save_history_start(db, date(2025, 1, 1))
+    from app.services import set_state
+    set_state(db, ibkr.FULL_STATE, "1")
+    db.commit()
+    src = ibkr.IbkrFlexSource(transport=fake.transport(), sleep=sleeps.append, split_fetch=lambda *a: [])
+    res = src.sync(db, SyncContext())
+    note = "no statement for 20250101\u201320251231 (IBKR 1003)"
+    hist = ibkr.load_history(db)
+    assert fake.sent == [("20250101", "20251231"), ("20260101", "20261016")]
+    assert fake.n_get == 1  # the 1003 window never fetched a statement
+    assert sleeps == [ibkr.history_gap(1)]
+    assert note in hist.get("notes", [])
+    assert note in ibkr.progress_line(hist)
+    assert note in res.message
+    assert hist["status"] == "done" and hist["done_windows"] == 2
+    assert hist["last_synced"] == TODAY.isoformat()
+    assert db.query(Execution).filter(Execution.symbol == "AAPL").count() == 1
+    assert TOKEN not in json.dumps(hist) and TOKEN not in res.message and TOKEN not in caplog.text
+    assert "t=" not in caplog.text and "ndcdyn" not in caplog.text
+    assert any("1003" in r.message for r in caplog.records if r.levelno >= logging.WARNING)
+    assert ibkr.cooldown_left() == 0
+
+
+def test_1004_stops_job_and_keeps_cursor(db, enc, monkeypatch, caplog):
+    caplog.set_level(logging.DEBUG)
+    _freeze(monkeypatch)
+    _no_fx(monkeypatch)
+    fake = ScriptedFlex(TINY, send_bodies=[_flex_fail(
+        "1004", f"Statement is incomplete. {TOKEN} Please try again shortly.")])
+    ibkr.save_credentials(db, TOKEN, QUERY_ID, "USD")
+    ibkr.save_history_start(db, date(2025, 1, 1))
+    from app.services import set_state
+    set_state(db, ibkr.FULL_STATE, "1")
+    db.commit()
+    src = ibkr.IbkrFlexSource(transport=fake.transport(), sleep=nop_sleep, split_fetch=lambda *a: [])
+    with pytest.raises(RuntimeError) as ei:
+        src.sync(db, SyncContext())
+    msg = str(ei.value)
+    assert msg == "IBKR error 1004: Statement is incomplete. [redacted] Please try again shortly."
+    assert TOKEN not in msg and "rejected the Flex token" not in msg
+    hist = ibkr.load_history(db)
+    assert hist["status"] == "error" and hist["done_windows"] == 0
+    assert hist["next_fd"] == "2025-01-01"
+    assert not hist.get("paused_until")
+    assert ibkr.cooldown_left() == 0
+    assert fake.sent == [("20250101", "20251231")] and fake.n_get == 0
+    assert TOKEN not in json.dumps(hist) and TOKEN not in caplog.text
+    st = ibkr.last_status(db)
+    assert st["error_kind"] == "temporary" and "1004" in st["error"] and TOKEN not in json.dumps(st)
+    ibkr._GATE.update(last=0.0, until=0.0)
+    src.sync(db, SyncContext())
+    assert fake.sent[1] == ("20250101", "20251231")  # retried the same window; the cursor stayed
+
+
+def test_save_credentials_strips_whitespace_and_newlines(db, enc, monkeypatch):
+    ibkr.save_credentials(db, f"  {TOKEN[:8]}\n{TOKEN[8:]}\r\n", f"{QUERY_ID[:2]} {QUERY_ID[2:]}\n", " usd ")
+    db.commit()
+    loaded = ibkr.load_credentials(db)
+    assert loaded == {"token": TOKEN, "query_id": QUERY_ID, "currency": "USD"}
+    seen: list[httpx.Request] = []
+    base = FakeFlex()
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(req)
+        return base.handler(req)
+
+    monkeypatch.setattr(ibkr, "_TRANSPORT", httpx.MockTransport(handler))
+    c = _client()
+    pasted_token = "\n" + TOKEN[:6] + " \r\n" + TOKEN[6:] + "\n"
+    pasted_query = "\t" + QUERY_ID[:3] + "\n" + QUERY_ID[3:] + " "
+    r = c.post("/settings/brokers/ibkr/connect",
+               data={"token": pasted_token, "query_id": pasted_query, "currency": "USD"},
+               follow_redirects=True)
+    assert "Interactive Brokers connected" in r.text and TOKEN not in r.text
+    db.rollback()
+    creds = ibkr.load_credentials(db)
+    assert creds["token"] == TOKEN and creds["query_id"] == QUERY_ID
+    sends = [req for req in seen if "SendRequest" in req.url.path]
+    assert sends and sends[0].url.params.get("t") == TOKEN
+    assert sends[0].url.params.get("q") == QUERY_ID
+    assert TOKEN not in r.text

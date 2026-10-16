@@ -110,7 +110,7 @@ LISTING_TO_EXCHANGE = {
 
 
 class FlexError(Exception):
-    """kind: auth | query | rate | temporary | network | api"""
+    """kind: auth | query | ip | rate | temporary | unavailable | network | api"""
 
     def __init__(self, kind: str, message: str, code: str | None = None):
         super().__init__(message)
@@ -130,9 +130,14 @@ def redact(text: str, token: str | None = None) -> str:
     return _SECRET_RE.sub(r"\1[redacted]", s)
 
 
+def _compact(value) -> str:
+    """Drop whitespace and newlines from a pasted Flex token or query id."""
+    return re.sub(r"\s+", "", "" if value is None else str(value))
+
+
 def save_credentials(db: Session, token: str, query_id: str, currency: str = "USD") -> None:
     payload = json.dumps({
-        "token": token.strip(), "query_id": str(query_id).strip(),
+        "token": _compact(token), "query_id": _compact(query_id),
         "currency": ((currency or "USD").strip().upper() or "USD")[:3],
     })
     set_state(db, CRED_STATE, _enc().encrypt(payload))
@@ -147,8 +152,12 @@ def load_credentials(db: Session) -> dict | None:
         data = json.loads(_enc().decrypt(raw))
     except Exception:  # noqa: BLE001 - key changed / corrupt: behave as not configured
         return None
-    if not data.get("token") or not data.get("query_id"):
+    token = _compact(data.get("token"))
+    query_id = _compact(data.get("query_id"))
+    if not token or not query_id:
         return None
+    data["token"] = token
+    data["query_id"] = query_id
     return data
 
 
@@ -272,6 +281,15 @@ def save_account_map(db: Session, data: dict) -> None:
     set_state(db, ACCOUNT_MAP_STATE, json.dumps({str(k): int(v) for k, v in data.items() if str(k) and v}))
 
 
+def _history_notes(h: dict | None) -> list[str]:
+    raw = (h or {}).get("notes") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    return [str(n) for n in raw if n]
+
+
 def progress_line(h: dict | None) -> str:
     """e.g. 'window 3 of 5 done, next 2024-01-01…'."""
     if not h or not h.get("total_windows"):
@@ -282,15 +300,21 @@ def progress_line(h: dict | None) -> str:
     status = h.get("status") or ""
     base = f"window {done} of {total} done"
     if status == "done":
-        return base + (f" through {h['last_synced']}" if h.get("last_synced") else "")
-    nxt_bit = f", next {nxt}…" if nxt else ""
-    if status == "paused":
-        until = f" Paused until {h['paused_until']}." if h.get("paused_until") else ""
-        err = h.get("error") or "paused"
-        return f"{base}{nxt_bit}{until} {err}".strip()
-    if status == "error":
-        return f"{base}{nxt_bit} {h.get('error') or 'failed'}".strip()
-    return f"{base}{nxt_bit}"
+        line = base + (f" through {h['last_synced']}" if h.get("last_synced") else "")
+    else:
+        nxt_bit = f", next {nxt}…" if nxt else ""
+        if status == "paused":
+            until = f" Paused until {h['paused_until']}." if h.get("paused_until") else ""
+            err = h.get("error") or "paused"
+            line = f"{base}{nxt_bit}{until} {err}".strip()
+        elif status == "error":
+            line = f"{base}{nxt_bit} {h.get('error') or 'failed'}".strip()
+        else:
+            line = f"{base}{nxt_bit}"
+    notes = _history_notes(h)
+    if notes:
+        line = f"{line} {'; '.join(notes)}".strip()
+    return line
 
 
 def _paused_until_text() -> str:
@@ -312,42 +336,98 @@ def _is_hard_pause(exc: BaseException) -> bool:
 
 
 # ------------------------------------------------------------------ HTTP
+# Official Flex Web Service codes:
+# https://www.interactivebrokers.com/docs/web-api/flex-web-service/error-codes.md
+# 1003 is not an auth failure. On a dated window it means that window has no statement.
+_AUTH_CODES = {"1011", "1012", "1015"}
+_QUERY_CODES = {"1010", "1014", "1016"}
+_TEMPORARY_CODES = {"1001", "1004", "1005", "1006", "1007", "1008", "1009", "1019", "1021"}
+_FALLBACK_MSG = {
+    "1001": "Statement could not be generated at this time. Please try again shortly",
+    "1003": "Statement is not available",
+    "1004": "Statement is incomplete. Please try again shortly",
+    "1005": "Settlement data is not ready",
+    "1006": "FIFO P/L data is not ready",
+    "1007": "MTM P/L data is not ready",
+    "1008": "MTM and FIFO P/L data is not ready",
+    "1009": "The server is under heavy load",
+    "1010": "Legacy Flex queries are not supported",
+    "1011": "Service account is inactive",
+    "1012": "Token has expired",
+    "1013": "IP restriction",
+    "1014": "Query is invalid",
+    "1015": "Token is invalid",
+    "1016": "Account is invalid",
+    "1017": "Reference code is invalid",
+    "1018": "Too many requests have been made from this token",
+    "1019": "Statement generation is in progress. Please try again shortly",
+    "1020": "Invalid request or unable to validate",
+    "1021": "Statement could not be retrieved. Please try again shortly",
+}
+_IP_HINT = ("The token has an IP restriction; remove it in Client Portal → Flex Web Service, "
+            "or allow Render's outbound IPs.")
+
+
 def _kind_for_code(code: str | None) -> str:
     c = (code or "").strip()
-    if c in {"1003", "1004", "1012"}:
+    if c == "1003":
+        return "unavailable"
+    if c in _AUTH_CODES:
         return "auth"
-    if c in {"1005", "1014", "1015", "1016"}:
+    if c in _QUERY_CODES:
         return "query"
-    if c in {"1018"}:
+    if c == "1013":
+        return "ip"
+    if c == "1018":
         return "rate"
-    if c in {"1019", "1001"}:
+    if c in _TEMPORARY_CODES:
         return "temporary"
-    if c in {"1020"}:
-        return "auth"
-    return "api"
+    return "api"  # 1017, 1020, and anything else IBKR adds
 
 
-def _error_text(code: str | None, message: str | None) -> str:
-    msg = (message or "").strip() or "Flex Web Service error"
-    if code == "1019":
-        return "IBKR is still generating the Flex statement (error 1019). Wait a minute and press Sync again."
-    if code == "1018":
-        return "IBKR Flex rate limit (error 1018: 1 request/s, 10/min). Wait a minute and try again."
-    if code == "1003" or code == "1004":
-        return "IBKR rejected the Flex token (expired or invalid). Generate a new token in Client Portal → Flex Web Service."
-    if code == "1020":
-        return "IBKR refused this IP for the Flex token. Remove the IP restriction on the token, or add Render's current IP."
-    if code in {"1005", "1014", "1015"}:
-        return f"IBKR Flex query id was rejected (error {code}). Check the Query ID in Client Portal → Flex Queries."
-    if code:
-        return f"IBKR Flex error {code}: {msg}"
-    return f"IBKR Flex error: {msg}"
+def _error_text(code: str | None, message: str | None, token: str | None = None) -> str:
+    """User-facing text. Always the IBKR code plus ErrorMessage. Never the token."""
+    c = (code or "").strip()
+    msg = redact((message or "").strip(), token)
+    if not msg:
+        msg = _FALLBACK_MSG.get(c, "Flex Web Service error")
+    if msg[-1] not in ".!?":
+        msg += "."
+    text = f"IBKR error {c}: {msg}" if c else f"IBKR error: {msg}"
+    if c == "1013":
+        text += " " + _IP_HINT
+    return text
+
+
+def _note_code(code: str | None, message: str | None, token: str | None = None) -> None:
+    """Log the Flex code at WARNING. The token and any t= URL stay out of the log."""
+    c = (code or "").strip()
+    safe = redact((message or "").strip(), token)
+    if token:
+        safe = safe.replace(token, "[redacted]")
+    safe = _SECRET_RE.sub(r"\1[redacted]", safe)
+    if re.search(r"https?://", safe):
+        safe = re.sub(r"https?://\S+", "[url]", safe)
+    if not c and not safe:
+        return
+    if c:
+        log.warning("IBKR Flex error %s: %s", c, safe)
+    else:
+        log.warning("IBKR Flex error: %s", safe)
+
+
+def _response_error(code: str | None, message: str | None, token: str | None = None) -> FlexError:
+    c = (code or "").strip() or None
+    _note_code(c, message, token)
+    if c == "1018":
+        _trip()
+    return FlexError(_kind_for_code(c), _error_text(c, message, token), c)
 
 
 class FlexClient:
     def __init__(self, token: str, transport: httpx.BaseTransport | None = None,
                  sleep=_time.sleep, timeout: float = 30):
-        self.token = token
+        self.token = _compact(token)
         self.sleep = sleep
         self.calls = 0
         self.http = httpx.Client(
@@ -372,7 +452,7 @@ class FlexClient:
             raise FlexError("rate", f"IBKR calls are paused for {int(left // 60) + 1} more minute(s) after a rate-limit answer. "
                                     "Try again later.", "1018")
         if self.calls >= MAX_CALLS:
-            raise FlexError("temporary", "IBKR is still generating the statement. Wait a few minutes and press Sync again.", "1019")
+            raise FlexError("temporary", _error_text("1019", None), "1019")
         self.calls += 1
         params = {"t": self.token, "v": "3", **extra}
         try:
@@ -398,7 +478,7 @@ class FlexClient:
             if _GATE["last"] and wait > 0:
                 raise FlexError("rate", f"Please wait {int(wait) + 1} s before the next IBKR request.", "1018")
             _GATE["last"] = _time.monotonic()
-        extra = {"q": str(query_id)}
+        extra = {"q": _compact(query_id)}
         if fd or td:
             if not fd or not td:
                 raise FlexError("api", "Flex date window needs both fd and td (yyyyMMdd).")
@@ -406,12 +486,9 @@ class FlexClient:
             extra["td"] = td
         xml = self._get(SEND_URL, extra)
         status, code, message, ref, url = parse_flex_response(xml, self.token)
-        if code == "1018":
-            _trip()
-        if code == "1019":
-            raise FlexError("temporary", _error_text(code, message), code)
-        if (status or "").lower() != "success" or not ref:
-            raise FlexError(_kind_for_code(code), _error_text(code, message), code)
+        # 1019 on SendRequest has no statement yet. GetStatement is where the bounded polls live.
+        if code == "1019" or (status or "").lower() != "success" or not ref:
+            raise _response_error(code, message, self.token)
         return ref, url or DEFAULT_GET_URL
 
     def get_statement(self, reference: str, url: str) -> str:
@@ -423,13 +500,11 @@ class FlexClient:
                 return xml
             status, code, message, _ref, _url = parse_flex_response(xml, self.token)
             if code == "1019":
-                last = FlexError("temporary", _error_text(code, message), code)
+                last = _response_error(code, message, self.token)
                 if attempt + 1 < RETRY_1019:
                     self.sleep(POLL_GAP)
                 continue
-            if code == "1018":
-                _trip()
-            raise FlexError(_kind_for_code(code), _error_text(code, message), code)
+            raise _response_error(code, message, self.token)
         raise last or FlexError("temporary", _error_text("1019", None), "1019")
 
     def fetch(self, query_id: str, fd: str | None = None, td: str | None = None) -> str:
@@ -1132,7 +1207,7 @@ def card(db: Session):
         return BrokerCard("ibkr", "Interactive Brokers", "Flex Web Service (token + query id)", "USD",
                           "not_connected", "Paste a Flex token and Query ID to sync executions.", form=form)
     state, detail = "connected", "Flex token saved."
-    if st.get("error_kind") in ("auth", "query"):
+    if st.get("error_kind") in ("auth", "query", "ip"):
         state, detail = "needs_login", st.get("error") or "Token or query rejected."
     elif st.get("accounts"):
         detail += f" {len(st['accounts'])} accounts · {st.get('currency') or creds.get('currency') or 'USD'}."
@@ -1181,7 +1256,7 @@ class IbkrFlexSource(DataSource):
         if not creds:
             return SourceStatus(False, False, "Not connected: add the Flex token and Query ID in Settings → Brokers.")
         st = last_status(db)
-        if st.get("error_kind") in ("auth", "query"):
+        if st.get("error_kind") in ("auth", "query", "ip"):
             return SourceStatus(True, False, st.get("error") or "Token or query rejected.", "error",
                                 banner={"level": "error", "text": "Interactive Brokers: " + (st.get("error") or "token rejected"),
                                         "link": "/settings#brokers", "link_text": "Fix token"})
@@ -1313,6 +1388,7 @@ class IbkrFlexSource(DataSource):
             "last_synced": prev.get("last_synced"),
             "mode": mode,
             "end": today.isoformat(),
+            "notes": _history_notes(prev) if resuming else [],
         }
         return windows, hist, mode
 
@@ -1381,7 +1457,8 @@ class IbkrFlexSource(DataSource):
         start date. Sync new walks from the last synced date minus a few days. A paused or
         failed job resumes from the last completed window instead of starting over. One
         query fetch per window is shared by every account; a per-account sync keeps only
-        that account's statement.
+        that account's statement. Error 1003 on a window means IBKR has no statement for
+        that range: the window is recorded and the job continues. Other errors stop the job.
         """
         res = SourceResult()
         creds = load_credentials(db)
@@ -1430,7 +1507,29 @@ class IbkrFlexSource(DataSource):
                                         "more minute(s) after a rate-limit answer.", "1018")
                     cl = FlexClient(token, transport=self._transport, sleep=self._sleep)
                     try:
-                        xml = cl.fetch(qid, fd=_ymd(fd), td=_ymd(td))
+                        try:
+                            xml = cl.fetch(qid, fd=_ymd(fd), td=_ymd(td))
+                        except FlexError as exc:
+                            # 1003 on a dated window: IBKR has no statement for that range.
+                            # Record it and move on. Do not invent fills.
+                            if (exc.code or "") != "1003":
+                                raise
+                            prev_calls = cl.calls
+                            note = f"no statement for {_ymd(fd)}\u2013{_ymd(td)} (IBKR 1003)"
+                            notes = _history_notes(hist)
+                            if note not in notes:
+                                notes.append(note)
+                            hist["notes"] = notes
+                            hist["done_windows"] = int(hist.get("done_windows") or 0) + 1
+                            hist["last_synced"] = td.isoformat()
+                            nxt = td + timedelta(days=1)
+                            hist["next_fd"] = nxt.isoformat()
+                            hist["error"] = None
+                            hist["paused_until"] = None
+                            hist["status"] = "done" if nxt > today else "running"
+                            self._publish(db, ctx, hist)
+                            ctx.info(note)
+                            continue
                         prev_calls = cl.calls
                     finally:
                         cl.close()

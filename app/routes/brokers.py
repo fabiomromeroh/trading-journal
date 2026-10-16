@@ -127,8 +127,8 @@ def ibkr_connect(request: Request, token: str = Form(""), query_id: str = Form("
     if not get_settings().token_encryption_key:
         return _flash(request, "Set TOKEN_ENCRYPTION_KEY on the server first: the Flex token is stored encrypted with it.")
     existing = ibkr.load_credentials(db)
-    tok = token.strip() or ((existing or {}).get("token") or "")
-    qid = query_id.strip() or ((existing or {}).get("query_id") or "")
+    tok = ibkr._compact(token) or ibkr._compact((existing or {}).get("token") or "")
+    qid = ibkr._compact(query_id) or ibkr._compact((existing or {}).get("query_id") or "")
     ccy = (currency.strip().upper() or ((existing or {}).get("currency") or "USD"))[:3]
     if not tok or not qid:
         return _flash(request, "Paste both the Flex token and the Flex Query ID.")
