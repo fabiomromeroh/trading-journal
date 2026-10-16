@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FlexQueryResponse queryName="AllFields" type="AF" extraQueryAttr="ignored">
+  <FlexStatements count="3">
+    <FlexStatement accountId="U1111111" fromDate="20220101" toDate="20261016" period="Last365CalendarDays" whenGenerated="20261016;120000" unknownStmt="x">
+      <AccountInformation accountId="U1111111" currency="USD" accountType="Individual" alias="personal" name="Primary" />
+      <Trades>
+        <Trade accountId="U1111111" currency="USD" fxRateToBase="1" assetCategory="STK" symbol="AAPL" description="APPLE INC" conid="265598" isin="US0378331005" listingExchange="NASDAQ" tradeID="9001" dateTime="20260902;143100" settleDateTarget="20260904" quantity="10" tradePrice="150" ibCommission="-1.00" taxes="0" buySell="BUY" openCloseIndicator="O" levelOfDetail="EXECUTION" multiplier="1" orderID="999" extraTradeAttr="keep-going" />
+      </Trades>
+      <CashTransactions>
+        <CashTransaction accountId="U1111111" currency="USD" fxRateToBase="1" symbol="AAPL" conid="265598" description="AAPL CASH DIVIDEND" dateTime="20260915;202000" amount="5.00" type="Dividends" transactionID="D1" extraCash="1" />
+        <CashTransaction accountId="U1111111" currency="USD" fxRateToBase="1" symbol="" description="WIRE IN" dateTime="20260901;090000" amount="500" type="Deposits/Withdrawals" transactionID="C10" />
+      </CashTransactions>
+      <OpenPositions>
+        <OpenPosition accountId="U1111111" currency="USD" assetCategory="STK" symbol="AAPL" conid="265598" position="10" markPrice="160" levelOfDetail="SUMMARY" extraPos="1" />
+        <OpenPosition accountId="U1111111" currency="USD" assetCategory="STK" symbol="AAPL" conid="265598" position="10" markPrice="160" levelOfDetail="LOT" />
+        <OpenPosition accountId="U1111111" currency="USD" assetCategory="STK" symbol="ORCL" conid="272800" position="4" markPrice="120" levelOfDetail="SUMMARY" />
+        <OpenPosition accountId="U1111111" currency="USD" assetCategory="OPT" symbol="AAPL  260117C00150000" position="1" levelOfDetail="SUMMARY" />
+      </OpenPositions>
+      <CorporateActions>
+        <CorporateAction accountId="U1111111" currency="USD" assetCategory="STK" symbol="IBM" description="IBM(US4592001014) SPLIT 2 FOR 1 (IBM, INTL BUSINESS MACHINES, US4592001014)" conid="8314" reportDate="20260901" dateTime="20260901;202000" type="FS" quantity="2" amount="0" transactionID="CA9" extraCa="1" />
+      </CorporateActions>
+      <EquitySummaryInBase>
+        <EquitySummaryByReportDateInBase accountId="U1111111" reportDate="20261014" cash="500" stock="1500" total="2000" currency="USD" />
+      </EquitySummaryInBase>
+      <Transfers>
+        <Transfer accountId="U1111111" symbol="GHOST" quantity="1" tradeID="7777" type="INTERNAL" dateTime="20260901;120000" amount="10" transactionID="T777" unknownAttr="1" />
+        <Trade accountId="U1111111" currency="USD" assetCategory="STK" symbol="GHOST" tradeID="GHOST" dateTime="20260901;120000" quantity="3" tradePrice="9" buySell="BUY" openCloseIndicator="O" levelOfDetail="EXECUTION" />
+      </Transfers>
+      <SecuritiesInfo>
+        <SecurityInfo conid="265598" symbol="AAPL" description="should not become a trade" assetCategory="STK" />
+      </SecuritiesInfo>
+      <ConversionRates>
+        <ConversionRate reportDate="20260901" fromCurrency="EUR" toCurrency="USD" rate="1.08" />
+      </ConversionRates>
+    </FlexStatement>
+    <FlexStatement accountId="U2222222" fromDate="20220101" toDate="20261016" period="Last365CalendarDays" whenGenerated="20261016;120000" baseCurrency="EUR">
+      <AccountInformation accountId="U2222222" currency="EUR" accountType="Individual" alias="europe" />
+      <Trades>
+        <Trade accountId="U2222222" currency="EUR" fxRateToBase="1" assetCategory="STK" symbol="SAP" description="SAP SE" conid="4741" isin="DE0007164600" listingExchange="IBIS" tradeID="9001" dateTime="20260918;090500" quantity="2" tradePrice="180" ibCommission="-0.50" taxes="0" buySell="BUY" openCloseIndicator="O" levelOfDetail="EXECUTION" multiplier="1" />
+      </Trades>
+      <CashTransactions>
+        <CashTransaction accountId="U2222222" currency="EUR" fxRateToBase="1" symbol="" description="EUR CREDIT INT" dateTime="20260930;202000" amount="1.50" type="Broker Interest Received" transactionID="I2" />
+      </CashTransactions>
+      <OpenPositions>
+        <OpenPosition accountId="U2222222" currency="EUR" assetCategory="STK" symbol="SAP" conid="4741" position="2" markPrice="182" levelOfDetail="SUMMARY" />
+      </OpenPositions>
+      <CorporateActions>
+        <CorporateAction accountId="U2222222" currency="EUR" assetCategory="STK" symbol="FB" description="FB(US30303M1027) CUSIP/ISIN CHANGE TO META PLATFORMS INC (META, US30303M1027)" conid="10773268" listingExchange="NASDAQ" reportDate="20220901" dateTime="20220901;202000" type="IC" quantity="0" amount="0" transactionID="CA2" />
+      </CorporateActions>
+      <EquitySummaryInBase>
+        <EquitySummaryByReportDateInBase accountId="U2222222" reportDate="20261014" cash="100" stock="400" total="500" currency="EUR" />
+      </EquitySummaryInBase>
+      <Transfers>
+        <Transfer accountId="U2222222" symbol="NOPE" amount="3" transactionID="T2" />
+      </Transfers>
+    </FlexStatement>
+    <FlexStatement accountId="U3333333" fromDate="20220101" toDate="20261016" whenGenerated="20261016;120000">
+      <Trades>
+        <Trade accountId="U3333333" currency="USD" fxRateToBase="1" assetCategory="STK" symbol="MSFT" description="MICROSOFT CORP" conid="272093" isin="US5949181045" listingExchange="NASDAQ" tradeID="9001" dateTime="20260905;100000" quantity="1" tradePrice="400" ibCommission="-0.35" taxes="0" buySell="BUY" openCloseIndicator="O" levelOfDetail="EXECUTION" multiplier="1" />
+      </Trades>
+      <CashTransactions>
+        <CashTransaction accountId="U3333333" currency="USD" fxRateToBase="1" symbol="" description="WIRE OUT" dateTime="20260920;110000" amount="-40" type="Deposits/Withdrawals" transactionID="C3" />
+      </CashTransactions>
+      <OpenPositions>
+        <OpenPosition accountId="U3333333" currency="USD" assetCategory="STK" symbol="MSFT" conid="272093" position="1" markPrice="410" levelOfDetail="SUMMARY" />
+      </OpenPositions>
+    </FlexStatement>
+  </FlexStatements>
+  <SecuritiesInfo>
+    <SecurityInfo conid="1" symbol="OUTSIDE" />
+  </SecuritiesInfo>
+  <ConversionRates>
+    <ConversionRate reportDate="20260902" fromCurrency="USD" toCurrency="EUR" rate="0.92" />
+  </ConversionRates>
+</FlexQueryResponse>

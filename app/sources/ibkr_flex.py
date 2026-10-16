@@ -1,9 +1,12 @@
 """Interactive Brokers Flex Web Service adapter (Activity Flex Query, XML).
 
 Two-step HTTPS (no gateway): SendRequest -> ReferenceCode/Url, then GetStatement.
-A Flex query covers its configured period; every sync re-fetches that window and
-dedupes on tradeID / transactionID. Never invents fills. Token is Fernet-encrypted
-in app_state (cred:ibkr; never in backups, logs, status, or HTML).
+One token and one query id cover every account in the query. Each FlexStatement
+becomes its own journal account. History is pulled in fd/td windows of at most
+365 days (both dates, never combined with period), paced so a job stays under
+IBKR's 10 requests/minute. Fills dedupe on tradeID / transactionID per account.
+Never invents fills. Token is Fernet-encrypted in app_state (cred:ibkr; never in
+backups, logs, status, or HTML).
 """
 from __future__ import annotations
 
@@ -16,7 +19,7 @@ import time as _time
 import xml.etree.ElementTree as ET
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from urllib.parse import parse_qs, urlparse, urlunparse
 from zoneinfo import ZoneInfo
 
@@ -39,7 +42,10 @@ SEND_URL = "https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebServi
 DEFAULT_GET_URL = "https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService/GetStatement"
 CRED_STATE = "cred:ibkr"          # encrypted {"token","query_id","currency"}; cred: prefix keeps it out of backups
 LAST_STATE = "ibkr:last"          # last sync / test status (no secrets)
-FULL_STATE = "ibkr:full"          # "1" → next sync notes that the Flex query period is the history window
+FULL_STATE = "ibkr:full"          # "1" → next sync is a full windowed history (unless a paused job resumes)
+HISTORY_STATE = "ibkr:history"    # {start, next_fd, done_windows, total_windows, status, paused_until, error}
+HISTORY_START_STATE = "ibkr:history_start"  # yyyy-mm-dd; Full history starts here (default 2022-01-01)
+ACCOUNT_MAP_STATE = "ibkr:accounts"  # {IBKR accountId: journal account id}; survives a rename
 SOURCE_KEY = "ibkr_flex"
 STOCK_CATS = {"STK", "ETF", "FUND"}
 OPTION_CATS = {"OPT"}
@@ -48,10 +54,15 @@ TRADE_LOD = {"", "EXECUTION"}
 CASH_LOD = {"", "DETAIL"}
 POS_LOD = {"", "SUMMARY"}
 CA_LOD = {"", "DETAIL", "SUMMARY"}
-RETRY_1019 = 3                    # GetStatement polls per fetch (5 s apart)
+RETRY_1019 = 3                    # GetStatement polls per fetch (5 s apart). No other retry loops.
 POLL_GAP = 5.0
 MAX_CALLS = 5                     # hard cap on HTTP requests per FlexClient (one fetch = 1 send + <=3 polls)
 SEND_GAP = 15.0                   # minimum seconds between SendRequest calls (IBKR: 1/s, 10/min)
+WINDOW_GAP = 30.0                 # minimum seconds between history windows (>= SEND_GAP)
+RATE_BUDGET_PER_MIN = 6           # well under IBKR's 10 requests/minute; polls count toward this
+OVERLAP_DAYS = 4                  # Sync new re-reads this many days before the last synced date
+MAX_WINDOW_DAYS = 365             # inclusive fd..td length; IBKR rejects a longer range
+DEFAULT_HISTORY_START = date(2022, 1, 1)
 COOLDOWN = 15 * 60                # pause all IBKR calls after a 1018 / 429 / 403 answer
 _GATE = {"last": 0.0, "until": 0.0}
 _GATE_LOCK = threading.Lock()
@@ -71,14 +82,16 @@ class _NoNetwork(httpx.BaseTransport):
     def handle_request(self, request):
         raise httpx.ConnectError(f"test tried to reach {request.url.host}; pass a MockTransport", request=request)
 HOW_TO = (
-    "Client Portal → Performance & Reports → Flex Queries → Activity Flex Query (create): "
-    "sections Trades (Executions level; fields incl. TradeID, Date/Time, Symbol, Underlying Symbol, "
-    "Asset Class, Buy/Sell, Quantity, TradePrice, IB Commission, Taxes, Currency, FX Rate To Base, "
-    "Open/Close Indicator, Put/Call, Strike, Expiry, Multiplier, ISIN, Conid, Listing Exchange, "
-    "Level of Detail), Cash Transactions (Transaction ID, Type, Date/Time, Amount, Currency, Symbol, "
-    "Conid, Description), Open Positions, Corporate Actions; format XML, period Last 365 days, "
-    "date format yyyyMMdd, time HHmmss with ';' separator; then Flex Web Service Configuration → "
-    "enable and generate the token; copy the Query ID."
+    "Client Portal → Performance & Reports → Flex Queries → Activity Flex Query (create). "
+    "One query may cover several accounts: each IBKR account becomes its own journal account "
+    "(named IBKR U1234567, and you can rename it). Selecting all fields in every section is fine; "
+    "extra sections are ignored. Set the query format to XML. Date format yyyyMMdd, time HHmmss "
+    "with ';' separator. Include Trades (level Executions), Cash Transactions, Open Positions and "
+    "Corporate Actions. The query period can stay Last 365 days — Full history on this card does "
+    "not use that period. It walks year-sized windows from the history start date (default "
+    "2022-01-01, editable on this card) through today. Then Flex Web Service Configuration → "
+    "enable and generate one token; copy the Query ID. That one token and Query ID sync every "
+    "account in the query."
 )
 _SECRET_RE = re.compile(r"([?&]t=)[^&\s]+", re.I)
 _TOKEN_KEYS = re.compile(r"token|secret|password|authorization", re.I)
@@ -156,6 +169,146 @@ def _save_last(db: Session, *, reset: bool = False, **kw) -> dict:
     cur.update(kw)
     set_state(db, LAST_STATE, json.dumps(cur, default=str))
     return cur
+
+
+def _today() -> date:
+    return date.today()
+
+
+def _ymd(d: date) -> str:
+    return f"{d:%Y%m%d}"
+
+
+def _parse_iso(s) -> date | None:
+    raw = ("" if s is None else str(s)).strip()
+    if not raw:
+        return None
+    try:
+        if len(raw) >= 8 and raw[:8].isdigit():
+            return datetime.strptime(raw[:8], "%Y%m%d").date()
+        return date.fromisoformat(raw[:10])
+    except ValueError:
+        return None
+
+
+def iter_windows(start: date, end: date, max_days: int = MAX_WINDOW_DAYS) -> list[tuple[date, date]]:
+    """Inclusive [fd, td] slices with no gaps and no slice longer than max_days."""
+    if end < start:
+        return []
+    span = max(1, int(max_days))
+    out: list[tuple[date, date]] = []
+    cur = start
+    while cur <= end:
+        td = min(end, cur + timedelta(days=span - 1))
+        out.append((cur, td))
+        cur = td + timedelta(days=1)
+    return out
+
+
+def history_gap(http_calls: int) -> float:
+    """Seconds to wait before the next SendRequest.
+
+    GetStatement polls are part of http_calls, so a window that polled for 1019
+    waits longer than a 2-call window. The floor is WINDOW_GAP (30s) and SEND_GAP (15s),
+    which keeps the job well under 10 requests/minute.
+    """
+    per_call = 60.0 / RATE_BUDGET_PER_MIN
+    return max(WINDOW_GAP, SEND_GAP, max(0, int(http_calls)) * per_call)
+
+
+def _send_wait() -> float:
+    last = _GATE["last"]
+    if not last:
+        return 0.0
+    return max(0.0, SEND_GAP - (_time.monotonic() - last))
+
+
+def _release_send_gate() -> None:
+    """The history job already asked sleep() for the gap. Tests record that and do not wait,
+    so the gate has to treat the gap as elapsed or the next SendRequest would raise."""
+    with _GATE_LOCK:
+        if _GATE["last"]:
+            _GATE["last"] = min(_GATE["last"], _time.monotonic() - max(SEND_GAP, 0.0))
+
+
+def load_history(db: Session) -> dict:
+    try:
+        data = json.loads(get_state(db, HISTORY_STATE) or "{}")
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_history(db: Session, data: dict) -> None:
+    set_state(db, HISTORY_STATE, json.dumps(data, default=str))
+
+
+def history_start_date(db: Session) -> date:
+    return _parse_iso(get_state(db, HISTORY_START_STATE)) or DEFAULT_HISTORY_START
+
+
+def save_history_start(db: Session, day: date) -> None:
+    set_state(db, HISTORY_START_STATE, day.isoformat())
+
+
+def parse_history_start(raw: str) -> date:
+    day = _parse_iso(raw)
+    if day is None:
+        raise ValueError("History start must be a real date (yyyy-mm-dd).")
+    if day.year < 1990 or day > _today():
+        raise ValueError("History start must be between 1990 and today.")
+    return day
+
+
+def load_account_map(db: Session) -> dict:
+    try:
+        data = json.loads(get_state(db, ACCOUNT_MAP_STATE) or "{}")
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_account_map(db: Session, data: dict) -> None:
+    set_state(db, ACCOUNT_MAP_STATE, json.dumps({str(k): int(v) for k, v in data.items() if str(k) and v}))
+
+
+def progress_line(h: dict | None) -> str:
+    """e.g. 'window 3 of 5 done, next 2024-01-01…'."""
+    if not h or not h.get("total_windows"):
+        return ""
+    done = int(h.get("done_windows") or 0)
+    total = int(h.get("total_windows") or 0)
+    nxt = h.get("next_fd") or ""
+    status = h.get("status") or ""
+    base = f"window {done} of {total} done"
+    if status == "done":
+        return base + (f" through {h['last_synced']}" if h.get("last_synced") else "")
+    nxt_bit = f", next {nxt}…" if nxt else ""
+    if status == "paused":
+        until = f" Paused until {h['paused_until']}." if h.get("paused_until") else ""
+        err = h.get("error") or "paused"
+        return f"{base}{nxt_bit}{until} {err}".strip()
+    if status == "error":
+        return f"{base}{nxt_bit} {h.get('error') or 'failed'}".strip()
+    return f"{base}{nxt_bit}"
+
+
+def _paused_until_text() -> str:
+    left = cooldown_left() or float(COOLDOWN)
+    return (datetime.now(timezone.utc) + timedelta(seconds=left)).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def _is_hard_pause(exc: BaseException) -> bool:
+    """True when IBKR (or our gate) has parked the process for the 15-minute cooldown.
+
+    A SendRequest that only lost the 15s gap raises code 1018 without tripping the gate.
+    That stops the job but does not pretend the IP is blocked.
+    """
+    if cooldown_left() > 0:
+        return True
+    if isinstance(exc, FlexError) and (exc.code or "") in {"429", "403"}:
+        return True
+    return False
 
 
 # ------------------------------------------------------------------ HTTP
@@ -238,13 +391,20 @@ class FlexClient:
             raise FlexError("api", f"IBKR Flex HTTP {sc}.", str(sc))
         return resp.text or ""
 
-    def send_request(self, query_id: str) -> tuple[str, str]:
+    def send_request(self, query_id: str, fd: str | None = None, td: str | None = None) -> tuple[str, str]:
+        """One SendRequest. fd and td (yyyyMMdd) are sent together and never with period (p)."""
         with _GATE_LOCK:
             wait = SEND_GAP - (_time.monotonic() - _GATE["last"])
             if _GATE["last"] and wait > 0:
                 raise FlexError("rate", f"Please wait {int(wait) + 1} s before the next IBKR request.", "1018")
             _GATE["last"] = _time.monotonic()
-        xml = self._get(SEND_URL, {"q": str(query_id)})
+        extra = {"q": str(query_id)}
+        if fd or td:
+            if not fd or not td:
+                raise FlexError("api", "Flex date window needs both fd and td (yyyyMMdd).")
+            extra["fd"] = fd
+            extra["td"] = td
+        xml = self._get(SEND_URL, extra)
         status, code, message, ref, url = parse_flex_response(xml, self.token)
         if code == "1018":
             _trip()
@@ -272,8 +432,8 @@ class FlexClient:
             raise FlexError(_kind_for_code(code), _error_text(code, message), code)
         raise last or FlexError("temporary", _error_text("1019", None), "1019")
 
-    def fetch(self, query_id: str) -> str:
-        ref, url = self.send_request(query_id)
+    def fetch(self, query_id: str, fd: str | None = None, td: str | None = None) -> str:
+        ref, url = self.send_request(query_id, fd=fd, td=td)
         return self.get_statement(ref, url)
 
 
@@ -434,43 +594,96 @@ class ParsedFlex:
     equity: dict | None = None
 
 
-def parse_statement(xml_text: str) -> ParsedFlex:
+def _xml_root(xml_text: str) -> ET.Element:
     try:
         root = ET.fromstring(xml_text)
     except ET.ParseError as exc:
         raise FlexError("api", "IBKR Flex statement was not valid XML.") from exc
+    for el in root.iter():
+        if isinstance(el.tag, str) and "}" in el.tag:
+            el.tag = _local(el.tag)
+    return root
+
+
+def _elems(parent: ET.Element, tag: str):
+    """Descendants with this local tag. Unknown sections are simply never asked for."""
+    want = tag.lower()
+    for el in parent.iter():
+        if el is parent:
+            continue
+        if _local(el.tag).lower() == want:
+            yield el
+
+
+def _rows_in_section(stmt: ET.Element, section: str, row_tag: str) -> list[dict]:
+    """Row elements under one known section, plus a row that is a direct child of the statement.
+
+    Walking the whole statement for the row tag would treat a <Trade> inside <Transfers>
+    (or any other select-all section) as a fill. Extra attributes on a real row are kept
+    on the dict and ignored by the field readers.
+    """
+    want_s, want_r = section.lower(), row_tag.lower()
+    rows: list[dict] = []
+    seen: set[int] = set()
+
+    def take(el: ET.Element) -> None:
+        if id(el) in seen or _local(el.tag).lower() != want_r:
+            return
+        row = fields_of(el)
+        if row:
+            seen.add(id(el))
+            rows.append(row)
+
+    for sec in stmt.iter():
+        if sec is stmt or _local(sec.tag).lower() != want_s:
+            continue
+        for el in sec.iter():
+            if el is sec or _local(el.tag).lower() == want_s:
+                continue
+            take(el)
+    for child in list(stmt):
+        take(child)
+    return rows
+
+
+def _base_currency(sf: dict, info: dict, equity: dict | None) -> str | None:
+    for src in (info, sf, equity or {}):
+        ccy = (src.get("currency") or src.get("accountCurrency") or src.get("baseCurrency")
+               or src.get("accountBaseCurrency") or "")
+        ccy = str(ccy).strip().upper()
+        if ccy:
+            return ccy[:3]
+    return None
+
+
+def _parse_statement_el(stmt: ET.Element) -> ParsedFlex:
+    """One FlexStatement. Only known tags are read; extra attributes and sections are ignored."""
     out = ParsedFlex()
-    stmt = root.find(".//FlexStatement")
-    if stmt is None and _local(root.tag) == "FlexStatement":
-        stmt = root
-    if stmt is not None:
-        sf = fields_of(stmt)
-        out.account_id = sf.get("accountId") or out.account_id
-        out.from_date = sf.get("fromDate")
-        out.to_date = sf.get("toDate")
-    info = root.find(".//AccountInformation")
-    if info is not None:
-        inf = fields_of(info)
-        out.account_id = inf.get("accountId") or out.account_id
-        out.currency = (inf.get("currency") or "").upper() or None
-    for el in root.findall(".//Trade"):
-        row = fields_of(el)
-        if row:
-            out.trades.append(row)
-    for el in root.findall(".//CashTransaction"):
-        row = fields_of(el)
-        if row:
-            out.cash.append(row)
-    for el in root.findall(".//OpenPosition"):
-        row = fields_of(el)
-        if row:
-            out.positions.append(row)
-    for el in root.findall(".//CorporateAction"):
-        row = fields_of(el)
-        if row:
-            out.corporate.append(row)
+    sf = fields_of(stmt)
+    out.account_id = sf.get("accountId") or None
+    out.from_date = sf.get("fromDate")
+    out.to_date = sf.get("toDate")
+    info: dict = {}
+    for el in list(stmt):
+        if _local(el.tag) == "AccountInformation":
+            info = fields_of(el)
+            break
+    if not info:
+        found = next(_elems(stmt, "AccountInformation"), None)
+        if found is not None:
+            info = fields_of(found)
+    if info.get("accountId"):
+        out.account_id = info.get("accountId")
+    # Known sections only. A <Trade> (or cash/position/action) inside <Transfers>,
+    # <SecuritiesInfo>, <ConversionRates>, or any other "select all" section is ignored.
+    for section, tag, dest in (
+            ("Trades", "Trade", out.trades),
+            ("CashTransactions", "CashTransaction", out.cash),
+            ("OpenPositions", "OpenPosition", out.positions),
+            ("CorporateActions", "CorporateAction", out.corporate)):
+        dest.extend(_rows_in_section(stmt, section, tag))
     best: tuple[date, dict] | None = None
-    for el in list(root.findall(".//EquitySummaryByReportDateInBase")) + list(root.findall(".//EquitySummaryInBase")):
+    for el in list(_elems(stmt, "EquitySummaryByReportDateInBase")) + list(_elems(stmt, "EquitySummaryInBase")):
         row = fields_of(el)
         if not row:
             continue
@@ -485,7 +698,24 @@ def parse_statement(xml_text: str) -> ParsedFlex:
         if best is None or day >= best[0]:
             best = (day, cand)
     out.equity = best[1] if best else None
+    out.currency = _base_currency(sf, info, out.equity)
     return out
+
+
+def parse_statements(xml_text: str) -> list[ParsedFlex]:
+    """Every FlexStatement under the query. One statement's rows never leak into another."""
+    root = _xml_root(xml_text)
+    if _local(root.tag) == "FlexStatement":
+        stmts = [root]
+    else:
+        stmts = [el for el in root.iter() if _local(el.tag) == "FlexStatement"]
+    return [_parse_statement_el(s) for s in stmts]
+
+
+def parse_statement(xml_text: str) -> ParsedFlex:
+    """First FlexStatement (callers that only need one account). Rows are scoped to that statement."""
+    stmts = parse_statements(xml_text)
+    return stmts[0] if stmts else ParsedFlex()
 
 
 # ------------------------------------------------------------------ trades
@@ -878,9 +1108,12 @@ def test_connection(token: str, query_id: str, transport=None, sleep=None) -> di
     cl = FlexClient(token, transport=transport, sleep=sleep)
     try:
         xml = cl.fetch(query_id)
-        parsed = parse_statement(xml)
-        out["account_id"] = parsed.account_id
-        out["currency"] = parsed.currency
+        stmts = parse_statements(xml)
+        first = stmts[0] if stmts else ParsedFlex()
+        out["account_id"] = first.account_id
+        out["currency"] = first.currency
+        out["accounts"] = [{"account_id": s.account_id, "currency": s.currency or "USD"}
+                           for s in stmts if s.account_id]
         out["ok"] = True
         return out
     except FlexError as exc:
@@ -901,6 +1134,8 @@ def card(db: Session):
     state, detail = "connected", "Flex token saved."
     if st.get("error_kind") in ("auth", "query"):
         state, detail = "needs_login", st.get("error") or "Token or query rejected."
+    elif st.get("accounts"):
+        detail += f" {len(st['accounts'])} accounts · {st.get('currency') or creds.get('currency') or 'USD'}."
     elif st.get("account_id"):
         detail += f" Account {st['account_id']} · {st.get('currency') or creds.get('currency') or 'USD'}."
     elif creds.get("query_id"):
@@ -914,8 +1149,9 @@ def card(db: Session):
 class IbkrFlexSource(DataSource):
     key = SOURCE_KEY
     name = "Interactive Brokers"
-    description = ("IBKR Flex Web Service: Activity Flex Query (XML). Token + query id; executions, "
-                   "cash, dividends, interest, open positions and corporate actions. Manual sync only.")
+    description = ("IBKR Flex Web Service: one Activity Flex Query (XML) for every account on the token. "
+                   "Executions, cash, dividends, interest, open positions and corporate actions. "
+                   "Full history walks year-sized windows from the start date on the card. Manual sync only.")
 
     def __init__(self, transport: httpx.BaseTransport | None = None, sleep=None, split_fetch=None):
         self._transport, self._sleep = transport, sleep or _time.sleep
@@ -952,94 +1188,321 @@ class IbkrFlexSource(DataSource):
         return SourceStatus(True, True, "Connected" + (f" · last sync {st['synced_at']}" if st.get("synced_at") else ""))
 
     def ensure_account(self, db: Session, info: dict, default_ccy: str = "USD") -> Account:
-        ext = str(info.get("account_id") or info.get("id") or "")
-        ccy = (info.get("currency") or default_ccy or "USD").upper()
+        """Map an IBKR accountId to one journal account. The name is set only on creation
+        (IBKR U1234567) so a later rename sticks. The id is stored on the row and in app_state."""
+        ext = str(info.get("account_id") or info.get("id") or "").strip()
+        ccy = ((info.get("currency") or default_ccy or "USD").strip().upper() or "USD")[:3]
+        amap = load_account_map(db)
         a = None
-        if ext:
+        if ext and str(amap.get(ext) or "").isdigit():
+            found = db.get(Account, int(amap[ext]))
+            if found is not None and (found.source_key or SOURCE_KEY) in {SOURCE_KEY, "ibkr", ""}:
+                a = found
+        if a is None and ext:
             a = db.scalar(select(Account).where(Account.source_key == SOURCE_KEY, Account.external_ref == ext))
         if a is None:
             masked = ("…" + ext[-4:]) if len(ext) >= 4 else (ext or None)
-            a = Account(name="Interactive Brokers", broker="ibkr", external_ref=ext or None,
-                        source_key=SOURCE_KEY, account_number_masked=masked, currency=ccy,
-                        timezone="America/New_York", market="US", kind="margin")
+            a = Account(name=(f"IBKR {ext}" if ext else "Interactive Brokers"), broker="ibkr",
+                        external_ref=ext or None, source_key=SOURCE_KEY, account_number_masked=masked,
+                        currency=ccy, timezone="America/New_York", market="US", kind="margin")
             db.add(a)
             db.flush()
-        elif info.get("currency") and a.currency != ccy:
-            a.currency = ccy
+        else:
+            if ext and not a.external_ref:
+                a.external_ref = ext
+            if not a.source_key:
+                a.source_key = SOURCE_KEY
+            if not a.broker:
+                a.broker = "ibkr"
+        if ext:
+            amap[ext] = a.id
+            save_account_map(db, amap)
         return a
 
-    def sync(self, db: Session, ctx: SyncContext) -> SourceResult:
-        res = SourceResult()
-        cl = None
-        creds = load_credentials(db)
-        if not creds:
-            raise RuntimeError("Interactive Brokers is not connected (no Flex token stored).")
-        token, qid = creds["token"], creds["query_id"]
-        default_ccy = (creds.get("currency") or "USD").upper()
-        try:
-            cl = FlexClient(token, transport=self._transport, sleep=self._sleep)
-            xml = cl.fetch(qid)
-            parsed = parse_statement(xml)
-            if ctx.account_id is not None:
-                wanted = db.get(Account, ctx.account_id)
-                ext = parsed.account_id or ""
-                if wanted is None or ((wanted.external_ref or "") and ext and wanted.external_ref != ext):
-                    ctx.info("Interactive Brokers account does not match the selected account.")
-                    return res
-            acct = self.ensure_account(db, {"account_id": parsed.account_id, "currency": parsed.currency or default_ccy},
-                                       default_ccy)
-            res.accounts.append(acct.id)
-            full = get_state(db, FULL_STATE) == "1"
-            if full:
-                set_state(db, FULL_STATE, None)
-            recs, skipped, detail = self.convert(db, parsed.trades)
+    def _wanted_ibkr_id(self, db: Session, ctx: SyncContext) -> str | None:
+        """None imports every statement. A string imports only that IBKR accountId."""
+        if ctx.account_id is None:
+            return None
+        acct = db.get(Account, ctx.account_id)
+        if acct is None:
+            return ""
+        for ibkr_id, db_id in load_account_map(db).items():
+            try:
+                if int(db_id) == acct.id:
+                    return str(ibkr_id)
+            except (TypeError, ValueError):
+                continue
+        return str(acct.external_ref or "")
+
+    def _pace(self, *, between: bool, prev_calls: int) -> None:
+        gap = history_gap(prev_calls) if between else 0.0
+        gap = max(gap, _send_wait())
+        if gap > 0:
+            self._sleep(gap)
+            _release_send_gate()
+
+    def _publish(self, db: Session, ctx: SyncContext, hist: dict, account_ids: list[int] | None = None) -> None:
+        save_history(db, hist)
+        text = progress_line(hist)
+        if ctx.run_id and text:
+            from app.models import SyncRun
+            run = db.get(SyncRun, ctx.run_id)
+            if run is not None and run.status == "running":
+                run.message = text
+        if account_ids:
+            from app import balance
+            balance.after_sync(db, account_ids)  # commits this window, then rebuilds the curve
+        else:
+            db.commit()
+
+    def _fail_window(self, db: Session, ctx: SyncContext, hist: dict, exc: BaseException, token: str) -> str:
+        msg = redact(str(exc), token)
+        hard = _is_hard_pause(exc)
+        hist["status"] = "paused" if hard or (isinstance(exc, FlexError) and exc.kind == "rate") else "error"
+        hist["error"] = msg[:500]
+        hist["paused_until"] = _paused_until_text() if hard else None
+        save_history(db, hist)
+        text = progress_line(hist)
+        kind = exc.kind if isinstance(exc, FlexError) else "api"
+        _save_last(db, ok=False, error=msg, error_kind=kind,
+                   failed_at=utcnow().strftime("%Y-%m-%d %H:%M UTC"))
+        if ctx.run_id and text:
+            from app.models import SyncRun
+            run = db.get(SyncRun, ctx.run_id)
+            if run is not None:
+                run.message = text
+        if text:
+            ctx.info(text)
+        db.commit()
+        return msg
+
+    def _plan(self, db: Session, full_flag: bool) -> tuple[list[tuple[date, date]], dict, str]:
+        today = _today()
+        start = history_start_date(db)
+        prev = load_history(db)
+        status = prev.get("status") or ""
+        nxt = _parse_iso(prev.get("next_fd"))
+        resuming = status in {"paused", "error", "running"} and nxt is not None
+        if resuming:
+            windows = [] if nxt > today else iter_windows(nxt, today)
+            done = int(prev.get("done_windows") or 0)
+            mode = prev.get("mode") or ("full" if full_flag else "new")
+        elif full_flag:
+            windows = iter_windows(start, today)
+            done = 0
+            mode = "full"
+        else:
+            last = _parse_iso(prev.get("last_synced"))
+            if last:
+                origin = last - timedelta(days=OVERLAP_DAYS)
+            else:
+                origin = max(start, today - timedelta(days=MAX_WINDOW_DAYS - 1))
+            if origin > today:
+                origin = today
+            windows = iter_windows(origin, today)
+            done = 0
+            mode = "new"
+        hist = {
+            "start": start.isoformat(),
+            "next_fd": (windows[0][0].isoformat() if windows else (today + timedelta(days=1)).isoformat()),
+            "done_windows": done,
+            "total_windows": done + len(windows),
+            "status": "running" if windows else "done",
+            "paused_until": None,
+            "error": None,
+            "last_synced": prev.get("last_synced"),
+            "mode": mode,
+            "end": today.isoformat(),
+        }
+        return windows, hist, mode
+
+    def _import_statements(self, db: Session, statements: list[ParsedFlex], ctx: SyncContext,
+                           default_ccy: str, res: SourceResult, *, final: bool):
+        from app.adjustments import detect_and_apply, record_payload
+        from app.balance import save_ibkr_summary
+        want = self._wanted_ibkr_id(db, ctx)
+        touched: list[int] = []
+        skipped: Counter = Counter()
+        detail: dict[str, list[str]] = {}
+        notes: list[str] = []
+        corps: list[str] = []
+        seen = False
+        for parsed in statements:
+            if want is not None and (parsed.account_id or "") != want:
+                continue
+            seen = True
+            acct = self.ensure_account(
+                db, {"account_id": parsed.account_id, "currency": parsed.currency or default_ccy}, default_ccy)
+            if acct.id not in res.accounts:
+                res.accounts.append(acct.id)
+            if acct.id not in touched:
+                touched.append(acct.id)
+            recs, sk, det = self.convert(db, parsed.trades)
             events, split_recs = corporate_events(parsed.corporate)
             recs.extend(split_recs)
             recs.sort(key=lambda r: (r.executed_at, r.external_id))
-            from app.adjustments import record_payload
             record_payload(db, acct.id, SOURCE_KEY, {
                 "trades": parsed.trades, "cash": parsed.cash, "positions": parsed.positions,
                 "corporate": parsed.corporate, "account_id": parsed.account_id,
             }, run_id=ctx.run_id)
             stats = ingest_records(db, acct.id, SOURCE_KEY, recs)
-            res.fetched, res.inserted, res.merged = len(recs), stats.inserted, stats.merged
+            res.fetched += len(recs)
+            res.inserted += stats.inserted
+            res.merged += stats.merged
+            skipped.update(sk)
+            for reason, tickers in det.items():
+                lst = detail.setdefault(reason, [])
+                for t in tickers:
+                    if t not in lst and len(lst) < 100:
+                        lst.append(t)
             cash_note = self._import_cash(db, acct, parsed.cash)
-            pos = position_map(parsed.positions)
-            from app.adjustments import detect_and_apply
-            corp = detect_and_apply(db, acct.id, fetch=self.split_fetch, positions=pos, broker_events=events)
-            if parsed.equity:
-                from app.balance import save_ibkr_summary
-                save_ibkr_summary(db, acct.id, parsed.equity, parsed.currency or acct.currency)
-            rebuild_trades(db, [acct.id])
-            sk = _skip_summary(skipped, detail)
-            res.message = (f"Interactive Brokers: {len(recs)} fills read, {stats.inserted} new"
-                           + (f"; skipped {sk}" if sk else ""))
             if cash_note:
-                res.message += "; " + cash_note
-            if corp:
-                res.message += "; " + "; ".join(corp[:8])
-            if full:
-                res.message += (" (full history: Flex query covers its configured period; "
-                                "lengthen the query in Client Portal for older fills)")
-            ctx.info(res.message)
+                notes.append(cash_note)
+            if final:
+                corp = detect_and_apply(db, acct.id, fetch=self.split_fetch, positions=position_map(parsed.positions),
+                                        broker_events=events)
+            else:
+                corp = detect_and_apply(db, acct.id, fetch=lambda *_a, **_k: [], positions=None, broker_events=events)
+            corps.extend(corp)
             for line in corp:
                 ctx.info("IBKR corporate: " + line)
-            _save_last(db, reset=True, ok=True, error=None, error_kind=None,
-                       synced_at=utcnow().strftime("%Y-%m-%d %H:%M UTC"),
-                       account_id=parsed.account_id, currency=acct.currency,
-                       fetched=len(recs), inserted=stats.inserted, skipped=dict(skipped),
-                       skipped_detail=detail, adjustments=corp, full=full, query_id=qid)
-            db.commit()
+            if parsed.equity:
+                save_ibkr_summary(db, acct.id, parsed.equity, parsed.currency or acct.currency)
+        if touched:
+            rebuild_trades(db, touched)
+        if want is not None and not seen:
+            ctx.info(f"No Flex statement for IBKR account {want or '(unknown)'} in this window.")
+        return touched, skipped, detail, notes, corps
+
+    def sync(self, db: Session, ctx: SyncContext) -> SourceResult:
+        """Fetch fd/td windows one at a time. A failed window does not move the cursor.
+
+        Full history (FULL_STATE, or the card's Full history button) walks from the history
+        start date. Sync new walks from the last synced date minus a few days. A paused or
+        failed job resumes from the last completed window instead of starting over. One
+        query fetch per window is shared by every account; a per-account sync keeps only
+        that account's statement.
+        """
+        res = SourceResult()
+        creds = load_credentials(db)
+        if not creds:
+            raise RuntimeError("Interactive Brokers is not connected (no Flex token stored).")
+        token, qid = creds["token"], str(creds["query_id"])
+        default_ccy = (creds.get("currency") or "USD").upper()
+        full_flag = get_state(db, FULL_STATE) == "1"
+        windows, hist, mode = self._plan(db, full_flag)
+        if full_flag:
+            set_state(db, FULL_STATE, None)
+        if not windows:
+            hist["status"] = "done"
+            self._publish(db, ctx, hist)
+            res.message = "Interactive Brokers: up to date. " + progress_line(hist)
+            ctx.info(res.message.strip())
             return res
+        if cooldown_left() > 0:
+            hist["status"] = "paused"
+            hist["paused_until"] = _paused_until_text()
+            hist["error"] = (f"IBKR calls are paused for {int(cooldown_left() // 60) + 1} more minute(s) "
+                             "after a rate-limit answer.")
+            self._publish(db, ctx, hist)
+            ctx.info(progress_line(hist))
+            raise RuntimeError(hist["error"])
+        all_skipped: Counter = Counter()
+        all_detail: dict[str, list[str]] = {}
+        cash_notes: list[str] = []
+        corp_lines: list[str] = []
+        prev_calls = 0
+        today = _today()
+        try:
+            for i, (fd, td) in enumerate(windows):
+                hist["status"] = "running"
+                hist["next_fd"] = fd.isoformat()
+                hist["error"] = None
+                hist["paused_until"] = None
+                self._publish(db, ctx, hist)  # card poll shows the window we're about to fetch
+                try:
+                    if cooldown_left() > 0:
+                        raise FlexError("rate", f"IBKR calls are paused for {int(cooldown_left() // 60) + 1} "
+                                        "more minute(s) after a rate-limit answer.", "1018")
+                    self._pace(between=i > 0, prev_calls=prev_calls)
+                    if cooldown_left() > 0:
+                        raise FlexError("rate", f"IBKR calls are paused for {int(cooldown_left() // 60) + 1} "
+                                        "more minute(s) after a rate-limit answer.", "1018")
+                    cl = FlexClient(token, transport=self._transport, sleep=self._sleep)
+                    try:
+                        xml = cl.fetch(qid, fd=_ymd(fd), td=_ymd(td))
+                        prev_calls = cl.calls
+                    finally:
+                        cl.close()
+                    final = td >= today or i + 1 == len(windows)
+                    touched, skipped, detail, notes, corps = self._import_statements(
+                        db, parse_statements(xml), ctx, default_ccy, res, final=final)
+                    all_skipped.update(skipped)
+                    for reason, tickers in detail.items():
+                        lst = all_detail.setdefault(reason, [])
+                        for t in tickers:
+                            if t not in lst and len(lst) < 100:
+                                lst.append(t)
+                    cash_notes.extend(notes)
+                    corp_lines.extend(corps)
+                    hist["done_windows"] = int(hist.get("done_windows") or 0) + 1
+                    hist["last_synced"] = td.isoformat()
+                    nxt = td + timedelta(days=1)
+                    hist["next_fd"] = nxt.isoformat()
+                    hist["error"] = None
+                    hist["paused_until"] = None
+                    hist["status"] = "done" if nxt > today else "running"
+                    self._publish(db, ctx, hist, touched)
+                except Exception as exc:
+                    db.rollback()
+                    hist = load_history(db)
+                    if (_parse_iso(hist.get("next_fd")) or date.min) > fd:
+                        hist["next_fd"] = fd.isoformat()
+                    elif not hist.get("next_fd"):
+                        hist["next_fd"] = fd.isoformat()
+                    hist.setdefault("done_windows", 0)
+                    hist.setdefault("total_windows", len(windows))
+                    hist.setdefault("start", history_start_date(db).isoformat())
+                    msg = self._fail_window(db, ctx, hist, exc, token)
+                    raise RuntimeError(msg) from exc
+        except RuntimeError:
+            raise
         except FlexError as exc:
             db.rollback()
-            _save_last(db, ok=False, error=redact(str(exc), token), error_kind=exc.kind,
-                       failed_at=utcnow().strftime("%Y-%m-%d %H:%M UTC"))
-            db.commit()
-            raise RuntimeError(redact(str(exc), token)) from exc
-        finally:
-            if cl is not None:
-                cl.close()
+            msg = self._fail_window(db, ctx, load_history(db) or hist, exc, token)
+            raise RuntimeError(msg) from exc
+        sk = _skip_summary(all_skipped, all_detail)
+        accounts_n = len(res.accounts)
+        res.message = (f"Interactive Brokers: {res.fetched} fills read, {res.inserted} new"
+                       + (f" across {accounts_n} accounts" if accounts_n > 1 else ""))
+        if sk:
+            res.message += f"; skipped {sk}"
+        if cash_notes:
+            res.message += "; " + "; ".join(dict.fromkeys(cash_notes))
+        if corp_lines:
+            res.message += "; " + "; ".join(dict.fromkeys(corp_lines))[:500]
+        if mode == "full":
+            res.message += f" (full history: {hist.get('done_windows')} windows through {hist.get('last_synced')})"
+        else:
+            res.message += f" ({progress_line(hist)})"
+        prog = progress_line(hist)
+        if prog and prog not in res.message:
+            res.message += " " + prog
+        ctx.info(res.message)
+        ids = []
+        amap = load_account_map(db)
+        for ibkr_id, db_id in amap.items():
+            if int(db_id) in res.accounts:
+                ids.append(str(ibkr_id))
+        _save_last(db, reset=True, ok=True, error=None, error_kind=None,
+                   synced_at=utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+                   account_id=(ids[0] if ids else None), accounts=ids,
+                   currency=default_ccy, fetched=res.fetched, inserted=res.inserted,
+                   skipped=dict(all_skipped), skipped_detail=all_detail,
+                   adjustments=list(dict.fromkeys(corp_lines))[:30],
+                   full=(mode == "full"), query_id=qid, last_synced=hist.get("last_synced"))
+        db.commit()
+        return res
 
     def convert(self, db: Session, rows: list[dict]) -> tuple[list[ExecRecord], Counter, dict]:
         skipped: Counter = Counter()

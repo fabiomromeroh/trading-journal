@@ -1,5 +1,20 @@
 {% set last = ibkr.last %}
 <div class="mt-3 text-sm space-y-2" id="ibkr-box">
+  <form method="post" action="/settings/brokers/ibkr/history-start" class="flex flex-wrap gap-2">
+    <label class="text-xs text-slate-400">History start
+      <input type="date" name="history_start" value="{{ ibkr.history_start or '2022-01-01' }}" class="inp text-xs" aria-label="History start date">
+    </label>
+    <button class="btn btn-s text-xs">Save start date</button>
+  </form>
+  <p class="text-xs text-slate-500">Full history walks year-sized windows from this date to today. Sync new continues from the last synced date. One token and one query cover every account.</p>
+  {% if ibkr.progress %}
+  <div class="text-xs text-slate-300" id="ibkr-progress">{{ ibkr.progress }}</div>
+  {% endif %}
+  {% if ibkr.mapped %}
+  <div class="text-xs text-slate-400">Journal accounts:
+    {% for a in ibkr.mapped %}<b class="text-slate-200">{{ a.name }}</b> ({{ a.currency }}){{ ', ' if not loop.last }}{% endfor %}
+  </div>
+  {% endif %}
   {% if ibkr.connected %}
     <div class="text-xs text-slate-400">
       Flex token <b class="text-slate-200">saved</b>
@@ -27,7 +42,7 @@
       <div class="flex flex-wrap gap-2">
         <button class="btn btn-s text-xs">Save</button>
         <button type="button" hx-post="/settings/brokers/ibkr/sync" hx-target="#ibkr-sync" class="btn btn-p text-xs">Sync new</button>
-        <button type="button" hx-post="/settings/brokers/ibkr/resync" hx-target="#ibkr-sync" hx-confirm="Re-read the Flex query period? Existing fills are kept. Lengthen the query in Client Portal for older history." class="btn btn-s text-xs">Full history</button>
+        <button type="button" hx-post="/settings/brokers/ibkr/resync" hx-target="#ibkr-sync" hx-confirm="Full history fetches year-sized windows from the history start date to today. If a window was paused, it resumes there. Existing fills are kept." class="btn btn-s text-xs">Full history</button>
         <button type="submit" form="ibkr-test" class="btn btn-s text-xs">Test connection</button>
         <button type="submit" form="ibkr-disconnect" class="btn btn-d text-xs" onclick="return confirm('Delete the stored Flex token? Imported trades stay.')">Disconnect</button>
       </div>

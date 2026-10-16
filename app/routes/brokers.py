@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app import markets
 from app.config import get_settings
 from app.db import get_db
-from app.models import Instrument
+from app.models import Account, Instrument
 from app.services import set_state
 from app.sources import trading212 as t212
 from app.sources import ibkr_flex as ibkr
@@ -139,12 +139,22 @@ def ibkr_connect(request: Request, token: str = Form(""), query_id: str = Form("
         return _flash(request, f"Interactive Brokers not connected: {res['error']}")
     ibkr.save_credentials(db, tok, qid, ccy)
     src = ibkr.IbkrFlexSource()
-    acct = src.ensure_account(db, {"account_id": res["account_id"], "currency": res["currency"] or ccy}, ccy)
-    ibkr._save_last(db, reset=True, ok=True, error=None, error_kind=None, account_id=res["account_id"],
-                    currency=res["currency"] or ccy, query_id=qid)
+    infos = list(res.get("accounts") or [])
+    if not infos:
+        infos = [{"account_id": res.get("account_id"), "currency": res.get("currency") or ccy}]
+    names = []
+    for info in infos:
+        acct = src.ensure_account(db, {"account_id": info.get("account_id"),
+                                        "currency": info.get("currency") or res.get("currency") or ccy}, ccy)
+        names.append(acct.name)
+    shown = ", ".join(names[:8]) or "Interactive Brokers"
+    ibkr._save_last(db, reset=True, ok=True, error=None, error_kind=None, account_id=res.get("account_id"),
+                    accounts=[i.get("account_id") for i in infos if i.get("account_id")],
+                    currency=res.get("currency") or ccy, query_id=qid)
     db.commit()
-    return _flash(request, f"Interactive Brokers connected: account {res['account_id'] or acct.name} in "
-                           f"{res['currency'] or ccy} → “{acct.name}”. Press Sync to import the Flex query period.")
+    return _flash(request, f"Interactive Brokers connected: {shown} in {res.get('currency') or ccy}. "
+                           "Press Sync to import. Set the history start date on this card, then Full history "
+                           "walks year-sized windows from that date.")
 
 
 @router.post("/settings/brokers/ibkr/test")
@@ -158,9 +168,22 @@ def ibkr_test(request: Request, db: Session = Depends(get_db)):
                     currency=res["currency"] or ibkr.last_status(db).get("currency"))
     db.commit()
     if res["ok"]:
-        return _flash(request, f"Interactive Brokers connection OK (account {res['account_id']}, "
+        ids = ", ".join(a["account_id"] for a in (res.get("accounts") or []) if a.get("account_id")) or res.get("account_id")
+        return _flash(request, f"Interactive Brokers connection OK (account {ids}, "
                                f"{res['currency'] or creds.get('currency') or 'USD'}).")
     return _flash(request, f"Interactive Brokers test failed: {res['error']}")
+
+
+@router.post("/settings/brokers/ibkr/history-start")
+def ibkr_history_start(request: Request, history_start: str = Form(""), db: Session = Depends(get_db)):
+    """Store the Full history start date. Does not call IBKR."""
+    try:
+        day = ibkr.parse_history_start(history_start)
+    except ValueError as exc:
+        return _flash(request, str(exc))
+    ibkr.save_history_start(db, day)
+    db.commit()
+    return _flash(request, f"IBKR history start set to {day.isoformat()}. Full history walks from that date to today.")
 
 
 @router.post("/settings/brokers/ibkr/disconnect")
@@ -196,6 +219,7 @@ def settings_ctx(db: Session) -> dict:
     insts = list(db.scalars(select(Instrument).where(Instrument.source_key == "t212").order_by(Instrument.symbol)))
     ib = ibkr.load_credentials(db)
     ib_insts = list(db.scalars(select(Instrument).where(Instrument.source_key == "ibkr_flex").order_by(Instrument.symbol)))
+    mapped = list(db.scalars(select(Account).where(Account.source_key == "ibkr_flex").order_by(Account.name)))
     return {"t212": {"connected": creds is not None, "masked": t212.mask(creds["key"]) if creds else None,
                      "practice": bool(creds and creds.get("env") == "demo"), "last": t212.last_status(db),
                      "instruments": insts, "instrument_issues": audit_instruments(db, fix=False),
@@ -204,4 +228,7 @@ def settings_ctx(db: Session) -> dict:
             "ibkr": {"connected": ib is not None, "query_id": (ib or {}).get("query_id"),
                      "currency": (ib or {}).get("currency") or "USD", "last": ibkr.last_status(db),
                      "instruments": ib_insts, "how_to": ibkr.HOW_TO,
+                     "history_start": ibkr.history_start_date(db).isoformat(),
+                     "progress": ibkr.progress_line(ibkr.load_history(db)),
+                     "mapped": mapped,
                      "enc_key": bool(get_settings().token_encryption_key)}}
