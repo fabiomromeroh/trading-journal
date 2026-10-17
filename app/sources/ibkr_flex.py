@@ -1,12 +1,15 @@
 """Interactive Brokers Flex Web Service adapter (Activity Flex Query, XML).
 
-Two-step HTTPS (no gateway): SendRequest -> ReferenceCode/Url, then GetStatement.
-One token and one query id cover every account in the query. Each FlexStatement
-becomes its own journal account. History is pulled in fd/td windows of at most
-365 days (both dates, never combined with period), paced so a job stays under
-IBKR's 10 requests/minute. Fills dedupe on tradeID / transactionID per account.
-Never invents fills. Token is Fernet-encrypted in app_state (cred:ibkr; never in
-backups, logs, status, or HTML).
+Two-step HTTPS (no gateway): SendRequest -> ReferenceCode, then GetStatement.
+The <Url> on SendRequest is legacy and is ignored; GetStatement always uses
+DEFAULT_GET_URL. One token and one query id cover every account in the query.
+Each FlexStatement becomes its own journal account. History is pulled in fd/td
+windows of at most 365 days ending on the last completed US business day
+(America/New_York), paced so a job stays under IBKR's 10 requests/minute.
+A 1001 (or other temporary) window is retried on the next press as smaller
+pieces (year -> quarters -> months). Fills dedupe on tradeID / transactionID
+per account. Never invents fills. Token is Fernet-encrypted in app_state
+(cred:ibkr; never in backups, logs, status, or HTML).
 """
 from __future__ import annotations
 
@@ -62,7 +65,13 @@ WINDOW_GAP = 30.0                 # minimum seconds between history windows (>= 
 RATE_BUDGET_PER_MIN = 6           # well under IBKR's 10 requests/minute; polls count toward this
 OVERLAP_DAYS = 4                  # Sync new re-reads this many days before the last synced date
 MAX_WINDOW_DAYS = 365             # inclusive fd..td length; IBKR rejects a longer range
-MAX_QUARTER_DAYS = 92             # 1003 on a year window is retried as these on the next press
+MAX_QUARTER_DAYS = 92             # year/long windows split to these on the next press
+MAX_MONTH_DAYS = 31               # a quarter that fails 1001 again splits to calendar months
+SPLIT_QUARTER = "quarter"
+SPLIT_MONTH = "month"
+SPLIT_NONE = "none"
+_POLL_AGAIN = {"1019", "1001"}    # GetStatement: statement not ready yet (bounded polls only)
+NY = ZoneInfo("America/New_York")
 DEFAULT_HISTORY_START = date(2022, 1, 1)
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 REPROCESS_STATE = "ibkr:reprocess"
@@ -95,9 +104,12 @@ HOW_TO = (
     "Corporate Actions, Cash Report, Equity Summary, Transfers and Option EAE. The query period "
     "can stay Last 365 days — Full history on this card does not use that period. It walks "
     "year-sized windows from the history start date (default 2022-01-01, editable on this card) "
-    "through today. A year window that IBKR answers 1003 (no statement) is retried as quarter "
-    "windows on the next Sync / Full history press; a quarter that is still 1003 is recorded as a "
-    "history gap. You can also upload an Activity Statement XML (same parser and dedupe). Then "
+    "through the previous US business day (IBKR Flex data is complete through the prior session). "
+    "A year window that IBKR answers 1003 (no statement) is retried as quarter windows on the "
+    "next Sync / Full history press; a quarter that is still 1003 is recorded as a history gap. "
+    "A 1001 (statement could not be generated) window is retried as smaller pieces on the next "
+    "press: year → quarters → months. You can also upload an Activity Statement XML (same parser "
+    "and dedupe). Then "
     "Flex Web Service Configuration → enable and generate one token; copy the Query ID. That one "
     "token and Query ID sync every account in the query."
 )
@@ -189,8 +201,31 @@ def _save_last(db: Session, *, reset: bool = False, **kw) -> dict:
     return cur
 
 
+def _now_ny() -> datetime:
+    return datetime.now(NY)
+
+
+def last_complete_biz_day(now: datetime | None = None) -> date:
+    """Last completed US business day strictly before `now` in America/New_York.
+
+    Saturdays and Sundays are skipped. A weekday uses the previous weekday:
+    IBKR Flex data is complete through the prior session, not the current day.
+    """
+    if now is None:
+        now = _now_ny()
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=NY)
+    else:
+        now = now.astimezone(NY)
+    day = now.date() - timedelta(days=1)
+    while day.weekday() >= 5:  # Saturday=5, Sunday=6
+        day -= timedelta(days=1)
+    return day
+
+
 def _today() -> date:
-    return date.today()
+    """End date for Flex fd/td windows: last completed US business day (NY)."""
+    return last_complete_biz_day()
 
 
 def _ymd(d: date) -> str:
@@ -241,8 +276,91 @@ def iter_quarters(start: date, end: date) -> list[tuple[date, date]]:
     return out
 
 
+def iter_months(start: date, end: date) -> list[tuple[date, date]]:
+    """Inclusive calendar-month slices, each at most 31 days."""
+    if end < start:
+        return []
+    out: list[tuple[date, date]] = []
+    cur = start
+    while cur <= end:
+        if cur.month == 12:
+            month_end = date(cur.year, 12, 31)
+        else:
+            month_end = date(cur.year, cur.month + 1, 1) - timedelta(days=1)
+        td = min(end, month_end)
+        out.append((cur, td))
+        cur = td + timedelta(days=1)
+    return out
+
+
 def is_year_sized(fd: date, td: date) -> bool:
     return (td - fd).days + 1 > MAX_QUARTER_DAYS
+
+
+def is_quarter_sized(fd: date, td: date) -> bool:
+    days = (td - fd).days + 1
+    return MAX_MONTH_DAYS < days <= MAX_QUARTER_DAYS
+
+
+def clamp_window(fd: date, td: date, end: date) -> tuple[date, date] | None:
+    """Drop or trim a window so td never exceeds the Flex end date."""
+    td = min(td, end)
+    if fd > end or fd > td:
+        return None
+    return fd, td
+
+
+def split_level_of(fw: dict, fd: date, td: date) -> str:
+    """How the next press should break this failed window.
+
+    Explicit `split` on the stored entry wins. Otherwise a year/long window
+    becomes quarters, a quarter becomes months, a month stays a month.
+    1003 only splits year-sized windows (a 1003 quarter is a history gap).
+    """
+    explicit = str(fw.get("split") or "").strip().lower()
+    if explicit in {SPLIT_QUARTER, SPLIT_MONTH, SPLIT_NONE}:
+        return explicit
+    code = str(fw.get("code") or "")
+    if code == "1003":
+        return SPLIT_QUARTER if is_year_sized(fd, td) else SPLIT_NONE
+    if is_year_sized(fd, td):
+        return SPLIT_QUARTER
+    if is_quarter_sized(fd, td):
+        return SPLIT_MONTH
+    return SPLIT_NONE
+
+
+def next_split_level(fd: date, td: date) -> str:
+    """Split level to store when this window itself just failed."""
+    if is_year_sized(fd, td):
+        return SPLIT_QUARTER
+    if is_quarter_sized(fd, td):
+        return SPLIT_MONTH
+    return SPLIT_NONE
+
+
+def expand_failed_window(fw: dict, end: date) -> tuple[list[tuple[date, date]], dict | None]:
+    """Turn a stored failed window into this press's sub-windows.
+
+    Returns (pieces, kept_entry). kept_entry is None when the parent is
+    replaced by sub-windows. A window whose fd is after `end` is dropped.
+    """
+    fd, td = _parse_iso(fw.get("fd")), _parse_iso(fw.get("td"))
+    if not fd or not td:
+        return [], None
+    clamped = clamp_window(fd, td, end)
+    if clamped is None:
+        return [], None
+    fd, td = clamped
+    level = split_level_of(fw, fd, td)
+    if level == SPLIT_QUARTER:
+        return iter_quarters(fd, td), None
+    if level == SPLIT_MONTH:
+        return iter_months(fd, td), None
+    kept = dict(fw)
+    kept["fd"], kept["td"] = fd.isoformat(), td.isoformat()
+    kept["split"] = SPLIT_NONE
+    return [(fd, td)], kept
 
 
 def mask_account_id(ext: str | None) -> str:
@@ -265,8 +383,22 @@ def _gap_windows(h: dict | None) -> list[dict]:
     return [x for x in raw if isinstance(x, dict)] if isinstance(raw, list) else []
 
 
-def _window_entry(fd: date, td: date, code: str | None, kind: str | None) -> dict:
-    return {"fd": fd.isoformat(), "td": td.isoformat(), "code": str(code or ""), "kind": str(kind or "")}
+def _window_entry(fd: date, td: date, code: str | None, kind: str | None,
+                  split: str | None = None, message: str | None = None) -> dict:
+    out = {"fd": fd.isoformat(), "td": td.isoformat(), "code": str(code or ""), "kind": str(kind or "")}
+    if split:
+        out["split"] = str(split)
+    if message:
+        out["message"] = redact(str(message))[:300]
+    return out
+
+
+def _add_failed(failed: list[dict], entry: dict) -> list[dict]:
+    want = (entry.get("fd"), entry.get("td"))
+    if any((x.get("fd"), x.get("td")) == want for x in failed):
+        return failed
+    failed.append(entry)
+    return failed
 
 
 def _drop_failed(failed: list[dict], fd: date, td: date) -> list[dict]:
@@ -324,7 +456,7 @@ def parse_history_start(raw: str) -> date:
     day = _parse_iso(raw)
     if day is None:
         raise ValueError("History start must be a real date (yyyy-mm-dd).")
-    if day.year < 1990 or day > _today():
+    if day.year < 1990 or day > _now_ny().date():
         raise ValueError("History start must be between 1990 and today.")
     return day
 
@@ -350,35 +482,74 @@ def _history_notes(h: dict | None) -> list[str]:
     return [str(n) for n in raw if n]
 
 
-def progress_line(h: dict | None) -> str:
-    """e.g. 'window 3 of 5 done, next 2024-01-01…'."""
-    if not h or not h.get("total_windows"):
-        return ""
-    done = int(h.get("done_windows") or 0)
-    total = int(h.get("total_windows") or 0)
-    nxt = h.get("next_fd") or ""
-    status = h.get("status") or ""
-    base = f"window {done} of {total} done"
-    if status == "done":
-        line = base + (f" through {h['last_synced']}" if h.get("last_synced") else "")
-    else:
-        nxt_bit = f", next {nxt}…" if nxt else ""
-        if status == "paused":
-            until = f" Paused until {h['paused_until']}." if h.get("paused_until") else ""
-            err = h.get("error") or "paused"
-            line = f"{base}{nxt_bit}{until} {err}".strip()
-        elif status == "error":
-            line = f"{base}{nxt_bit} {h.get('error') or 'failed'}".strip()
-        else:
-            line = f"{base}{nxt_bit}"
-    notes = _history_notes(h)
-    if notes:
-        line = f"{line} {'; '.join(notes)}".strip()
+def _failed_progress(h: dict | None) -> str:
+    """Clear card text for a 1001 (or other) failed window. Never includes the token."""
     failed = _failed_windows(h)
-    if failed:
-        bits = ", ".join(f"{x.get('fd')}..{x.get('td')} ({x.get('code')})" for x in failed[:6])
-        line = f"{line} Failed windows queued: {bits}.".strip()
+    if not failed:
+        return ""
+    end = _today()
+    fw = failed[0]
+    fd_d, td_d = _parse_iso(fw.get("fd")), _parse_iso(fw.get("td"))
+    code = str(fw.get("code") or "")
+    if fd_d and td_d:
+        clamped = clamp_window(fd_d, td_d, end)
+        if clamped:
+            fd_d, td_d = clamped
+    if not fd_d or not td_d:
+        return ""
+    fd_s, td_s = fd_d.isoformat(), td_d.isoformat()
+    line = f"IBKR could not generate {fd_s}\u2013{td_s} ({code})."
+    level = split_level_of(fw, fd_d, td_d)
+    if level == SPLIT_QUARTER:
+        n = len(iter_quarters(fd_d, td_d))
+        word = "quarter" if n == 1 else "quarters"
+        line += f" Next Sync will fetch it in smaller pieces: {n} {word} left."
+    elif level == SPLIT_MONTH:
+        n = len(iter_months(fd_d, td_d))
+        word = "month" if n == 1 else "months"
+        line += f" Next Sync will fetch it in smaller pieces: {n} {word} left."
+    else:
+        n = len(failed)
+        extra = f" {n} windows queued." if n > 1 else ""
+        line += f" Next Sync will retry this window.{extra}"
     return line
+
+
+def data_available_line(end: date | None = None) -> str:
+    day = end or _today()
+    return (f"Data available through {day.isoformat()} "
+            "(IBKR has data up to the previous business day).")
+
+
+def progress_line(h: dict | None) -> str:
+    """e.g. 'window 3 of 5 done, next 2024-01-01…' plus failed-window and data-available lines."""
+    parts: list[str] = []
+    if h and h.get("total_windows"):
+        done = int(h.get("done_windows") or 0)
+        total = int(h.get("total_windows") or 0)
+        nxt = h.get("next_fd") or ""
+        status = h.get("status") or ""
+        base = f"window {done} of {total} done"
+        if status == "done":
+            line = base + (f" through {h['last_synced']}" if h.get("last_synced") else "")
+        else:
+            nxt_bit = f", next {nxt}…" if nxt else ""
+            if status == "paused":
+                until = f" Paused until {h['paused_until']}." if h.get("paused_until") else ""
+                err = h.get("error") or "paused"
+                line = f"{base}{nxt_bit}{until} {err}".strip()
+            elif status == "error":
+                line = f"{base}{nxt_bit} {h.get('error') or 'failed'}".strip()
+            else:
+                line = f"{base}{nxt_bit}"
+        notes = _history_notes(h)
+        if notes:
+            line = f"{line} {'; '.join(notes)}".strip()
+        parts.append(line)
+    fail = _failed_progress(h)
+    if fail:
+        parts.append(fail)
+    return " ".join(p for p in parts if p).strip()
 
 
 def _paused_until_text() -> str:
@@ -549,21 +720,22 @@ class FlexClient:
             extra["fd"] = fd
             extra["td"] = td
         xml = self._get(SEND_URL, extra)
-        status, code, message, ref, url = parse_flex_response(xml, self.token)
+        status, code, message, ref, _legacy_url = parse_flex_response(xml, self.token)
         # 1019 on SendRequest has no statement yet. GetStatement is where the bounded polls live.
         if code == "1019" or (status or "").lower() != "success" or not ref:
             raise _response_error(code, message, self.token)
-        return ref, url or DEFAULT_GET_URL
+        # IBKR docs: the <Url> on SendRequest is legacy and must be ignored.
+        return ref, DEFAULT_GET_URL
 
-    def get_statement(self, reference: str, url: str) -> str:
-        get_url = url or DEFAULT_GET_URL
+    def get_statement(self, reference: str, url: str | None = None) -> str:
+        """Poll DEFAULT_GET_URL. `url` from SendRequest is ignored (legacy)."""
         last: FlexError | None = None
         for attempt in range(RETRY_1019):
-            xml = self._get(get_url, {"q": str(reference)})
+            xml = self._get(DEFAULT_GET_URL, {"q": str(reference)})
             if looks_like_statement(xml):
                 return xml
             status, code, message, _ref, _url = parse_flex_response(xml, self.token)
-            if code == "1019":
+            if code in _POLL_AGAIN:
                 last = _response_error(code, message, self.token)
                 if attempt + 1 < RETRY_1019:
                     self.sleep(POLL_GAP)
@@ -572,8 +744,8 @@ class FlexClient:
         raise last or FlexError("temporary", _error_text("1019", None), "1019")
 
     def fetch(self, query_id: str, fd: str | None = None, td: str | None = None) -> str:
-        ref, url = self.send_request(query_id, fd=fd, td=td)
-        return self.get_statement(ref, url)
+        ref, _url = self.send_request(query_id, fd=fd, td=td)
+        return self.get_statement(ref)
 
 
 # ------------------------------------------------------------------ XML helpers
@@ -2206,22 +2378,27 @@ class IbkrFlexSource(DataSource):
             db.commit()
 
     def _fail_window(self, db: Session, ctx: SyncContext, hist: dict, exc: BaseException, token: str,
-                     fd: date | None = None, td: date | None = None) -> str:
+                     fd: date | None = None, td: date | None = None,
+                     remaining: list[tuple[date, date]] | None = None) -> str:
         msg = redact(str(exc), token)
         hard = _is_hard_pause(exc)
         hist["status"] = "paused" if hard or (isinstance(exc, FlexError) and exc.kind == "rate") else "error"
         hist["error"] = msg[:500]
         hist["paused_until"] = _paused_until_text() if hard else None
-        if fd and td and isinstance(exc, FlexError) and (
-                exc.kind == "temporary" or (exc.code or "") in {"1001", "1003"}):
-            failed = _failed_windows(hist)
-            entry = _window_entry(fd, td, exc.code, exc.kind)
-            if not any(x.get("fd") == entry["fd"] and x.get("td") == entry["td"] for x in failed):
-                failed.append(entry)
+        code = exc.code if isinstance(exc, FlexError) else None
+        kind = exc.kind if isinstance(exc, FlexError) else "api"
+        is_temp = isinstance(exc, FlexError) and (
+            exc.kind == "temporary" or (code or "") in {"1001", "1003"})
+        failed = _failed_windows(hist)
+        if fd and td and (is_temp or remaining):
+            split = next_split_level(fd, td) if is_temp else SPLIT_NONE
+            failed = _add_failed(failed, _window_entry(fd, td, code, kind, split=split, message=msg))
+            for fd2, td2 in remaining or []:
+                failed = _add_failed(
+                    failed, _window_entry(fd2, td2, code, kind, split=SPLIT_NONE, message=msg))
             hist["failed_windows"] = failed
         save_history(db, hist)
         text = progress_line(hist)
-        kind = exc.kind if isinstance(exc, FlexError) else "api"
         _save_last(db, ok=False, error=msg, error_kind=kind,
                    failed_at=utcnow().strftime("%Y-%m-%d %H:%M UTC"))
         if ctx.run_id and text:
@@ -2243,15 +2420,15 @@ class IbkrFlexSource(DataSource):
         resuming = status in {"paused", "error", "running"} and nxt is not None
         retry: list[tuple[date, date]] = []
         kept_failed: list[dict] = []
+        seen_retry: set[tuple[date, date]] = set()
         for fw in _failed_windows(prev):
-            fd, td = _parse_iso(fw.get("fd")), _parse_iso(fw.get("td"))
-            if not fd or not td:
-                continue
-            if str(fw.get("code") or "") == "1003" and is_year_sized(fd, td):
-                retry.extend(iter_quarters(fd, td))
-            else:
-                retry.append((fd, td))
-                kept_failed.append(fw)
+            pieces, kept = expand_failed_window(fw, today)
+            if kept is not None:
+                kept_failed = _add_failed(kept_failed, kept)
+            for w in pieces:
+                if w not in seen_retry:
+                    seen_retry.add(w)
+                    retry.append(w)
         if resuming:
             sequential = [] if nxt > today else iter_windows(nxt, today)
             done = int(prev.get("done_windows") or 0)
@@ -2267,10 +2444,16 @@ class IbkrFlexSource(DataSource):
             else:
                 origin = max(start, today - timedelta(days=MAX_WINDOW_DAYS - 1))
             if origin > today:
-                origin = today
-            sequential = iter_windows(origin, today)
+                sequential = []
+            else:
+                sequential = iter_windows(origin, today)
             done = 0
             mode = "new"
+        if retry and sequential:
+            origin = sequential[0][0]
+            if any(fd <= origin <= td for fd, td in retry):
+                after = max(td for _fd, td in retry) + timedelta(days=1)
+                sequential = [] if after > today else iter_windows(after, today)
         seen: set[tuple[date, date]] = set()
         windows: list[tuple[date, date]] = []
         for w in retry + sequential:
@@ -2280,6 +2463,12 @@ class IbkrFlexSource(DataSource):
             windows.append(w)
         seq_next = sequential[0][0] if sequential else (
             nxt if (resuming and nxt) else (today + timedelta(days=1)))
+        retry_n = 0
+        for w in windows:
+            if w in seen_retry:
+                retry_n += 1
+            else:
+                break
         hist = {
             "start": start.isoformat(),
             "next_fd": seq_next.isoformat(),
@@ -2295,6 +2484,7 @@ class IbkrFlexSource(DataSource):
             "notes": _history_notes(prev) if (resuming or retry) else [],
             "failed_windows": kept_failed,
             "gaps": _gap_windows(prev),
+            "retry_n": retry_n,
         }
         return windows, hist, mode
 
@@ -2308,15 +2498,17 @@ class IbkrFlexSource(DataSource):
         hist["paused_until"] = None
         if drop_failed:
             hist["failed_windows"] = _drop_failed(_failed_windows(hist), fd, td)
-        if self._is_retry_window(hist, fd):
-            seq = _parse_iso(hist.get("seq_fd")) or (td + timedelta(days=1))
-            hist["next_fd"] = seq.isoformat()
-            nxt = seq
-        else:
+        last = _parse_iso(hist.get("last_synced"))
+        if last is None or td > last:
             hist["last_synced"] = td.isoformat()
+        seq = _parse_iso(hist.get("seq_fd"))
+        if seq is None or fd <= seq:
             nxt = td + timedelta(days=1)
             hist["next_fd"] = nxt.isoformat()
             hist["seq_fd"] = nxt.isoformat()
+        else:
+            nxt = seq
+            hist["next_fd"] = seq.isoformat()
         hist["status"] = "done" if nxt > today else "running"
 
     def _on_1003(self, db: Session, ctx: SyncContext, hist: dict, fd: date, td: date, today: date) -> None:
@@ -2475,12 +2667,13 @@ class IbkrFlexSource(DataSource):
         """Fetch fd/td windows one at a time. A failed window does not move the cursor.
 
         Full history (FULL_STATE, or the card's Full history button) walks from the history
-        start date. Sync new walks from the last synced date minus a few days. A paused or
-        failed job resumes from the last completed window instead of starting over. One
-        query fetch per window is shared by every account; a per-account sync keeps only
-        that account's statement. Error 1003 on a year window is recorded and retried as
-        quarters on the next press (no automatic retry). A quarter that is still 1003 is a
-        history gap. Temporary errors (1001, …) stop the job and are retried on the next press.
+        start date through the last completed US business day. Sync new walks from the last
+        synced date minus a few days. A paused or failed job resumes from the last completed
+        window instead of starting over. One query fetch per window is shared by every
+        account; a per-account sync keeps only that account's statement. Error 1003 on a
+        year window is recorded and retried as quarters on the next press (no automatic
+        retry). A quarter that is still 1003 is a history gap. Temporary errors (1001, …)
+        stop the job; the next press retries a year as quarters and a quarter as months.
         """
         res = SourceResult()
         creds = load_credentials(db)
@@ -2490,12 +2683,17 @@ class IbkrFlexSource(DataSource):
         default_ccy = (creds.get("currency") or "USD").upper()
         full_flag = get_state(db, FULL_STATE) == "1"
         windows, hist, mode = self._plan(db, full_flag)
+        retry_n = int(hist.get("retry_n") or 0)
         if full_flag:
             set_state(db, FULL_STATE, None)
         if not windows:
             hist["status"] = "done"
             self._publish(db, ctx, hist)
-            res.message = "Interactive Brokers: up to date. " + progress_line(hist)
+            end = hist.get("end") or _today().isoformat()
+            res.message = f"Up to date through {end}"
+            extra = progress_line(hist)
+            if extra and extra not in res.message:
+                res.message = f"{res.message}. {extra}"
             ctx.info(res.message.strip())
             return res
         if cooldown_left() > 0:
@@ -2514,6 +2712,10 @@ class IbkrFlexSource(DataSource):
         today = _today()
         try:
             for i, (fd, td) in enumerate(windows):
+                clamped = clamp_window(fd, td, today)
+                if clamped is None:
+                    continue
+                fd, td = clamped
                 hist["status"] = "running"
                 hist["next_fd"] = fd.isoformat()
                 hist["error"] = None
@@ -2567,7 +2769,10 @@ class IbkrFlexSource(DataSource):
                     hist.setdefault("done_windows", 0)
                     hist.setdefault("total_windows", len(windows))
                     hist.setdefault("start", history_start_date(db).isoformat())
-                    msg = self._fail_window(db, ctx, hist, exc, token, fd, td)
+                    rest = windows[i + 1:retry_n] if i < retry_n else []
+                    rest = [clamp_window(a, b, today) for a, b in rest]
+                    rest = [w for w in rest if w is not None]
+                    msg = self._fail_window(db, ctx, hist, exc, token, fd, td, remaining=rest)
                     raise RuntimeError(msg) from exc
         except RuntimeError:
             raise

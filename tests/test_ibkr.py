@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 import httpx
@@ -926,7 +927,7 @@ def test_1004_stops_job_and_keeps_cursor(db, enc, monkeypatch, caplog):
     assert st["error_kind"] == "temporary" and "1004" in st["error"] and TOKEN not in json.dumps(st)
     ibkr._GATE.update(last=0.0, until=0.0)
     src.sync(db, SyncContext())
-    assert fake.sent[1] == ("20250101", "20251231")  # retried the same window; the cursor stayed
+    assert fake.sent[1] == ("20250101", "20250331")  # next press splits the year to quarters
 
 
 def test_save_credentials_strips_whitespace_and_newlines(db, enc, monkeypatch):
@@ -1021,10 +1022,11 @@ def test_1001_is_recorded_and_retried_without_advancing(db, enc, monkeypatch):
         src.sync(db, SyncContext())
     hist = ibkr.load_history(db)
     assert hist["status"] == "error" and hist["next_fd"] == "2025-01-01"
-    assert any(x.get("code") == "1001" for x in hist.get("failed_windows") or [])
+    fw = next(x for x in hist.get("failed_windows") or [] if x.get("code") == "1001")
+    assert fw.get("split") == "quarter"
     ibkr._GATE.update(last=0.0, until=0.0)
     src.sync(db, SyncContext())
-    assert fake.sent[1] == ("20250101", "20251231")
+    assert fake.sent[1] == ("20250101", "20250331")  # next press: quarters, not the year again
 
 
 def test_upload_xml_feeds_parser_and_dedupes(db, enc, monkeypatch):
@@ -1602,3 +1604,307 @@ def test_merger_without_opening_keeps_one_history_note(db, enc, monkeypatch):
         CorporateAdjustment.status == "needs_attention"))
                if a.symbol == "OLDQ" and "opening fill" in (a.note or "").lower()]
     assert len(opening) == 1
+
+
+# ---------------------------------------------------------------- ibkr6: td cap, 1001 split, ignore Url
+NY = ZoneInfo("America/New_York")
+LEGACY_SEND = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<FlexStatementResponse><Status>Success</Status>'
+    '<ReferenceCode>9876543210</ReferenceCode>'
+    '<Url>https://gdcdyn.interactivebrokers.com/Universal/servlet/'
+    'FlexStatementService.GetStatement?t=LEAKEDTOKEN</Url>'
+    '</FlexStatementResponse>'
+)
+
+
+def _freeze_now(monkeypatch, dt: datetime):
+    monkeypatch.setattr(ibkr, "_now_ny", lambda: dt)
+    monkeypatch.setattr(ibkr, "SEND_GAP", 15.0)
+
+
+def test_td_capped_last_complete_us_business_day():
+    cases = [
+        (datetime(2026, 10, 17, 12, 0, tzinfo=NY), date(2026, 10, 16)),  # Saturday
+        (datetime(2026, 10, 18, 18, 0, tzinfo=NY), date(2026, 10, 16)),  # Sunday
+        (datetime(2026, 10, 19, 8, 15, tzinfo=NY), date(2026, 10, 16)),  # Monday morning
+        (datetime(2026, 10, 14, 15, 30, tzinfo=NY), date(2026, 10, 13)),  # Wednesday → Tuesday
+        (datetime(2026, 10, 16, 9, 0, tzinfo=NY), date(2026, 10, 15)),  # Friday → Thursday
+    ]
+    for now, expect in cases:
+        assert ibkr.last_complete_biz_day(now) == expect, now
+    naive = datetime(2026, 10, 17, 12, 0)
+    assert ibkr.last_complete_biz_day(naive) == date(2026, 10, 16)
+
+
+def test_full_history_never_sends_td_past_cap(db, enc, monkeypatch):
+    _freeze_now(monkeypatch, datetime(2026, 10, 17, 12, 0, tzinfo=NY))
+    _no_fx(monkeypatch)
+    fake = ScriptedFlex(TINY)
+    ibkr.save_credentials(db, TOKEN, QUERY_ID, "USD")
+    ibkr.save_history_start(db, date(2022, 1, 1))
+    from app.services import set_state
+    set_state(db, ibkr.FULL_STATE, "1")
+    db.commit()
+    src = ibkr.IbkrFlexSource(transport=fake.transport(), sleep=nop_sleep, split_fetch=lambda *a: [])
+    src.sync(db, SyncContext())
+    assert fake.sent
+    assert all(td <= "20261016" for _fd, td in fake.sent)
+    assert fake.sent[-1] == ("20251231", "20261016")
+    hist = ibkr.load_history(db)
+    assert hist["end"] == "2026-10-16" and hist["last_synced"] == "2026-10-16"
+
+
+def test_up_to_date_when_fd_after_cap(db, enc, monkeypatch):
+    _freeze_now(monkeypatch, datetime(2026, 10, 17, 12, 0, tzinfo=NY))
+    _no_fx(monkeypatch)
+    fake = ScriptedFlex(TINY)
+    ibkr.save_credentials(db, TOKEN, QUERY_ID, "USD")
+    ibkr.save_history(db, {
+        "status": "running", "last_synced": "2026-10-16", "next_fd": "2026-10-17",
+        "seq_fd": "2026-10-17", "done_windows": 5, "total_windows": 5,
+        "start": "2022-01-01", "mode": "full", "end": "2026-10-16",
+        "failed_windows": [{"fd": "2026-10-17", "td": "2026-10-17", "code": "1001"}],
+    })
+    db.commit()
+    src = ibkr.IbkrFlexSource(transport=fake.transport(), sleep=nop_sleep, split_fetch=lambda *a: [])
+    res = src.sync(db, SyncContext())
+    assert fake.sent == []
+    assert "Up to date through 2026-10-16" in res.message
+
+
+def test_1001_year_next_press_quarters_stop_at_first_failure(db, enc, monkeypatch):
+    _freeze(monkeypatch)
+    _no_fx(monkeypatch)
+    fail = _flex_fail("1001", "Statement could not be generated at this time. Please try again shortly.")
+    fake = ScriptedFlex(TINY, send_bodies=[fail])
+    ibkr.save_credentials(db, TOKEN, QUERY_ID, "USD")
+    ibkr.save_history_start(db, date(2025, 1, 1))
+    from app.services import set_state
+    set_state(db, ibkr.FULL_STATE, "1")
+    db.commit()
+    sleeps: list[float] = []
+    src = ibkr.IbkrFlexSource(transport=fake.transport(), sleep=sleeps.append, split_fetch=lambda *a: [])
+    with pytest.raises(RuntimeError):
+        src.sync(db, SyncContext())
+    assert fake.sent == [("20250101", "20251231")]  # no automatic retry
+    hist = ibkr.load_history(db)
+    fw = hist["failed_windows"][0]
+    assert fw["code"] == "1001" and fw["split"] == "quarter"
+    ibkr._GATE.update(last=0.0, until=0.0)
+    quarters = ibkr.iter_quarters(date(2025, 1, 1), date(2025, 12, 31))
+    fake2 = ScriptedFlex(TINY, send_bodies=[None, fail])  # Q1 ok, Q2 1001
+    sleeps2: list[float] = []
+    src = ibkr.IbkrFlexSource(transport=fake2.transport(), sleep=sleeps2.append, split_fetch=lambda *a: [])
+    with pytest.raises(RuntimeError):
+        src.sync(db, SyncContext())
+    assert fake2.sent == [(ibkr._ymd(a), ibkr._ymd(b)) for a, b in quarters[:2]]
+    assert len(fake2.sent) == 2  # stopped; Q3/Q4 not sent
+    assert sleeps2 == [ibkr.history_gap(2)]
+    assert sleeps2[0] >= ibkr.SEND_GAP
+    hist = ibkr.load_history(db)
+    assert hist["status"] == "error"
+    assert hist["last_synced"] == "2025-03-31"
+    failed = hist["failed_windows"]
+    assert failed[0]["fd"] == "2025-04-01" and failed[0]["split"] == "month"
+    assert [x["fd"] for x in failed] == ["2025-04-01", "2025-07-01", "2025-10-01"]
+    assert all(x.get("split") == "none" for x in failed[1:])
+    assert TOKEN not in json.dumps(hist)
+
+
+def test_1001_quarter_next_press_months(db, enc, monkeypatch):
+    _freeze(monkeypatch)
+    _no_fx(monkeypatch)
+    fail = _flex_fail("1001", "Statement could not be generated at this time. Please try again shortly.")
+    ibkr.save_credentials(db, TOKEN, QUERY_ID, "USD")
+    ibkr.save_history(db, {
+        "status": "error", "last_synced": "2025-03-31", "next_fd": "2025-04-01",
+        "seq_fd": "2025-04-01", "done_windows": 1, "total_windows": 4,
+        "start": "2025-01-01", "mode": "full", "end": TODAY.isoformat(),
+        "failed_windows": [
+            {"fd": "2025-04-01", "td": "2025-06-30", "code": "1001", "kind": "temporary", "split": "month"},
+            {"fd": "2025-07-01", "td": "2025-09-30", "code": "1001", "kind": "temporary", "split": "none"},
+            {"fd": "2025-10-01", "td": "2025-12-31", "code": "1001", "kind": "temporary", "split": "none"},
+        ],
+    })
+    db.commit()
+    fake = ScriptedFlex(TINY, send_bodies=[fail])
+    src = ibkr.IbkrFlexSource(transport=fake.transport(), sleep=nop_sleep, split_fetch=lambda *a: [])
+    with pytest.raises(RuntimeError):
+        src.sync(db, SyncContext())
+    months = ibkr.iter_months(date(2025, 4, 1), date(2025, 6, 30))
+    assert fake.sent[0] == (ibkr._ymd(months[0][0]), ibkr._ymd(months[0][1]))
+    assert fake.sent == [(ibkr._ymd(months[0][0]), ibkr._ymd(months[0][1]))]  # stop at first month
+    hist = ibkr.load_history(db)
+    fds = [x["fd"] for x in hist["failed_windows"]]
+    assert "2025-04-01" in fds  # failed month retried as-is next time
+    assert "2025-05-01" in fds and "2025-06-01" in fds
+    assert "2025-07-01" in fds and "2025-10-01" in fds
+    assert not any(x["fd"] == "2025-04-01" and x["td"] == "2025-06-30" for x in hist["failed_windows"])
+
+
+def test_1001_month_retried_as_is(db, enc, monkeypatch):
+    _freeze(monkeypatch)
+    _no_fx(monkeypatch)
+    fail = _flex_fail("1001", "Statement could not be generated at this time. Please try again shortly.")
+    ibkr.save_credentials(db, TOKEN, QUERY_ID, "USD")
+    ibkr.save_history(db, {
+        "status": "error", "last_synced": "2025-03-31", "next_fd": "2025-04-01",
+        "seq_fd": "2025-04-01", "done_windows": 1, "total_windows": 2,
+        "start": "2025-01-01", "mode": "full", "end": TODAY.isoformat(),
+        "failed_windows": [
+            {"fd": "2025-04-01", "td": "2025-04-30", "code": "1001", "kind": "temporary", "split": "none"},
+        ],
+    })
+    db.commit()
+    fake = ScriptedFlex(TINY, send_bodies=[fail])
+    src = ibkr.IbkrFlexSource(transport=fake.transport(), sleep=nop_sleep, split_fetch=lambda *a: [])
+    with pytest.raises(RuntimeError):
+        src.sync(db, SyncContext())
+    assert fake.sent == [("20250401", "20250430")]
+    hist = ibkr.load_history(db)
+    assert hist["failed_windows"][0]["fd"] == "2025-04-01"
+    assert hist["failed_windows"][0]["td"] == "2025-04-30"
+    assert hist["failed_windows"][0]["split"] == "none"
+
+
+def test_migrate_stored_1001_clamps_td_and_splits_to_quarters(db, enc, monkeypatch):
+    _freeze_now(monkeypatch, datetime(2026, 10, 17, 12, 0, tzinfo=NY))
+    _no_fx(monkeypatch)
+    fail = _flex_fail("1001", "Statement could not be generated at this time. Please try again shortly.")
+    ibkr.save_credentials(db, TOKEN, QUERY_ID, "USD")
+    ibkr.save_history(db, {
+        "status": "error", "last_synced": "2025-12-30", "next_fd": "2025-12-31",
+        "seq_fd": "2025-12-31", "done_windows": 4, "total_windows": 5,
+        "start": "2022-01-01", "mode": "full",
+        "failed_windows": [{"fd": "2025-12-31", "td": "2026-10-17", "code": "1001"}],
+    })
+    db.commit()
+    fake = ScriptedFlex(TINY, send_bodies=[fail])
+    src = ibkr.IbkrFlexSource(transport=fake.transport(), sleep=nop_sleep, split_fetch=lambda *a: [])
+    with pytest.raises(RuntimeError):
+        src.sync(db, SyncContext())
+    capped = date(2026, 10, 16)
+    quarters = ibkr.iter_quarters(date(2025, 12, 31), capped)
+    assert fake.sent[0] == (ibkr._ymd(quarters[0][0]), ibkr._ymd(quarters[0][1]))
+    assert all(td <= "20261016" for _fd, td in fake.sent)
+    hist = ibkr.load_history(db)
+    assert not any(x.get("td") == "2026-10-17" for x in hist["failed_windows"])
+    assert not any(x.get("fd") == "2025-12-31" and x.get("td") == "2026-10-16" for x in hist["failed_windows"])
+    # remaining quarters queued; parent replaced
+    assert len(hist["failed_windows"]) == len(quarters)  # current fail + remaining
+    assert hist["failed_windows"][0]["fd"] == quarters[0][0].isoformat()
+
+
+def test_1003_on_subwindow_is_gap_and_advances(db, enc, monkeypatch):
+    _freeze(monkeypatch)
+    _no_fx(monkeypatch)
+    fail = _flex_fail("1003", "Statement is not available.")
+    ibkr.save_credentials(db, TOKEN, QUERY_ID, "USD")
+    ibkr.save_history(db, {
+        "status": "error", "last_synced": "2024-12-31", "next_fd": "2025-01-01",
+        "seq_fd": "2025-01-01", "done_windows": 3, "total_windows": 5,
+        "start": "2022-01-01", "mode": "full", "end": TODAY.isoformat(),
+        "failed_windows": [
+            {"fd": "2025-01-01", "td": "2025-12-31", "code": "1001", "kind": "temporary", "split": "quarter"},
+        ],
+    })
+    db.commit()
+    fake = ScriptedFlex(TINY, send_bodies=[fail])  # first quarter 1003; rest succeed
+    src = ibkr.IbkrFlexSource(transport=fake.transport(), sleep=nop_sleep, split_fetch=lambda *a: [])
+    src.sync(db, SyncContext())
+    quarters = ibkr.iter_quarters(date(2025, 1, 1), date(2025, 12, 31))
+    assert fake.sent[0] == (ibkr._ymd(quarters[0][0]), ibkr._ymd(quarters[0][1]))
+    assert len(fake.sent) >= 4  # gap on Q1, then remaining quarters (and 2026)
+    hist = ibkr.load_history(db)
+    assert any(g.get("fd") == "2025-01-01" for g in hist.get("gaps") or [])
+    assert hist["status"] == "done"
+    assert hist["last_synced"] == TODAY.isoformat()
+
+
+def test_get_statement_ignores_legacy_url(enc):
+    fake = FakeFlex(send_xml=LEGACY_SEND, statement=load("statement.xml"))
+    cl = ibkr.FlexClient(TOKEN, transport=fake.transport(), sleep=nop_sleep)
+    xml = cl.fetch(QUERY_ID)
+    cl.close()
+    assert "<FlexQueryResponse" in xml or "<FlexStatement" in xml
+    gets = [c for c in fake.calls if "GetStatement" in c.url.path or "FlexStatementService" in str(c.url)]
+    assert gets
+    for g in gets:
+        assert g.url.host == "ndcdyn.interactivebrokers.com"
+        assert g.url.path.endswith("/FlexWebService/GetStatement")
+        assert "gdcdyn" not in str(g.url)
+        assert "FlexStatementService" not in str(g.url)
+        assert g.url.params.get("v") == "3"
+
+
+def test_get_statement_1001_polls_then_succeeds(enc):
+    fail = _flex_fail("1001", "Statement could not be generated at this time. Please try again shortly.")
+    fake = FakeFlex(get_bodies=[fail, fail, load("statement.xml")])
+    sleeps: list[float] = []
+    cl = ibkr.FlexClient(TOKEN, transport=fake.transport(), sleep=sleeps.append)
+    xml = cl.fetch(QUERY_ID)
+    cl.close()
+    assert "<FlexQueryResponse" in xml or "<FlexStatement" in xml
+    gets = [c for c in fake.calls if "GetStatement" in c.url.path]
+    assert len(gets) == 3
+    assert sleeps == [ibkr.POLL_GAP, ibkr.POLL_GAP]
+    assert len(fake.calls) <= ibkr.MAX_CALLS
+    assert not any("SendRequest" in c.url.path for c in fake.calls[1:] if "GetStatement" in c.url.path)
+    sends = [c for c in fake.calls if "SendRequest" in c.url.path]
+    assert len(sends) == 1
+
+
+def test_get_statement_1001_exhausted_is_window_failure(enc):
+    fail = _flex_fail("1001", "Statement could not be generated at this time. Please try again shortly.")
+    fake = FakeFlex(get_bodies=[fail, fail, fail])
+    cl = ibkr.FlexClient(TOKEN, transport=fake.transport(), sleep=nop_sleep)
+    with pytest.raises(ibkr.FlexError) as ei:
+        cl.fetch(QUERY_ID)
+    cl.close()
+    assert ei.value.code == "1001" and ei.value.kind == "temporary"
+    gets = [c for c in fake.calls if "GetStatement" in c.url.path]
+    assert len(gets) == ibkr.RETRY_1019
+    assert len(fake.calls) <= ibkr.MAX_CALLS
+    assert TOKEN not in str(ei.value)
+
+
+def test_card_message_1001_split_and_data_available(db, enc, monkeypatch):
+    _freeze_now(monkeypatch, datetime(2026, 10, 17, 12, 0, tzinfo=NY))
+    _no_fx(monkeypatch)
+    monkeypatch.setattr(ibkr, "_TRANSPORT", FakeFlex(statement=load("multi.xml")).transport())
+    c = _client()
+    r = c.post("/settings/brokers/ibkr/connect",
+               data={"token": TOKEN, "query_id": QUERY_ID, "currency": "USD"}, follow_redirects=True)
+    assert TOKEN not in r.text
+    ibkr.save_history(db, {
+        "status": "error", "last_synced": "2025-12-30", "next_fd": "2025-12-31",
+        "seq_fd": "2025-12-31", "done_windows": 4, "total_windows": 5,
+        "start": "2022-01-01", "mode": "full", "end": "2026-10-16",
+        "error": "IBKR error 1001: Statement could not be generated at this time. Please try again shortly.",
+        "failed_windows": [{"fd": "2025-12-31", "td": "2026-10-17", "code": "1001", "kind": "temporary"}],
+    })
+    db.commit()
+    page = c.get("/settings").text
+    assert TOKEN not in page
+    assert "IBKR could not generate 2025-12-31–2026-10-16 (1001)" in page
+    n = len(ibkr.iter_quarters(date(2025, 12, 31), date(2026, 10, 16)))
+    assert f"Next Sync will fetch it in smaller pieces: {n} quarters left." in page
+    assert "Data available through 2026-10-16" in page
+    assert "IBKR has data up to the previous business day" in page
+    assert "1001" in page
+    assert "Statement could not be generated" in page
+
+
+def test_iter_months_cover_a_quarter():
+    m = ibkr.iter_months(date(2025, 4, 1), date(2025, 6, 30))
+    assert m == [
+        (date(2025, 4, 1), date(2025, 4, 30)),
+        (date(2025, 5, 1), date(2025, 5, 31)),
+        (date(2025, 6, 1), date(2025, 6, 30)),
+    ]
+    assert all(1 <= (td - fd).days + 1 <= 31 for fd, td in m)
+    q = ibkr.iter_quarters(date(2025, 12, 31), date(2026, 10, 16))
+    assert q[0] == (date(2025, 12, 31), date(2025, 12, 31))
+    assert q[-1] == (date(2026, 10, 1), date(2026, 10, 16))
+    assert not any(td > date(2026, 10, 16) for _fd, td in q)

@@ -6,7 +6,10 @@
     </label>
     <button class="btn btn-s text-xs">Save start date</button>
   </form>
-  <p class="text-xs text-slate-500">Full history walks year-sized windows from this date to today. Sync new continues from the last synced date. One token and one query cover every account.</p>
+  <p class="text-xs text-slate-500">Full history walks year-sized windows from this date through the previous US business day. Sync new continues from the last synced date. One token and one query cover every account.</p>
+  {% if ibkr.flex_end %}
+  <p class="text-xs text-slate-500" id="ibkr-available">Data available through {{ ibkr.flex_end }} (IBKR has data up to the previous business day).</p>
+  {% endif %}
   {% if ibkr.progress %}
   <div class="text-xs text-slate-300" id="ibkr-progress">{{ ibkr.progress }}</div>
   {% endif %}
@@ -67,7 +70,7 @@
       <div class="flex flex-wrap gap-2">
         <button class="btn btn-s text-xs">Save</button>
         <button type="button" hx-post="/settings/brokers/ibkr/sync" hx-target="#ibkr-sync" class="btn btn-p text-xs">Sync new</button>
-        <button type="button" hx-post="/settings/brokers/ibkr/resync" hx-target="#ibkr-sync" hx-confirm="Full history fetches year-sized windows from the history start date to today. Failed windows (1001/1003) are retried; a 1003 year is retried as quarters. Existing fills are kept." class="btn btn-s text-xs">Full history</button>
+        <button type="button" hx-post="/settings/brokers/ibkr/resync" hx-target="#ibkr-sync" hx-confirm="Full history fetches year-sized windows from the history start date through the previous US business day. Failed windows (1001/1003) are retried; a 1001 year is retried as quarters, a 1001 quarter as months. Existing fills are kept." class="btn btn-s text-xs">Full history</button>
         <button type="submit" form="ibkr-test" class="btn btn-s text-xs">Test connection</button>
         <button type="submit" form="ibkr-disconnect" class="btn btn-d text-xs" onclick="return confirm('Delete the stored Flex token? Imported trades stay.')">Disconnect</button>
       </div>

@@ -256,6 +256,7 @@ def settings_ctx(db: Session) -> dict:
                      "instruments": ib_insts, "how_to": ibkr.HOW_TO,
                      "history_start": ibkr.history_start_date(db).isoformat(),
                      "progress": ibkr.progress_line(ibkr.load_history(db)),
+                     "flex_end": ibkr.last_complete_biz_day().isoformat(),
                      "mapped": mapped,
                      "balance_checks": _ibkr_balance_checks(db, mapped),
                      "enc_key": bool(get_settings().token_encryption_key)}}
