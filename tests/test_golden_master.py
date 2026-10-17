@@ -41,7 +41,12 @@ def build_fixture_dataset(db, fixture_text):
     db.commit()
 
 
-def test_fixture_dataset_matches_golden_baseline(db, fixture_text):
+def test_fixture_dataset_matches_golden_baseline(db, fixture_text, monkeypatch):
+    # Fixture options expire 2026-10-16. Freeze "today" before that so an inferred
+    # expiration close is not invented, and the golden baseline stays comparable.
+    from datetime import datetime
+    from app import services
+    monkeypatch.setattr(services, "utcnow", lambda: datetime(2026, 10, 1, 15, 0))
     build_fixture_dataset(db, fixture_text)
     snap = snapshot(db)
     assert snap["executions"] and snap["trades"], "fixtures produced nothing"

@@ -110,6 +110,24 @@ def save_auto(db, detected: dict[str, tuple[str, str]]) -> None:
     set_state(db, AUTO_STATE, json.dumps(cur))
 
 
+def drop_auto(db, old: str, new: str | None = None) -> None:
+    """Remove one detected alias. A different target is left in place."""
+    from app.services import get_state, set_state
+    try:
+        cur = json.loads(get_state(db, AUTO_STATE) or "{}")
+    except ValueError:
+        return
+    key = (old or "").upper()
+    if key not in cur:
+        return
+    have = cur[key]
+    dest = have.get("to") if isinstance(have, dict) else have
+    if new and (dest or "").upper() != (new or "").upper():
+        return
+    cur.pop(key, None)
+    set_state(db, AUTO_STATE, json.dumps(cur))
+
+
 def describe(db) -> list[dict]:
     """Rows for the Settings page. The same old → new pair is listed once."""
     from app.services import get_state

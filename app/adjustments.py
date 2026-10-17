@@ -192,6 +192,59 @@ def _clear_flag(db: Session, account_id: int, symbol: str, code: str) -> None:
         CorporateAdjustment.external_key == f"attn:{symbol.upper()}:{code}"))
 
 
+def delete_rename_pair(db: Session, account_id: int, old: str, new: str) -> int:
+    """Drop one applied rename and its detected alias. The opposite direction is a separate call."""
+    old, new = (old or "").upper(), (new or "").upper()
+    if not old or not new:
+        return 0
+    rows = list(db.scalars(select(CorporateAdjustment).where(
+        CorporateAdjustment.account_id == account_id,
+        CorporateAdjustment.kind == "RENAME",
+        CorporateAdjustment.symbol == old,
+        CorporateAdjustment.new_symbol == new)))
+    for row in rows:
+        db.delete(row)
+    if rows:
+        db.flush()
+    from app.symbols import drop_auto
+    drop_auto(db, old, new)
+    return len(rows)
+
+
+def _check_reason(row) -> str:
+    """Bucket duplicate needs-attention rows. Distinct warnings stay distinct."""
+    note = (row.note or "").lower()
+    key = row.external_key or ""
+    if "merger/acquisition needs attention" in note or key.endswith(":merger"):
+        return "merger"
+    if ("opening fill" in note or "opening buy is before" in note or "outside imported" in note
+            or "earliest imported" in note or key.endswith(":outside")):
+        return "outside-history"
+    if key.endswith(":orphan") and ("opening buy" in note or "no open position" in note
+                                    or "earliest imported" in note or "outside imported" in note):
+        return "outside-history"
+    return key or note[:80]
+
+
+def dedupe_checks(db: Session, account_id: int) -> int:
+    """One CHECK row per account + symbol + reason. The earliest row is kept."""
+    rows = list(db.scalars(select(CorporateAdjustment).where(
+        CorporateAdjustment.account_id == account_id,
+        CorporateAdjustment.kind == "CHECK").order_by(CorporateAdjustment.id)))
+    seen: dict[tuple[str, str], CorporateAdjustment] = {}
+    n = 0
+    for row in rows:
+        key = ((row.symbol or "").upper(), _check_reason(row))
+        if key in seen:
+            db.delete(row)
+            n += 1
+        else:
+            seen[key] = row
+    if n:
+        db.flush()
+    return n
+
+
 def _held_rows(execs) -> dict[str, list]:
     groups: dict[str, list] = {}
     for e in execs:
@@ -516,6 +569,26 @@ def detect_and_apply(db: Session, account_id: int, *, fetch=None, positions: dic
                 lines.append(f"{sym} → {new}")
                 _clear_flag(db, account_id, sym, "rename")
             continue
+        if kind == "MERGER":
+            new = (ev.get("new_symbol") or "").upper()
+            if not new or new == sym:
+                continue
+            if _manual_blocks(db, account_id, sym, "MERGER") or _manual_blocks(db, account_id, sym, "RENAME"):
+                continue
+            ratio = ev.get("ratio")
+            when = ev.get("when") or utcnow()
+            note = f"{sym} merged into {new}"
+            if ratio:
+                note += f" at {float(ratio):.6g}"
+            _, created = upsert(
+                db, account_id, key=ev.get("key") or f"merger:{sym}:{new}:{_day_key(when)}",
+                symbol=sym, kind="MERGER", status="applied", source="broker",
+                ratio=float(ratio) if ratio else None, new_symbol=new, when=when, note=note)
+            if created:
+                lines.append(note)
+            _clear_flag(db, account_id, sym, "merger")
+            _clear_flag(db, account_id, new, "merger")
+            continue
         if kind == "SPLIT" and ev.get("ratio") and ev.get("when"):
             if _manual_blocks(db, account_id, sym, "SPLIT"):
                 continue
@@ -532,6 +605,23 @@ def detect_and_apply(db: Session, account_id: int, *, fetch=None, positions: dic
                 _clear_flag(db, account_id, sym, "ratio")
 
     lines.extend(_apply_identity_renames(db, account_id, execs))
+    # A TC merger is one direction. Drop a stored reverse rename after identity detection so
+    # neither this batch nor a catalogue guess can put the opposite alias back. A cash or
+    # ratio merger is not a 1:1 alias either.
+    for ev in events:
+        if not ev.get("merger"):
+            continue
+        old = (ev.get("symbol") or "").upper()
+        new = (ev.get("new_symbol") or "").upper()
+        if not old or not new or old == new:
+            continue
+        if ev.get("kind") == "RENAME":
+            delete_rename_pair(db, account_id, new, old)
+        elif ev.get("kind") == "MERGER":
+            delete_rename_pair(db, account_id, old, new)
+            delete_rename_pair(db, account_id, new, old)
+        _clear_flag(db, account_id, old, "merger")
+        _clear_flag(db, account_id, new, "merger")
     lines.extend(materialize(db, account_id))
     from app.symbols import canonical_symbol, load_aliases
     aliases = load_aliases(db)
@@ -608,6 +698,7 @@ def detect_and_apply(db: Session, account_id: int, *, fetch=None, positions: dic
                     _clear_flag(db, account_id, raw, "qty")
             if _flag(db, account_id, sym, "qty", note):
                 lines.append(note)
+    dedupe_checks(db, account_id)
     db.flush()
     return lines
 

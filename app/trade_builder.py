@@ -134,10 +134,20 @@ def sort_key(e: BuilderExec):
     # that to midnight would run it before the same-day fills and leave the position unscaled.
     if e.kind == "SPLIT":
         return (e.executed_at, 2, e.seq, e.id)
+    # A merger close and the new shares often share a timestamp. Apply the close first so it
+    # cannot wipe the shares just received when the opening buy is not in this history.
+    if e.kind == "CONVERSION" and e.side == "SELL":
+        conv = -1
+    elif e.kind == "CONVERSION" and e.side == "BUY":
+        conv = 1
+    else:
+        conv = None
     if e.time_known:
-        return (e.executed_at, 0, e.seq, e.id)
+        return (e.executed_at, 0 if conv is None else conv, e.seq, e.id)
     at = e.executed_at.replace(hour=0, minute=0, second=0, microsecond=0)
-    if e.kind in CLOSING_KINDS:
+    if conv is not None:
+        rank = conv
+    elif e.kind in CLOSING_KINDS:
         rank = 5
     elif e.kind == "SPLIT":
         rank = 2

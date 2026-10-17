@@ -75,8 +75,11 @@ def test_clip_to_date_range_and_stats(book):
     assert m["win_days"] == 2 and m["loss_days"] == 2
 
 
-def test_option_multiplier_partial(db):
+def test_option_multiplier_partial(db, monkeypatch):
     """2 calls bought @1.50, 1 sold @2.00 -> (2.00-1.50) x 1 x 100 = +50 realized while still open."""
+    from app import services
+    # The option expires 2026-10-16. Pin today earlier so the close stays inferred-off.
+    monkeypatch.setattr(services, "utcnow", lambda: datetime(2026, 10, 1, 15, 0))
     acct = Account(name="A", broker="schwab")
     db.add(acct)
     db.flush()

@@ -66,7 +66,8 @@ MAX_QUARTER_DAYS = 92             # 1003 on a year window is retried as these on
 DEFAULT_HISTORY_START = date(2022, 1, 1)
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 REPROCESS_STATE = "ibkr:reprocess"
-REPROCESS_VERSION = "4"
+REPROCESS_VERSION = "5"
+CONID_SYMBOL_STATE = "ibkr:conid_symbols"  # {conid: {symbol, asof, prefer}}; latest IBKR symbol wins
 COOLDOWN = 15 * 60                # pause all IBKR calls after a 1018 / 429 / 403 answer
 _GATE = {"last": 0.0, "until": 0.0}
 _GATE_LOCK = threading.Lock()
@@ -1202,18 +1203,66 @@ def _conid_of(row: dict) -> str:
     return str(row.get("conid") or row.get("conId") or "").strip()
 
 
+_CANCEL_TOKENS = {"CA", "CANCEL", "CANCELLED", "CANCELED"}
+# "C" is a closing trade. "Ca" is a cancelled corporate booking.
+_MERGER_WORD = re.compile(r"\b(merger|merged(?:\s+with|\s+into)?|acquired by)\b", re.I)
+_SRC_CASH_STOCK = re.compile(
+    r"^\s*([A-Z][A-Z0-9.]{0,7})\s*\([^)]*\)\s+CASH\s+AND\s+STOCK\s+MERGER\b", re.I)
+_SRC_LEAD_PAREN = re.compile(
+    r"^\s*([A-Z][A-Z0-9.]{0,7})\s*\([^)]*\)\s+MERGED\b", re.I)
+_SRC_PAREN = re.compile(r"\(([A-Z][A-Z0-9.]{0,7})\)\s+MERGED\b", re.I)
+_SRC_LEAD = re.compile(r"^\s*([A-Z][A-Z0-9.]{0,7})\s+MERGED\b", re.I)
+
+
+def _row_cancelled(row: dict) -> bool:
+    return bool(_trade_codes(row) & _CANCEL_TOKENS)
+
+
+def _qty_sign(row: dict) -> str:
+    qty = _num(row.get("quantity"))
+    if qty is None or abs(qty) <= 1e-12:
+        return ""
+    return "-" if qty < 0 else "+"
+
+
+def _ca_desc(row: dict) -> str:
+    return row.get("description") or row.get("actionDescription") or row.get("Description") or ""
+
+
 def dedupe_corporate(rows: list[dict]) -> list[dict]:
-    """Same actionID + conid: keep DETAIL, drop SUMMARY duplicates."""
-    ranked: dict[tuple, dict] = {}
-    order: list[tuple] = []
-    for row in rows:
+    """Same actionID + conid + quantity sign: keep DETAIL, drop SUMMARY duplicates.
+
+    Opposite-sign rows both survive so a cancelled booking can be told from the live leg.
+    A cancelled row is dropped when that action and conid also has a live row.
+    """
+    indexed: list[tuple[int, dict]] = []
+    for i, row in enumerate(rows):
         lod = _lod(row)
         if lod and lod not in CA_LOD:
+            continue
+        indexed.append((i, row))
+    by_leg: dict[tuple[str, str], list[int]] = {}
+    for n, (_i, row) in enumerate(indexed):
+        aid = str(_ca_action_id(row) or _ca_id(row))
+        con = str(_conid_of(row) or (row.get("symbol") or ""))
+        by_leg.setdefault((aid, con), []).append(n)
+    drop: set[int] = set()
+    for idxs in by_leg.values():
+        live = [n for n in idxs if not _row_cancelled(indexed[n][1])]
+        if live and len(live) < len(idxs):
+            for n in idxs:
+                if _row_cancelled(indexed[n][1]):
+                    drop.add(n)
+    ranked: dict[tuple, dict] = {}
+    order: list[tuple] = []
+    for n, (_i, row) in enumerate(indexed):
+        if n in drop:
             continue
         aid = _ca_action_id(row) or _ca_id(row)
         con = _conid_of(row) or (row.get("symbol") or "")
         extra = "" if aid else f"{row.get('dateTime') or ''}|{row.get('quantity') or ''}"
-        key = (str(aid), str(con), extra)
+        key = (str(aid), str(con), _qty_sign(row), extra)
+        lod = _lod(row)
         prev = ranked.get(key)
         if prev is None:
             ranked[key] = row
@@ -1285,7 +1334,7 @@ def _tc_group(gid: str, group: list[dict]) -> tuple[list[dict], list[ExecRecord]
         proceeds = _num(row.get("proceeds"))
         amount = _num(row.get("amount"))
         ccy = (row.get("currency") or "").upper() or None
-        desc = row.get("description") or row.get("actionDescription") or ""
+        desc = _ca_desc(row)
         per = _cash_per_share(desc)
         if proceeds is not None and abs(proceeds) > 1e-9:
             cash_amt += proceeds
@@ -1307,7 +1356,7 @@ def _tc_group(gid: str, group: list[dict]) -> tuple[list[dict], list[ExecRecord]
     if old_legs and not new_legs:
         for row in old_legs:
             sym = (row.get("symbol") or "").strip().upper()
-            desc = row.get("description") or row.get("actionDescription") or ""
+            desc = _ca_desc(row)
             new = _new_ticker(sym, desc)
             ratio = ratio_from_text(desc)
             old_qty = abs(_num(row.get("quantity")) or 0.0)
@@ -1320,13 +1369,12 @@ def _tc_group(gid: str, group: list[dict]) -> tuple[list[dict], list[ExecRecord]
     if not old_legs and new_legs:
         # only the new ticker was listed; description may name the old one
         for row in new_legs:
-            desc = row.get("description") or ""
             # leave as a received conversion; old close is missing
             pass
     old_sym = (old_legs[0].get("symbol") or "").strip().upper() if old_legs else ""
     new_sym = (new_legs[0].get("symbol") or "").strip().upper() if new_legs else ""
     if not new_sym and old_legs:
-        new_sym = _new_ticker(old_sym, old_legs[0].get("description") or "")
+        new_sym = _new_ticker(old_sym, _ca_desc(old_legs[0]))
     for row in old_legs:
         sym = (row.get("symbol") or old_sym).strip().upper()
         qty = abs(_num(row.get("quantity")) or 0.0)
@@ -1335,7 +1383,7 @@ def _tc_group(gid: str, group: list[dict]) -> tuple[list[dict], list[ExecRecord]
         recs.append(_ca_record(
             row, ext=f"ca:{_ca_id(row)}:{_conid_of(row) or sym}:C", symbol=sym, side="SELL",
             qty=qty, price=0.0, kind="CONVERSION", effect="CLOSE", when=when,
-            desc=row.get("description") or f"{sym} conversion out"))
+            desc=_ca_desc(row) or f"{sym} conversion out"))
     for row in new_legs:
         sym = (row.get("symbol") or new_sym).strip().upper()
         qty = abs(_num(row.get("quantity")) or 0.0)
@@ -1344,12 +1392,29 @@ def _tc_group(gid: str, group: list[dict]) -> tuple[list[dict], list[ExecRecord]
         recs.append(_ca_record(
             row, ext=f"ca:{_ca_id(row)}:{_conid_of(row) or sym}:O", symbol=sym, side="BUY",
             qty=qty, price=0.0, kind="CONVERSION", effect="OPEN", when=when,
-            desc=row.get("description") or f"{sym} conversion in"))
+            desc=_ca_desc(row) or f"{sym} conversion in"))
+    text_ratio = None
+    for row in list(old_legs) + list(new_legs):
+        found = ratio_from_text(_ca_desc(row))
+        if found:
+            text_ratio = found
+            break
+    old_qty = abs(_num(old_legs[0].get("quantity")) or 0.0) if old_legs else 0.0
+    new_qty = abs(_num(new_legs[0].get("quantity")) or 0.0) if new_legs else 0.0
+    qty_ratio = (new_qty / old_qty) if old_qty > 1e-12 and new_qty > 1e-12 else None
+    # Keep 102 FOR 1000 as 0.102. Do not snap it to a nearby "clean" split ratio.
+    ratio = text_ratio if text_ratio is not None else qty_ratio
+    pure_rename = abs(cash_amt) <= 1e-9 and (ratio is None or abs(float(ratio) - 1.0) <= 1e-9)
     if old_sym and new_sym and old_sym != new_sym:
-        events.append({"kind": "RENAME", "symbol": old_sym, "new_symbol": new_sym, "when": when,
-                       "key": f"rename:{old_sym}:{new_sym}:{when.date().isoformat()}",
-                       "old_conid": _conid_of(old_legs[0]) if old_legs else "",
-                       "new_conid": _conid_of(new_legs[0]) if new_legs else ""})
+        base = {"symbol": old_sym, "new_symbol": new_sym, "when": when, "merger": True,
+                "old_conid": _conid_of(old_legs[0]) if old_legs else "",
+                "new_conid": _conid_of(new_legs[0]) if new_legs else ""}
+        day = when.date().isoformat()
+        if pure_rename:
+            events.append({**base, "kind": "RENAME", "key": f"rename:{old_sym}:{new_sym}:{day}"})
+        else:
+            events.append({**base, "kind": "MERGER", "ratio": float(ratio) if ratio else None,
+                           "key": f"merger:{old_sym}:{new_sym}:{day}"})
     if abs(cash_amt) > 1e-9:
         events.append({"kind": "CASH", "symbol": cash_sym or old_sym or new_sym or "?",
                        "amount": round(cash_amt, 6), "currency": cash_ccy, "when": when,
@@ -1358,7 +1423,7 @@ def _tc_group(gid: str, group: list[dict]) -> tuple[list[dict], list[ExecRecord]
     if old_legs and not new_sym:
         events.append({"kind": "ATTENTION", "symbol": old_sym or "?", "code": "merger",
                        "note": f"{old_sym or 'A ticker'}: IBKR merger/acquisition needs attention "
-                               f"({(old_legs[0].get('description') or _ca_code(old_legs[0]))})."})
+                               f"({(_ca_desc(old_legs[0]) or _ca_code(old_legs[0]))})."})
     return events, recs
 
 
@@ -1372,9 +1437,9 @@ def corporate_events(rows: list[dict]) -> tuple[list[dict], list[ExecRecord]]:
     rest: list[dict] = []
     for row in rows:
         code = _ca_code(row)
-        desc = row.get("description") or row.get("actionDescription") or row.get("Description") or ""
+        desc = _ca_desc(row)
         blob = f"{code} {desc}"
-        if code in _MERGE_CODES or re.search(r"\b(merger|merged into|acquired by)\b", blob, re.I):
+        if code in _MERGE_CODES or _MERGER_WORD.search(blob):
             gid = _ca_action_id(row) or f"tc:{_ca_id(row)}"
             groups.setdefault(gid, []).append(row)
         else:
@@ -1452,11 +1517,400 @@ def corporate_events(rows: list[dict]) -> tuple[list[dict], list[ExecRecord]]:
             continue
         events.append({"kind": "ATTENTION", "symbol": sym, "code": "ca",
                        "note": f"{sym}: unrecognised IBKR corporate action {code or ''} {desc}".strip()})
-    for gid, group in groups.items():
+    for gid, group in _collapse_merger_groups(_orient_merger_groups(groups)).items():
         ev, rr = _tc_group(gid, group)
         events.extend(ev)
         recs.extend(rr)
     return events, recs
+
+
+def _merger_source(desc: str) -> str:
+    """Ticker that is merged away: the 'X MERGED WITH Y' / 'X CASH AND STOCK MERGER' source."""
+    text = desc or ""
+    for rx in (_SRC_CASH_STOCK, _SRC_LEAD_PAREN, _SRC_PAREN, _SRC_LEAD):
+        matched = rx.search(text) if rx is _SRC_PAREN else rx.match(text)
+        if not matched:
+            continue
+        token = matched.group(1).upper()
+        if _looks_ticker(token):
+            return token
+    return ""
+
+
+def _leg_symbol(row: dict) -> str:
+    return (row.get("symbol") or "").strip().upper()
+
+
+def _orient_merger_groups(groups: dict[str, list[dict]]) -> dict[str, list[dict]]:
+    """One direction per action. old = negative quantity of the description's source; new = the other conid.
+
+    A group whose negative leg is the other ticker is the reverse booking and is dropped entirely.
+    """
+    out: dict[str, list[dict]] = {}
+    for gid, group in groups.items():
+        source = ""
+        for row in group:
+            source = _merger_source(_ca_desc(row))
+            if source:
+                break
+        by_con: dict[str, list[dict]] = {}
+        for row in group:
+            con = str(_conid_of(row) or _leg_symbol(row))
+            by_con.setdefault(con, []).append(row)
+        kept: list[dict] = []
+        for rows_c in by_con.values():
+            signs = {_qty_sign(r) for r in rows_c if _qty_sign(r)}
+            if len(signs) < 2 or not source:
+                kept.extend(rows_c)
+                continue
+            sym = _leg_symbol(rows_c[0])
+            want = "-" if sym == source else "+"
+            chosen = [r for r in rows_c if _qty_sign(r) == want]
+            kept.extend(chosen or rows_c)
+        symbols = {_leg_symbol(r) for r in kept if _leg_symbol(r)}
+        neg = {_leg_symbol(r) for r in kept if (_num(r.get("quantity")) or 0) < -1e-12 and _leg_symbol(r)}
+        if source and source in symbols and neg and source not in neg:
+            continue
+        if kept:
+            out[gid] = kept
+    return out
+
+
+def _merger_fingerprint(group: list[dict]) -> tuple:
+    parts = []
+    for row in group:
+        qty = _num(row.get("quantity"))
+        if qty is None or abs(qty) <= 1e-12:
+            continue
+        digits = re.sub(r"\D", "", str(row.get("dateTime") or row.get("reportDate") or ""))[:8]
+        sign = "-" if qty < 0 else "+"
+        parts.append((digits, str(_conid_of(row) or _leg_symbol(row)), sign, round(abs(qty), 6)))
+    return tuple(sorted(parts))
+
+
+def _merger_cash_weight(group: list[dict]) -> float:
+    total = 0.0
+    for row in group:
+        for key in ("proceeds", "amount"):
+            value = _num(row.get(key))
+            if value:
+                total += abs(value)
+    return total
+
+
+def _collapse_merger_groups(groups: dict[str, list[dict]]) -> dict[str, list[dict]]:
+    """Same shares booked under two action ids count once. The row with real cash wins; else the first."""
+    best: dict[tuple, tuple[float, str]] = {}
+    order: list[tuple] = []
+    for gid, group in groups.items():
+        fp = _merger_fingerprint(group)
+        weight = _merger_cash_weight(group)
+        prev = best.get(fp)
+        if prev is None:
+            best[fp] = (weight, gid)
+            order.append(fp)
+        elif weight > prev[0] + 1e-9:
+            best[fp] = (weight, gid)
+    return {best[fp][1]: groups[best[fp][1]] for fp in order}
+
+
+def _merger_row_ids(rows: list[dict]) -> set[str]:
+    ids: set[str] = set()
+    for row in rows or []:
+        code = _ca_code(row)
+        desc = _ca_desc(row)
+        if code not in _MERGE_CODES and not _MERGER_WORD.search(f"{code} {desc}"):
+            continue
+        ident = str(_ca_id(row) or "")
+        action = str(_ca_action_id(row) or "")
+        if ident:
+            ids.add(ident)
+        if action:
+            ids.add(action)
+    return ids
+
+
+def _drop_stale_merger_legs(db: Session, account_id: int, corporate_rows: list[dict],
+                            kept_recs: list[ExecRecord], events: list[dict]) -> None:
+    """Remove conversion legs and cash keys from a merger action this pass did not keep.
+
+    Reprocess then drops a stored reverse booking without calling IBKR. The legs this pass
+    emits are left in place and upserted by ingest.
+    """
+    from app.models import CashFlow, Execution, TradeFill
+    ids = _merger_row_ids(corporate_rows)
+    if not ids:
+        return
+    kept_exec = {r.external_id for r in kept_recs if r.kind == "CONVERSION" and r.external_id}
+    kept_cash = {str(ev.get("key")) for ev in events if ev.get("kind") == "CASH" and ev.get("key")}
+    doomed: list[Execution] = []
+    for row in db.scalars(select(Execution).where(
+            Execution.account_id == account_id, Execution.kind == "CONVERSION",
+            Execution.source == SOURCE_KEY)):
+        ext = row.external_id or ""
+        parts = ext.split(":")
+        if len(parts) < 3 or parts[0] != "ca":
+            continue
+        if parts[1] not in ids or ext in kept_exec:
+            continue
+        doomed.append(row)
+    if doomed:
+        ids_doomed = [r.id for r in doomed]
+        for fill in db.scalars(select(TradeFill).where(TradeFill.execution_id.in_(ids_doomed))):
+            db.delete(fill)
+        for row in doomed:
+            db.delete(row)
+    cash_keys = [f"ibkr:ca-cash:{ident}" for ident in ids]
+    for flow in db.scalars(select(CashFlow).where(
+            CashFlow.account_id == account_id, CashFlow.source == SOURCE_KEY,
+            CashFlow.external_id.in_(cash_keys))):
+        if flow.external_id not in kept_cash:
+            db.delete(flow)
+    db.flush()
+
+
+def _asof_digits(row: dict) -> str:
+    raw = str(row.get("dateTime") or row.get("reportDate") or row.get("tradeDate") or "")
+    return re.sub(r"\D", "", raw)
+
+
+def _asof_wins(prev: dict, asof: str, prefer: bool) -> bool:
+    """A later calendar day wins. The same day prefers an Open Positions row over a trade."""
+    old_asof = str(prev.get("asof") or "")
+    old_prefer = bool(prev.get("prefer"))
+    if not old_asof and asof:
+        return True
+    if old_asof and not asof:
+        return False
+    if asof[:8] > old_asof[:8]:
+        return True
+    if asof[:8] < old_asof[:8]:
+        return False
+    if prefer and not old_prefer:
+        return True
+    if old_prefer and not prefer:
+        return False
+    return asof >= old_asof
+
+
+def _conid_symbol_ok(row: dict, symbol: str) -> bool:
+    cat = (row.get("assetCategory") or "").upper()
+    if cat and cat not in STOCK_CATS:
+        return False
+    if not symbol or symbol.isdigit() or " " in symbol or not _looks_ticker(symbol):
+        return False
+    return True
+
+
+def observe_conid_rows(db: Session, rows: list[dict], *, prefer: bool) -> None:
+    """Remember IBKR's symbol for each conid. A later date replaces an earlier one."""
+    if not rows:
+        return
+    try:
+        cur = json.loads(get_state(db, CONID_SYMBOL_STATE) or "{}")
+    except ValueError:
+        cur = {}
+    if not isinstance(cur, dict):
+        cur = {}
+    changed = False
+    for row in rows:
+        con = _conid_of(row)
+        sym = (row.get("symbol") or "").strip().upper()
+        if not con or not _conid_symbol_ok(row, sym):
+            continue
+        asof = _asof_digits(row)
+        prev = cur.get(con)
+        if isinstance(prev, dict) and not _asof_wins(prev, asof, prefer):
+            continue
+        cur[con] = {"symbol": sym, "asof": asof, "prefer": bool(prefer)}
+        changed = True
+    if changed:
+        set_state(db, CONID_SYMBOL_STATE, json.dumps(cur))
+
+
+def apply_conid_symbols(db: Session) -> list[int]:
+    """Point each IBKR instrument and its stock fills at the current symbol for that conid.
+
+    A manual override is left alone. Returns account ids whose fills changed.
+    """
+    try:
+        cur = json.loads(get_state(db, CONID_SYMBOL_STATE) or "{}")
+    except ValueError:
+        return []
+    if not isinstance(cur, dict) or not cur:
+        return []
+    from app.models import Execution
+    touched: set[int] = set()
+    insts = list(db.scalars(select(Instrument).where(
+        Instrument.source_key == SOURCE_KEY, Instrument.conid.is_not(None))))
+    for inst in insts:
+        if inst.user_override or not inst.conid:
+            continue
+        info = cur.get(inst.conid)
+        if not isinstance(info, dict):
+            continue
+        sym = (info.get("symbol") or "").strip().upper()
+        if not sym:
+            continue
+        execs = list(db.scalars(select(Execution).where(Execution.instrument_id == inst.id)))
+        changed = False
+        if (inst.symbol or "").upper() != sym:
+            inst.symbol = sym
+            if inst.exchange:
+                inst.price_symbol = markets.yahoo_symbol_for(sym, inst.exchange)
+            changed = True
+        for ex in execs:
+            if (ex.asset_type or "") == "OPTION" or " " in (ex.symbol or ""):
+                continue
+            if (ex.symbol or "").upper() != sym or (ex.underlying or "").upper() != sym:
+                ex.symbol = sym
+                ex.underlying = sym
+                changed = True
+        if changed:
+            touched.update(ex.account_id for ex in execs)
+    if touched:
+        db.flush()
+    return sorted(touched)
+
+
+def earliest_imported_day(db: Session, account_id: int, extra: list | None = None) -> date | None:
+    """First date this account actually has a fill, cash row, or dividend. Not the history-start setting."""
+    from sqlalchemy import func
+    from app.models import CashFlow, Dividend, Execution
+    days: list[date] = []
+    for model, col in (
+            (Execution, Execution.executed_at),
+            (CashFlow, CashFlow.occurred_at),
+            (Dividend, Dividend.paid_on)):
+        value = db.scalar(select(func.min(col)).where(model.account_id == account_id))
+        if value is None:
+            continue
+        days.append(value.date() if isinstance(value, datetime) else value)
+    for item in extra or []:
+        if isinstance(item, datetime):
+            days.append(item.date())
+        elif isinstance(item, date):
+            days.append(item)
+    return min(days) if days else None
+
+
+def history_gap_sentence(db: Session) -> str:
+    """Mention a 1003 gap only from history notes, gaps, and failed windows — not the whole job JSON."""
+    hist = load_history(db)
+    blobs: list[str] = []
+    for note in _history_notes(hist):
+        if "1003" in note:
+            blobs.append(note)
+    for item in _gap_windows(hist) + _failed_windows(hist):
+        text = json.dumps(item, default=str)
+        if "1003" in text:
+            blobs.append(text)
+    if not blobs:
+        return ""
+    years: list[str] = []
+    seen: set[str] = set()
+    for blob in blobs:
+        for match in re.finditer(r"20\d\d", blob):
+            year = match.group(0)
+            if year not in seen:
+                seen.add(year)
+                years.append(year)
+    if len(years) == 1:
+        return f"{years[0]} had no statement (IBKR 1003) and can be uploaded as XML."
+    if years:
+        return f"{', '.join(years)} had no statement (IBKR 1003) and can be uploaded as XML."
+    return "A window had no statement (IBKR 1003) and can be uploaded as XML."
+
+
+def _with_gap(note: str, gap: str) -> str:
+    if not gap or gap in note:
+        return note
+    return note.rstrip() + " " + gap
+
+
+def outside_note(symbol: str, day: date | None, gap: str) -> str:
+    when = day.isoformat() if day else "the earliest imported date"
+    return _with_gap(
+        f"{symbol}: opening fill is before {when} (earliest imported IBKR data).", gap)
+
+
+def orphan_note(symbol: str, day: date | None, gap: str, *, exceeds: bool = False) -> str:
+    when = day.isoformat() if day else "the earliest imported date"
+    if exceeds:
+        text = (f"{symbol}: closing fill exceeds the open position; opening buy is before "
+                f"{when} (earliest imported IBKR data).")
+    else:
+        text = (f"{symbol}: closing fill with no open position; opening buy is before "
+                f"{when} (earliest imported IBKR data).")
+    return _with_gap(text, gap)
+
+
+def _history_check(row) -> bool:
+    note = (row.note or "").lower()
+    key = row.external_key or ""
+    return ("opening fill" in note or "opening buy is before" in note or "outside imported" in note
+            or "earliest imported" in note or key.endswith(":outside") or key.endswith(":orphan"))
+
+
+def _merger_check(row) -> bool:
+    note = (row.note or "").lower()
+    key = row.external_key or ""
+    return "merger/acquisition needs attention" in note or key.endswith(":merger")
+
+
+def finish_import_attention(db: Session, account_id: int, events: list[dict]) -> list[str]:
+    """Drop stale merger warnings, keep one outside-history note per merger, and fix the date wording."""
+    from app.adjustments import dedupe_checks
+    from app.models import CorporateAdjustment
+    pairs: list[tuple[str, str]] = []
+    outside: set[str] = set()
+    for ev in events or []:
+        if ev.get("merger") and ev.get("symbol") and ev.get("new_symbol"):
+            pairs.append(((ev.get("symbol") or "").upper(), (ev.get("new_symbol") or "").upper()))
+        if ev.get("kind") == "ATTENTION" and (ev.get("code") or "") == "outside":
+            outside.add((ev.get("symbol") or "").upper())
+    if pairs:
+        rows = list(db.scalars(select(CorporateAdjustment).where(
+            CorporateAdjustment.account_id == account_id, CorporateAdjustment.kind == "CHECK")))
+        doomed: set[int] = set()
+        for old, new in pairs:
+            for row in rows:
+                if row.id in doomed:
+                    continue
+                sym = (row.symbol or "").upper()
+                if sym not in {old, new}:
+                    continue
+                if _merger_check(row):
+                    doomed.add(row.id)
+                    continue
+                if not _history_check(row):
+                    continue
+                # One outside-history note, on the old symbol, and only when its opening buy is missing.
+                if old not in outside or sym != old or (row.external_key or "").endswith(":orphan"):
+                    doomed.add(row.id)
+        for row in rows:
+            if row.id in doomed:
+                db.delete(row)
+        if doomed:
+            db.flush()
+    day = earliest_imported_day(db, account_id)
+    gap = history_gap_sentence(db)
+    rows = list(db.scalars(select(CorporateAdjustment).where(
+        CorporateAdjustment.account_id == account_id, CorporateAdjustment.kind == "CHECK",
+        CorporateAdjustment.status == "needs_attention")))
+    for row in rows:
+        if not _history_check(row):
+            continue
+        low = (row.note or "").lower()
+        key = row.external_key or ""
+        sym = row.symbol or "?"
+        if key.endswith(":orphan") or ("closing fill" in low and not key.endswith(":outside")):
+            row.note = orphan_note(sym, day, gap, exceeds="exceeds" in low)
+        else:
+            row.note = outside_note(sym, day, gap)
+    dedupe_checks(db, account_id)
+    db.flush()
+    return []
 
 
 def position_map(rows: list[dict], instruments: dict[str, Instrument] | None = None) -> dict[str, float]:
@@ -1914,6 +2368,7 @@ class IbkrFlexSource(DataSource):
         detail: dict[str, list[str]] = {}
         notes: list[str] = []
         corps: list[str] = []
+        pending: dict[int, list] = {}
         seen = False
         win_name = ""
         if window:
@@ -1928,6 +2383,8 @@ class IbkrFlexSource(DataSource):
                 res.accounts.append(acct.id)
             if acct.id not in touched:
                 touched.append(acct.id)
+            observe_conid_rows(db, parsed.trades, prefer=False)
+            observe_conid_rows(db, parsed.positions, prefer=True)
             recs, sk, det = self.convert(db, parsed.trades, acct.id)
             xfer_recs, xfer_sk, xfer_det, xfer_attn = self._convert_transfers(db, parsed.transfers, acct.id)
             recs.extend(xfer_recs)
@@ -1941,6 +2398,7 @@ class IbkrFlexSource(DataSource):
             recs.extend(eae_recs)
             sk.update(eae_sk)
             events, ca_recs = corporate_events(parsed.corporate)
+            _drop_stale_merger_legs(db, acct.id, parsed.corporate, ca_recs, events)
             recs.extend(ca_recs)
             self._price_conversions(db, acct.id, recs, events)
             recs.sort(key=lambda r: (r.executed_at, r.external_id))
@@ -1973,6 +2431,10 @@ class IbkrFlexSource(DataSource):
             if cash_ca:
                 notes.append(cash_ca)
             events = [e for e in events if e.get("kind") != "CASH"]
+            pending.setdefault(acct.id, []).extend(events)
+            for aid in apply_conid_symbols(db):
+                if aid not in touched:
+                    touched.append(aid)
             by_conid = {i.conid: i for i in db.scalars(select(Instrument).where(
                 Instrument.source_key == SOURCE_KEY, Instrument.conid.is_not(None))) if i.conid}
             pos = position_map(parsed.positions, by_conid)
@@ -2003,6 +2465,8 @@ class IbkrFlexSource(DataSource):
             if final:
                 for aid in touched:
                     corps.extend(self._flag_orphans(db, aid, []))
+            for aid in touched:
+                finish_import_attention(db, aid, pending.get(aid) or [])
         if want is not None and not seen:
             ctx.info(f"No Flex statement for IBKR account {mask_account_id(want) or '(unknown)'} in this window.")
         return touched, skipped, detail, notes, corps
@@ -2324,10 +2788,10 @@ class IbkrFlexSource(DataSource):
                     if getattr(e, "executed_at", None) is None or e.executed_at <= sell.executed_at]
             qty, avg = open_state(rows)
             if abs(qty) <= 1e-8:
+                day = earliest_imported_day(db, account_id, [r.executed_at for r in recs])
                 events.append({
                     "kind": "ATTENTION", "symbol": sell.symbol, "code": "outside",
-                    "note": (f"{sell.symbol}: opening fill is outside imported history; "
-                             f"the {sell.kind.lower()} still links to the new ticker when that history is uploaded."),
+                    "note": outside_note(sell.symbol, day, history_gap_sentence(db)),
                 })
                 sell.price = 0.0
                 continue
@@ -2385,24 +2849,42 @@ class IbkrFlexSource(DataSource):
 
     def _flag_orphans(self, db: Session, account_id: int, extra: list[dict]) -> list[str]:
         from app.adjustments import upsert
+        from app.models import CorporateAdjustment
         from app.services import get_state as _gs
         lines = []
-        start = history_start_date(db)
+        day = earliest_imported_day(db, account_id)
+        gap = history_gap_sentence(db)
         try:
             orphans = json.loads(_gs(db, f"orphans:{account_id}") or "[]")
         except ValueError:
             orphans = []
+        current: set[str] = set()
         for o in orphans or []:
             reason = (o.get("reason") or "") if isinstance(o, dict) else str(getattr(o, "reason", ""))
             sym = (o.get("symbol") if isinstance(o, dict) else getattr(o, "symbol", None)) or "?"
-            if "no open position" not in reason and "exceeds open" not in reason:
+            low = reason.lower()
+            if "no open position" not in low and "exceeds open" not in low:
                 continue
-            note = (f"{sym}: closing fill with no open position; opening buy is before "
-                    f"{start.isoformat()} (outside imported history).")
-            _, created = upsert(db, account_id, key=f"attn:{sym.upper()}:orphan", symbol=str(sym).upper(),
+            # The conversion's own outside-history note already covers a merger with no opening buy.
+            if low.startswith("conversion") and "no open position" in low:
+                continue
+            current.add(str(sym).upper())
+            note = orphan_note(str(sym).upper(), day, gap, exceeds="exceeds open" in low and "no open position" not in low)
+            _, created = upsert(db, account_id, key=f"attn:{str(sym).upper()}:orphan", symbol=str(sym).upper(),
                                 kind="CHECK", status="needs_attention", source="broker", note=note)
             if created:
                 lines.append(note)
+        stale = list(db.scalars(select(CorporateAdjustment).where(
+            CorporateAdjustment.account_id == account_id,
+            CorporateAdjustment.kind == "CHECK",
+            CorporateAdjustment.external_key.like("attn:%:orphan"))))
+        removed = False
+        for row in stale:
+            if (row.symbol or "").upper() not in current:
+                db.delete(row)
+                removed = True
+        if removed:
+            db.flush()
         return lines
 
     def import_xml(self, db: Session, xml_text: str, *, filename: str | None = None,
@@ -2527,6 +3009,8 @@ def reprocess_stored_payloads(db: Session, source: IbkrFlexSource | None = None)
     ctx = SyncContext()
     creds = load_credentials(db) or {}
     default_ccy = (creds.get("currency") or "USD").upper()
+    # Rescan stored payloads from scratch so an older window cannot keep a stale symbol.
+    set_state(db, CONID_SYMBOL_STATE, "{}")
     # Prefer XML (complete) over JSON when both exist for the same payload id order.
     seen_xml: set[tuple[int, str]] = set()
     for row in rows:

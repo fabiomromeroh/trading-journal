@@ -467,6 +467,12 @@ def _no_fx(monkeypatch):
     monkeypatch.setattr("app.currency.fetch_range", lambda *a, **k: 0)
 
 
+def _no_ibkr_network(monkeypatch):
+    def boom(*_a, **_k):
+        raise AssertionError("test tried to call IBKR")
+    monkeypatch.setattr(ibkr.FlexClient, "fetch", boom)
+
+
 def _client():
     from app.main import create_app
     c = TestClient(create_app())
@@ -1052,28 +1058,50 @@ def test_upload_rejects_doctype_and_non_xml(db, enc, monkeypatch):
 
 def test_conid_maps_beri_beril(db, enc, monkeypatch):
     _no_fx(monkeypatch)
+    _no_ibkr_network(monkeypatch)
     xml = _stmt("""
       <Trades>
         <Trade accountId="U1" currency="USD" assetCategory="STK" symbol="BERIL" conid="80575143"
-               tradeID="B1" dateTime="20260301;100000" quantity="8" tradePrice="10" ibCommission="0"
-               buySell="BUY" openCloseIndicator="O" levelOfDetail="EXECUTION"/>
+               listingExchange="LSE" tradeID="B1" dateTime="20260301;100000" quantity="8" tradePrice="10"
+               ibCommission="0" buySell="BUY" openCloseIndicator="O" levelOfDetail="EXECUTION"/>
         <Trade accountId="U1" currency="USD" assetCategory="STK" symbol="BERI" conid="80575143"
-               tradeID="B2" dateTime="20260310;100000" quantity="-3" tradePrice="12" ibCommission="0"
-               buySell="SELL" openCloseIndicator="C" levelOfDetail="EXECUTION"/>
+               listingExchange="LSE" tradeID="B2" dateTime="20260310;100000" quantity="-3" tradePrice="12"
+               ibCommission="0" buySell="SELL" openCloseIndicator="C" levelOfDetail="EXECUTION"/>
       </Trades>
       <OpenPositions>
         <OpenPosition accountId="U1" currency="USD" assetCategory="STK" symbol="BERI" conid="80575143"
-                      position="5" markPrice="11" levelOfDetail="SUMMARY"/>
+                      listingExchange="LSE" reportDate="20260320" position="5" markPrice="11"
+                      levelOfDetail="SUMMARY"/>
       </OpenPositions>""")
     src = ibkr.IbkrFlexSource(sleep=nop_sleep, split_fetch=lambda *a: [])
     src.import_xml(db, xml)
     insts = list(db.scalars(select(Instrument).where(Instrument.source_key == ibkr.SOURCE_KEY)))
     assert len(insts) == 1 and insts[0].conid == "80575143"
+    assert insts[0].symbol == "BERI" and insts[0].price_symbol == "BERI.L"
     execs = list(db.scalars(select(Execution).where(Execution.kind == "TRADE")))
     assert {e.instrument_id for e in execs} == {insts[0].id}
-    assert {e.symbol for e in execs} == {insts[0].symbol}
+    assert {e.symbol for e in execs} == {"BERI"}
+    assert {t.symbol for t in db.scalars(select(Trade))} == {"BERI"}
     flags = [a for a in db.scalars(select(CorporateAdjustment)) if a.status == "needs_attention"]
     assert not any("BERI" in (a.symbol or "") and "qty" in (a.external_key or "") for a in flags)
+    insts[0].symbol = "BERIL"
+    for ex in execs:
+        ex.symbol = "BERIL"
+        ex.underlying = "BERIL"
+    from app.services import set_state
+    set_state(db, ibkr.CONID_SYMBOL_STATE, json.dumps(
+        {"80575143": {"symbol": "BERIL", "asof": "20990101", "prefer": True}}))
+    db.commit()
+    ibkr.reprocess_stored_payloads(db)
+    inst = db.scalars(select(Instrument).where(Instrument.conid == "80575143")).one()
+    assert inst.symbol == "BERI" and inst.price_symbol == "BERI.L"
+    assert {e.symbol for e in db.scalars(select(Execution).where(Execution.kind == "TRADE"))} == {"BERI"}
+    inst.user_override = True
+    inst.symbol = "KEEP"
+    db.commit()
+    ibkr.reprocess_stored_payloads(db)
+    inst = db.scalars(select(Instrument).where(Instrument.conid == "80575143")).one()
+    assert inst.symbol == "KEEP"
 
 
 def test_corporate_dedupe_by_action_id():
@@ -1324,3 +1352,253 @@ def test_upload_form_on_card(db, enc, monkeypatch):
     assert 'enctype="multipart/form-data"' in page
     assert "/settings/brokers/ibkr/upload" in page
     assert "Reprocess stored history" in page or "ibkr/reprocess" in page
+
+
+def _merger_xml(actions: str, trades: str = "") -> str:
+    body = ""
+    if trades:
+        body += f"<Trades>{trades}</Trades>\n"
+    body += f"<CorporateActions>{actions}</CorporateActions>"
+    return _stmt(body)
+
+
+def test_tc_merger_is_one_direction_and_reprocess_drops_the_reverse(db, enc, monkeypatch):
+    """Cancelled reverse legs and a second action id must not book new→old."""
+    _no_fx(monkeypatch)
+    _no_ibkr_network(monkeypatch)
+    desc = "OLDQ(US111) MERGED(Acquisition) WITH US222 1 FOR 1 (NEWQ, EXAMPLE, US222)"
+    rows = [
+        {"symbol": "OLDQ", "conid": "111", "type": "TC", "quantity": "10", "code": "Ca",
+         "actionID": "REV1", "levelOfDetail": "DETAIL", "dateTime": "20250806;200000", "description": desc},
+        {"symbol": "NEWQ", "conid": "222", "type": "TC", "quantity": "-10", "code": "Ca",
+         "actionID": "REV1", "levelOfDetail": "DETAIL", "dateTime": "20250806;200000", "description": desc},
+        {"symbol": "OLDQ", "conid": "111", "type": "TC", "quantity": "-10", "actionID": "OK1",
+         "levelOfDetail": "DETAIL", "dateTime": "20250806;200000", "description": desc},
+        {"symbol": "NEWQ", "conid": "222", "type": "TC", "quantity": "10", "actionID": "OK1",
+         "levelOfDetail": "DETAIL", "dateTime": "20250806;200000", "description": desc},
+        {"symbol": "OLDQ", "conid": "111", "type": "TC", "quantity": "-10", "actionID": "OK2",
+         "levelOfDetail": "DETAIL", "dateTime": "20250806;200000", "description": desc},
+        {"symbol": "NEWQ", "conid": "222", "type": "TC", "quantity": "10", "actionID": "OK2",
+         "levelOfDetail": "DETAIL", "dateTime": "20250806;200000", "description": desc},
+    ]
+    events, recs = ibkr.corporate_events(rows)
+    sells = [r for r in recs if r.side == "SELL"]
+    buys = [r for r in recs if r.side == "BUY"]
+    assert len(sells) == 1 and sells[0].symbol == "OLDQ" and sells[0].quantity == pytest.approx(10)
+    assert len(buys) == 1 and buys[0].symbol == "NEWQ" and buys[0].quantity == pytest.approx(10)
+    renames = [e for e in events if e.get("kind") == "RENAME"]
+    assert len(renames) == 1 and renames[0]["symbol"] == "OLDQ" and renames[0]["new_symbol"] == "NEWQ"
+    assert not any(e.get("symbol") == "NEWQ" and e.get("new_symbol") == "OLDQ" for e in events)
+
+    actions = "".join(
+        f'<CorporateAction accountId="U1" currency="USD" assetCategory="STK" symbol="{r["symbol"]}" '
+        f'conid="{r["conid"]}" type="TC" quantity="{r["quantity"]}" actionID="{r["actionID"]}" '
+        f'levelOfDetail="DETAIL" dateTime="20250806;200000" description="{desc}"'
+        + (f' code="{r["code"]}"' if r.get("code") else "") + "/>"
+        for r in rows)
+    src = ibkr.IbkrFlexSource(sleep=nop_sleep, split_fetch=lambda *a: [])
+    src.import_xml(db, _merger_xml(actions))
+    acct = db.scalar(select(Account).where(Account.source_key == ibkr.SOURCE_KEY))
+    directions = {(a.symbol, a.new_symbol) for a in db.scalars(select(CorporateAdjustment).where(
+        CorporateAdjustment.account_id == acct.id, CorporateAdjustment.kind == "RENAME",
+        CorporateAdjustment.status == "applied"))}
+    assert directions == {("OLDQ", "NEWQ")}
+    conv = list(db.scalars(select(Execution).where(Execution.kind == "CONVERSION")))
+    assert len(conv) == 2
+    db.add(CorporateAdjustment(
+        account_id=acct.id, symbol="NEWQ", new_symbol="OLDQ", kind="RENAME", status="applied",
+        source="broker", external_key="rename:NEWQ:OLDQ:2025-08-06",
+        effective_on=datetime(2025, 8, 6, 20, 0), note="NEWQ renamed to OLDQ"))
+    from app.services import set_state
+    from app.symbols import AUTO_STATE, load_aliases
+    set_state(db, AUTO_STATE, json.dumps({"NEWQ": {"to": "OLDQ", "evidence": "stored reverse"}}))
+    from app.instruments import ExecRecord
+    from app.services import ingest_records
+    ingest_records(db, acct.id, ibkr.SOURCE_KEY, [
+        ExecRecord(external_id="ca:REV1:111:O", symbol="OLDQ", underlying="OLDQ", asset_type="STOCK",
+                   side="BUY", quantity=10, price=1, executed_at=datetime(2025, 8, 6, 20, 0),
+                   kind="CONVERSION", position_effect="OPEN"),
+        ExecRecord(external_id="ca:REV1:222:C", symbol="NEWQ", underlying="NEWQ", asset_type="STOCK",
+                   side="SELL", quantity=10, price=1, executed_at=datetime(2025, 8, 6, 20, 0),
+                   kind="CONVERSION", position_effect="CLOSE"),
+    ])
+    db.commit()
+    n_exec = db.query(Execution).count()
+    ibkr.reprocess_stored_payloads(db)
+    directions = {(a.symbol, a.new_symbol) for a in db.scalars(select(CorporateAdjustment).where(
+        CorporateAdjustment.account_id == acct.id, CorporateAdjustment.kind == "RENAME",
+        CorporateAdjustment.status == "applied"))}
+    assert directions == {("OLDQ", "NEWQ")}
+    assert load_aliases(db).get("NEWQ") != "OLDQ"
+    assert load_aliases(db).get("OLDQ") == "NEWQ"
+    assert db.scalar(select(Execution).where(Execution.external_id == "ca:REV1:111:O")) is None
+    assert db.query(Execution).count() == n_exec - 2
+    again = db.query(Execution).count()
+    ibkr.reprocess_stored_payloads(db)
+    assert db.query(Execution).count() == again
+    assert {(a.symbol, a.new_symbol) for a in db.scalars(select(CorporateAdjustment).where(
+        CorporateAdjustment.kind == "RENAME", CorporateAdjustment.status == "applied"))} == {("OLDQ", "NEWQ")}
+
+
+def test_cash_and_stock_merger_carries_basis_and_cash(db, enc, monkeypatch):
+    _no_fx(monkeypatch)
+    _no_ibkr_network(monkeypatch)
+    desc = "CASHQ(US410) CASH and STOCK MERGER (Acquisition) CA999 102 FOR 1000 AND USD 0.80"
+    actions = f"""
+        <CorporateAction accountId="U1" currency="USD" assetCategory="STK" symbol="CASHQ" conid="40369429"
+          type="TC" quantity="-15" proceeds="12.00" amount="-12" actionID="M1" levelOfDetail="DETAIL"
+          dateTime="20251201;200000" description="{desc}"/>
+        <CorporateAction accountId="U1" currency="USD" assetCategory="STK" symbol="STKQ" conid="6227314"
+          type="TC" quantity="1.53" actionID="M1" levelOfDetail="DETAIL" dateTime="20251201;200000"
+          description="{desc}"/>
+    """
+    trades = """
+        <Trade accountId="U1" currency="USD" assetCategory="STK" symbol="CASHQ" conid="40369429"
+               tradeID="H1" dateTime="20251001;100000" quantity="15" tradePrice="10" ibCommission="0"
+               buySell="BUY" openCloseIndicator="O" levelOfDetail="EXECUTION"/>
+    """
+    src = ibkr.IbkrFlexSource(sleep=nop_sleep, split_fetch=lambda *a: [])
+    src.import_xml(db, _merger_xml(actions, trades))
+    acct = db.scalar(select(Account).where(Account.source_key == ibkr.SOURCE_KEY))
+    merger = db.scalar(select(CorporateAdjustment).where(
+        CorporateAdjustment.account_id == acct.id, CorporateAdjustment.kind == "MERGER"))
+    assert merger is not None and merger.symbol == "CASHQ" and merger.new_symbol == "STKQ"
+    assert merger.ratio == pytest.approx(0.102)
+    assert db.scalar(select(CorporateAdjustment).where(CorporateAdjustment.kind == "RENAME")) is None
+    buy = db.scalar(select(Execution).where(Execution.kind == "CONVERSION", Execution.side == "BUY"))
+    assert buy.symbol == "STKQ" and buy.quantity == pytest.approx(1.53)
+    assert buy.price == pytest.approx(150 / 1.53)
+    sell = db.scalar(select(Execution).where(Execution.kind == "CONVERSION", Execution.side == "SELL"))
+    assert sell.symbol == "CASHQ" and sell.quantity == pytest.approx(15)
+    cash = list(db.scalars(select(CashFlow).where(CashFlow.kind == "proceeds")))
+    assert len(cash) == 1 and cash[0].amount == pytest.approx(12.0)
+    assert cash[0].occurred_at.date().isoformat() == "2025-12-01"
+    closed = db.scalar(select(Trade).where(Trade.symbol == "CASHQ"))
+    assert closed is not None and closed.status == "CLOSED"
+    assert abs(closed.net_pnl or 0) < 1e-4
+    opened = db.scalar(select(Trade).where(Trade.symbol == "STKQ", Trade.status == "OPEN"))
+    assert opened.open_quantity == pytest.approx(1.53)
+    assert opened.entry_price == pytest.approx(150 / 1.53)
+    assert opened.cost_basis == pytest.approx(150, abs=0.01)
+    # A plain rename and stale merger warnings from an older import are removed, once.
+    db.add_all([
+        CorporateAdjustment(account_id=acct.id, symbol="CASHQ", new_symbol="STKQ", kind="RENAME",
+                           status="applied", source="broker", external_key="rename:CASHQ:STKQ:2025-12-01",
+                           note="CASHQ renamed to STKQ"),
+        CorporateAdjustment(account_id=acct.id, symbol="CASHQ", kind="CHECK", status="needs_attention",
+                           source="broker", external_key="attn:CASHQ:merger",
+                           note="CASHQ: IBKR merger/acquisition needs attention (cash and stock)."),
+        CorporateAdjustment(account_id=acct.id, symbol="STKQ", kind="CHECK", status="needs_attention",
+                           source="broker", external_key="attn:STKQ:merger",
+                           note="STKQ: IBKR merger/acquisition needs attention (cash and stock)."),
+        CorporateAdjustment(account_id=acct.id, symbol="CASHQ", kind="CHECK", status="needs_attention",
+                           source="broker", external_key="attn:CASHQ:outside",
+                           note="CASHQ: opening fill is before 2022-01-01 (outside imported history)."),
+        CorporateAdjustment(account_id=acct.id, symbol="CASHQ", kind="CHECK", status="needs_attention",
+                           source="broker", external_key="attn:CASHQ:outside2",
+                           note="CASHQ: opening fill is outside imported history."),
+        CorporateAdjustment(account_id=acct.id, symbol="STKQ", kind="CHECK", status="needs_attention",
+                           source="broker", external_key="attn:STKQ:outside",
+                           note="STKQ: opening fill is before 2022-01-01 (outside imported history)."),
+    ])
+    from app.services import set_state
+    from app.symbols import AUTO_STATE, load_aliases
+    set_state(db, AUTO_STATE, json.dumps({"CASHQ": {"to": "STKQ", "evidence": "old rename"}}))
+    db.commit()
+    ibkr.reprocess_stored_payloads(db)
+    assert db.scalar(select(CorporateAdjustment).where(CorporateAdjustment.kind == "RENAME")) is None
+    assert load_aliases(db).get("CASHQ") != "STKQ"
+    notes = [a.note or "" for a in db.scalars(select(CorporateAdjustment).where(
+        CorporateAdjustment.kind == "CHECK", CorporateAdjustment.status == "needs_attention"))]
+    assert not any("merger/acquisition needs attention" in n.lower() for n in notes)
+    assert not any("opening fill" in n.lower() for n in notes)
+    merger = db.scalar(select(CorporateAdjustment).where(CorporateAdjustment.kind == "MERGER"))
+    assert merger.ratio == pytest.approx(0.102) and merger.new_symbol == "STKQ"
+    n_exec = db.query(Execution).count()
+    n_cash = db.query(CashFlow).count()
+    ibkr.reprocess_stored_payloads(db)
+    assert db.query(Execution).count() == n_exec
+    assert db.query(CashFlow).count() == n_cash
+    assert db.scalar(select(CorporateAdjustment).where(CorporateAdjustment.kind == "MERGER")).ratio == pytest.approx(0.102)
+
+
+def test_cash_leg_from_description_when_proceeds_absent():
+    desc = "CASHQ(US1) CASH and STOCK MERGER (Acquisition) CA1 102 FOR 1000 AND USD 0.80"
+    rows = [
+        {"symbol": "CASHQ", "conid": "1", "type": "TC", "quantity": "-15", "actionID": "M",
+         "levelOfDetail": "DETAIL", "dateTime": "20251201;200000", "description": desc},
+        {"symbol": "STKQ", "conid": "2", "type": "TC", "quantity": "1.53", "actionID": "M",
+         "levelOfDetail": "DETAIL", "dateTime": "20251201;200000", "description": desc},
+    ]
+    events, recs = ibkr.corporate_events(rows)
+    cash = next(e for e in events if e["kind"] == "CASH")
+    assert cash["amount"] == pytest.approx(12.0)
+    merger = next(e for e in events if e["kind"] == "MERGER")
+    assert merger["ratio"] == pytest.approx(0.102) and merger["new_symbol"] == "STKQ"
+    assert recs and next(r for r in recs if r.side == "BUY").quantity == pytest.approx(1.53)
+    assert not any(e["kind"] == "RENAME" for e in events)
+
+
+def test_merger_without_opening_keeps_one_history_note(db, enc, monkeypatch):
+    _no_fx(monkeypatch)
+    _no_ibkr_network(monkeypatch)
+    ibkr.save_history(db, {
+        "start": "2022-01-01", "end": "2026-10-16",
+        "notes": ["no statement for 20220101\u201320221231 (IBKR 1003)"],
+        "gaps": [{"fd": "2022-01-01", "td": "2022-12-31", "code": "1003"}],
+    })
+    desc = "OLDQ(US111) MERGED(Acquisition) WITH US222 1 FOR 1 (NEWQ, EXAMPLE, US222)"
+    actions = f"""
+        <CorporateAction accountId="U1" currency="USD" assetCategory="STK" symbol="OLDQ" conid="111"
+          type="TC" quantity="-10" actionID="M9" levelOfDetail="DETAIL" dateTime="20240601;200000"
+          description="{desc}"/>
+        <CorporateAction accountId="U1" currency="USD" assetCategory="STK" symbol="NEWQ" conid="222"
+          type="TC" quantity="10" actionID="M9" levelOfDetail="DETAIL" dateTime="20240601;200000"
+          description="{desc}"/>
+    """
+    trades = """
+        <Trade accountId="U1" currency="USD" assetCategory="STK" symbol="KEEP" conid="555"
+               tradeID="K1" dateTime="20230104;100000" quantity="1" tradePrice="5" ibCommission="0"
+               buySell="BUY" openCloseIndicator="O" levelOfDetail="EXECUTION"/>
+        <Trade accountId="U1" currency="USD" assetCategory="STK" symbol="ZORP" conid="556"
+               tradeID="Z1" dateTime="20240201;100000" quantity="-4" tradePrice="8" ibCommission="0"
+               buySell="SELL" openCloseIndicator="C" levelOfDetail="EXECUTION"/>
+    """
+    src = ibkr.IbkrFlexSource(sleep=nop_sleep, split_fetch=lambda *a: [])
+    src.import_xml(db, _merger_xml(actions, trades))
+    acct = db.scalar(select(Account).where(Account.source_key == ibkr.SOURCE_KEY))
+    db.add(CorporateAdjustment(
+        account_id=acct.id, symbol="OLDQ", kind="CHECK", status="needs_attention", source="broker",
+        external_key="attn:OLDQ:outside-dup",
+        note="OLDQ: opening fill is before 2022-01-01 (outside imported history)."))
+    db.add(CorporateAdjustment(
+        account_id=acct.id, symbol="NEWQ", kind="CHECK", status="needs_attention", source="broker",
+        external_key="attn:NEWQ:merger",
+        note="NEWQ: IBKR merger/acquisition needs attention (merged)."))
+    db.commit()
+    ibkr.reprocess_stored_payloads(db)
+    flags = list(db.scalars(select(CorporateAdjustment).where(
+        CorporateAdjustment.account_id == acct.id, CorporateAdjustment.status == "needs_attention")))
+    opening = [a for a in flags if a.symbol == "OLDQ" and "opening fill" in (a.note or "").lower()]
+    assert len(opening) == 1
+    note = opening[0].note
+    assert "before 2023-01-04 (earliest imported IBKR data)" in note
+    assert "2022 had no statement (IBKR 1003) and can be uploaded as XML." in note
+    assert "before 2022-01-01" not in note
+    assert "2026 had no statement" not in note
+    assert not any("merger/acquisition needs attention" in (a.note or "").lower() for a in flags)
+    assert not any(a.symbol == "NEWQ" and "opening fill" in (a.note or "").lower() for a in flags)
+    assert not any(e.kind == "TRADE" and e.symbol == "OLDQ" and e.side == "BUY"
+                   for e in db.scalars(select(Execution)))
+    newq = [e for e in db.scalars(select(Execution)) if e.symbol == "NEWQ"]
+    assert newq and newq[0].kind == "CONVERSION" and newq[0].quantity == pytest.approx(10)
+    zorp = next(a for a in flags if a.symbol == "ZORP")
+    assert "before 2023-01-04 (earliest imported IBKR data)" in (zorp.note or "")
+    assert "closing fill with no open position" in (zorp.note or "")
+    assert "2022 had no statement (IBKR 1003)" in (zorp.note or "")
+    # A second pass does not duplicate the note.
+    ibkr.reprocess_stored_payloads(db)
+    opening = [a for a in db.scalars(select(CorporateAdjustment).where(
+        CorporateAdjustment.status == "needs_attention"))
+               if a.symbol == "OLDQ" and "opening fill" in (a.note or "").lower()]
+    assert len(opening) == 1
