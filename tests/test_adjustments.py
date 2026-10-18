@@ -301,7 +301,7 @@ def test_unhelpful_split_prefills_the_real_date(db):
                      positions={"WMT": 12})
     assert db.scalar(select(func.count()).select_from(Execution).where(Execution.kind == "SPLIT")) == 0
     db.commit()
-    page = _web(db).get("/settings").text
+    page = _web(db).get(f"/settings?account={acct.id}").text
     assert 'name="when" value="2024-01-31"' in page
     assert ">Save</button>" in page
     assert "yahoo" in page
@@ -315,7 +315,7 @@ def test_spinoff_gap_names_the_parent_and_does_not_prefill_a_rename(db):
         quantity=0.968258, price=58, executed_at=datetime(2024, 8, 13, 18, 23), currency="USD")])
     detect_and_apply(db, acct.id, fetch=lambda *_a, **_k: [], positions={"SOLV": 0, "MMM": 3.873032})
     db.commit()
-    page = _web(db).get("/settings").text
+    page = _web(db).get(f"/settings?account={acct.id}").text
     assert "Not a ticker rename" in page
     assert "1 share for every 4 MMM" in page
     assert 'name="symbol" value="SOLV"' not in page

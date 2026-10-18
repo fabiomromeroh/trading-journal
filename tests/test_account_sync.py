@@ -79,7 +79,7 @@ def test_sidebar_and_account_cards_explain_both_actions(db):
     assert f'name="account" value="{t212.id}"' in form
     assert "Trading 212 EUR" in picked.split('id="sync-help"', 1)[1].split("</p>", 1)[0]
     assert f'"account":"{t212.id}"' in picked  # mobile Sync new
-    page = c.get("/settings").text
+    page = c.get(f"/settings?account={t212.id}").text
     assert "account-sync-help" in page and "stored cursor" in page and "full re-scan" in page
     assert f'"account":"{t212.id}","mode":"new"' in page
     assert f'"account":"{t212.id}","mode":"full"' in page

@@ -370,7 +370,7 @@ def _ibkr_balance_checks(db: Session, mapped) -> list[dict]:
         if journal_nav is not None and ibkr_nav is not None:
             diff = round(float(journal_nav) - float(ibkr_nav), 2)
         out.append({
-            "name": a.name, "currency": a.currency or snap.get("currency") or "USD",
+            "id": a.id, "name": a.name, "currency": a.currency or snap.get("currency") or "USD",
             "journal_nav": journal_nav, "ibkr_nav": ibkr_nav, "ibkr_cash": ibkr_cash,
             "diff": diff, "as_of": snap.get("as_of"),
         })

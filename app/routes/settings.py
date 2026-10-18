@@ -175,6 +175,13 @@ def _settings_ctx(request, db, **kw):
     bctx = _brokers_ctx(db)
     snap = _snaptrade_ctx(db)
     acct_groups, conn_dots = _decorate_accounts(acct_rows, bctx.get("ibkr"), bctx.get("t212"), snap, sources)
+    from app.account_grid import present_row
+    attn_n: dict[int, int] = {}
+    for item in attention:
+        attn_n[item.account_id] = attn_n.get(item.account_id, 0) + 1
+    for row in acct_rows:
+        row["attention"] = attn_n.get(row["a"].id, 0)
+        present_row(row)
     return base_context(request, db, nav="settings", broker_cards=brokers.cards(db), **bctx, sources=sources, runs=runs, payloads=payloads, attention=attention, acct_rows=acct_rows,
                         acct_groups=acct_groups, conn_dots=conn_dots,
                         company_stats=companies.stats(db),
@@ -184,8 +191,14 @@ def _settings_ctx(request, db, **kw):
 
 @router.get("/settings")
 def settings_page(request: Request, db: Session = Depends(get_db)):
+    from app.account_grid import load_panel
     msg = request.session.pop("flash", None)
-    return templates.TemplateResponse(request, "settings.html", _settings_ctx(request, db, flash=msg))
+    ctx = _settings_ctx(request, db, flash=msg)
+    key = (request.query_params.get("account") or "").strip()
+    panel = load_panel(request, db, key) if key else None
+    ctx["selected_key"] = key if panel else ""
+    ctx["panel"] = panel
+    return templates.TemplateResponse(request, "settings.html", ctx)
 
 
 # ---------------------------------------------------------------- backup
@@ -301,11 +314,12 @@ def add_adjustment(request: Request, account_id: str = Form(""), kind: str = For
             msg = save_manual(db, acct.id, "split", symbol, parsed, ratio=ratio_text(ratio))
     except ValueError as exc:
         request.session["flash"] = str(exc)
-        return RedirectResponse("/settings#sync-attention", status_code=303)
+        back = f"/settings?account={acct.id}#sync-attention" if acct is not None else "/settings#sync-attention"
+        return RedirectResponse(back, status_code=303)
     rebuild_trades(db, [acct.id])
     db.commit()
     request.session["flash"] = msg
-    return RedirectResponse("/settings#sync-attention", status_code=303)
+    return RedirectResponse(f"/settings?account={acct.id}#sync-attention", status_code=303)
 
 
 # ---------------------------------------------------------------- Schwab OAuth (optional source)
@@ -418,19 +432,22 @@ def snaptrade_resync(request: Request, db: Session = Depends(get_db)):
 
 # ---------------------------------------------------------------- data management
 @router.post("/settings/accounts/{account_id}")
-def rename_account(account_id: int, request: Request, name: str = Form(...), db: Session = Depends(get_db)):
+def rename_account(account_id: int, request: Request, name: str = Form(...), next: str = Form(""),
+                   db: Session = Depends(get_db)):
+    from app.account_grid import safe_next
     a = db.get(Account, account_id)
     if a and name.strip():
         a.name = name.strip()[:120]
         db.commit()
-    return RedirectResponse("/settings", status_code=303)
+    return RedirectResponse(safe_next(next, "/settings"), status_code=303)
 
 
 @router.post("/settings/accounts/{account_id}/meta")
 def account_meta(account_id: int, request: Request, currency: str = Form("USD"), timezone: str = Form(""),
-                 market: str = Form("US"), db: Session = Depends(get_db)):
+                 market: str = Form("US"), next: str = Form(""), db: Session = Depends(get_db)):
     """Account currency / time zone / market (defaults USD, America/New_York, US = the original Schwab behaviour)."""
     from zoneinfo import ZoneInfo
+    from app.account_grid import safe_next
     a = db.get(Account, account_id)
     if a is None:
         return RedirectResponse("/settings", status_code=303)
@@ -445,7 +462,7 @@ def account_meta(account_id: int, request: Request, currency: str = Form("USD"),
     a.timezone, a.market = tz, market.upper()[:8]
     db.commit()
     request.session["flash"] = f"{a.name}: {a.currency}, {a.timezone}, market {a.market}. Existing trades keep their stored currency."
-    return RedirectResponse("/settings#display", status_code=303)
+    return RedirectResponse(safe_next(next, "/settings#display"), status_code=303)
 
 
 @router.post("/settings/accounts/{account_id}/auto-stop")
@@ -468,17 +485,91 @@ def account_auto_stop(account_id: int, request: Request, auto_stop: str = Form("
     return RedirectResponse("/settings#rules", status_code=303)
 
 
+@router.get("/settings/accounts/new")
+def account_add_modal(request: Request, db: Session = Depends(get_db)):
+    from app.account_grid import modal_brokers
+    return templates.TemplateResponse(request, "partials/account_modal_add.html",
+                                      {"request": request, **modal_brokers(request, db)})
+
+
+@router.post("/settings/accounts")
+def create_account(request: Request, name: str = Form(""), broker: str = Form("other"),
+                   currency: str = Form("USD"), timezone: str = Form("America/New_York"),
+                   market: str = Form("US"), db: Session = Depends(get_db)):
+    """A journal account with no broker call. Connecting Schwab, Trading 212, or IBKR still uses those endpoints."""
+    from zoneinfo import ZoneInfo
+    label = (name or "").strip()[:120]
+    if not label:
+        request.session["flash"] = "Enter an account name."
+        return RedirectResponse("/settings#accounts", status_code=303)
+    allowed = {"schwab": "schwab", "trading212": "trading212", "t212": "trading212",
+               "ibkr": "ibkr", "other": "other"}
+    broker_name = allowed.get((broker or "").strip().lower(), "other")
+    tz = (timezone or "").strip() or "America/New_York"
+    try:
+        ZoneInfo(tz)
+    except Exception:  # noqa: BLE001
+        request.session["flash"] = f"Unknown time zone “{tz}” (use e.g. America/New_York)."
+        return RedirectResponse("/settings#accounts", status_code=303)
+    ccy = currency.upper() if currency.upper() in ("USD", "EUR", "GBP") else "USD"
+    acct = Account(name=label, broker=broker_name, currency=ccy, timezone=tz, market=(market or "US").upper()[:8])
+    db.add(acct)
+    db.commit()
+    request.session["flash"] = f"Added account {acct.name}. Connect a broker from Edit connection, or import a CSV."
+    return RedirectResponse(f"/settings?account={acct.id}#accounts", status_code=303)
+
+
+@router.get("/settings/accounts/{key}/detail")
+def account_detail(key: str, request: Request, db: Session = Depends(get_db)):
+    """The one account panel. Opening it does not sync and does not call a broker."""
+    from app.account_grid import load_panel
+    panel = load_panel(request, db, key)
+    if panel is None:
+        from fastapi import HTTPException
+        raise HTTPException(404, "Unknown account")
+    return templates.TemplateResponse(request, "partials/account_detail.html", {"request": request, "panel": panel})
+
+
+@router.get("/settings/accounts/{key}/edit")
+def account_edit_modal(key: str, request: Request, db: Session = Depends(get_db)):
+    from app.account_grid import load_panel, modal_brokers
+    panel = load_panel(request, db, key)
+    if panel is None or panel.get("kind") == "empty":
+        from fastapi import HTTPException
+        raise HTTPException(404, "Unknown account")
+    ctx = {"request": request, "panel": panel, **modal_brokers(request, db)}
+    if panel.get("kind") == "account":
+        ctx["ibkr"] = panel["ibkr"]
+        ctx["t212"] = panel["t212"]
+    return templates.TemplateResponse(request, "partials/account_modal_edit.html", ctx)
+
+
+@router.get("/settings/accounts/{account_id}/delete")
+def delete_account_modal(account_id: int, request: Request, db: Session = Depends(get_db)):
+    from fastapi import HTTPException
+    from app.account_grid import removal_counts, removal_text
+    a = db.get(Account, account_id)
+    if a is None:
+        raise HTTPException(404, "Unknown account")
+    counts = removal_counts(db, a.id)
+    return templates.TemplateResponse(request, "partials/account_modal_delete.html", {
+        "request": request, "account": a, "counts": counts, "removal": removal_text(a.name, counts)})
+
+
 @router.post("/settings/accounts/{account_id}/delete")
-def delete_account(account_id: int, request: Request, confirm: str = Form(""), db: Session = Depends(get_db)):
+def delete_account(account_id: int, request: Request, confirm: str = Form(""), next: str = Form(""),
+                   db: Session = Depends(get_db)):
+    from app.account_grid import safe_next
     a = db.get(Account, account_id)
     if a and confirm == a.name:
         db.execute(delete(ImportBatch).where(ImportBatch.account_id == a.id))
         db.delete(a)
         db.commit()
         request.session["flash"] = f"Deleted account {a.name} and all its trades."
-    else:
-        request.session["flash"] = "Type the account name exactly to confirm deletion."
-    return RedirectResponse("/settings", status_code=303)
+        return RedirectResponse(safe_next(next, "/settings#accounts"), status_code=303)
+    request.session["flash"] = "Type the account name exactly to confirm deletion."
+    back = f"/settings?account={account_id}#accounts" if a is not None else "/settings#accounts"
+    return RedirectResponse(safe_next(next, back), status_code=303)
 
 
 @router.post("/settings/demo/clear")

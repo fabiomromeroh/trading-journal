@@ -1,0 +1,166 @@
+{# Shared connection forms for the add modal and one account's edit modal.
+   which: all | schwab | t212 | ibkr | tos. No broker call is made by rendering this. #}
+{% set which = which|default('all') %}
+{% if which in ('all', 'schwab') %}
+<section class="acct-section" id="edit-connection-schwab">
+  <h3 class="text-white font-medium mb-1">Schwab</h3>
+  <div class="acct-actions">
+    {% for src, st in sources if src.key == 'snaptrade' and st.configured %}
+      {% if snaptrade and snaptrade.connections %}
+        {% for c in snaptrade.connections %}
+        <form method="post" action="/settings/snaptrade/reconnect?id={{ c.id }}"><button class="btn {{ 'btn-p' if c.disabled else 'btn-s' }} text-xs">Reconnect {{ c.broker or 'Schwab' }}</button></form>
+        {% endfor %}
+      {% else %}
+        <form method="post" action="/settings/snaptrade/connect"><button class="btn btn-p text-xs">Connect Schwab</button></form>
+      {% endif %}
+      <form method="post" action="/settings/snaptrade/resync" onsubmit="return confirm('Pull the full SnapTrade history again? Existing fills are skipped, nothing is deleted.')"><button class="btn btn-s text-xs">Full re-sync</button></form>
+    {% endfor %}
+    {% for src, st in sources if src.key == 'schwab_api' and st.configured %}
+      <a href="/auth/schwab/connect" class="btn btn-p text-xs">{{ 'Reconnect' if st.expires_in_seconds is not none else 'Connect' }} Schwab</a>
+      {% if st.expires_in_seconds is not none %}<form method="post" action="/auth/schwab/disconnect"><button class="btn btn-d text-xs">Disconnect</button></form>{% endif %}
+    {% endfor %}
+  </div>
+  <div class="mt-2 space-y-2 text-sm">
+    {% for src, st in sources if src.key in ('snaptrade', 'schwab_api') %}
+    <p class="text-xs {{ 'text-rose-300' if st.level == 'error' else 'text-amber-300' if st.level == 'warning' else 'text-slate-400' }}">{{ src.name }}: {{ st.message }}{% if src.key != 'snaptrade' and st.expires_in_seconds is not none and st.expires_in_seconds > 0 %} · login valid for <b>{{ (st.expires_in_seconds|int // 3600) }}h</b> (Schwab refresh tokens last 7 days){% endif %}</p>
+    {% if src.key == 'snaptrade' and st.configured %}
+    <div class="text-xs text-slate-400 space-y-1">
+      {% if snaptrade and snaptrade.connections %}
+        {% for c in snaptrade.connections %}
+        <div>
+          {% if c.connected_at_dt %}Logged in {{ c.connected_at_dt|local_dt }}{% endif %}
+          {% if not c.disabled and c.relogin_due %} · next Schwab re-login due ≈ <b class="text-slate-200">{{ c.relogin_due|local_dt }}</b> (estimate: 7 days after login){% endif %}
+        </div>
+        {% endfor %}
+        {% for a in snaptrade.accounts %}
+        <div>Account <span class="text-slate-200">{{ a.name }}</span> · SnapTrade transactions through <span class="text-slate-200">{{ a.tx_synced_through or '—' }}</span>{% if a.first_tx %} (history from {{ a.first_tx }}){% endif %}</div>
+        {% endfor %}
+      {% endif %}
+      <div>Last successful sync: <span class="text-slate-200">{{ snaptrade.last_success|local_dt if snaptrade and snaptrade.last_success else 'never' }}</span>{% if snaptrade and snaptrade.checked_at %} · status checked {{ snaptrade.checked_at|local_dt }}{% endif %}</div>
+      {% if snaptrade and snaptrade.error %}<div class="text-amber-300">Last status check failed: {{ snaptrade.error }}</div>{% endif %}
+    </div>
+    <details class="text-xs text-slate-500">
+      <summary>SnapTrade notes</summary>
+      <p class="mt-1">{{ src.description }} Sync is manual: click <b>Sync new</b>. SnapTrade refreshes Schwab transactions once a day (one day behind); today's fills come from your executed orders and are marked <i>provisional (fees pending)</i> until the transaction arrives tomorrow. Times are date-only; importing a thinkorswim Account Statement adds exact fill times to the same fills. Reconnect opens SnapTrade's portal (link valid 5 minutes) to log in to Schwab again for the existing connection.</p>
+    </details>
+    {% endif %}
+    {% if src.key == 'schwab_api' and st.configured %}
+    <form method="post" action="/auth/schwab/paste" class="set-inline">
+      <label class="set-field"><span class="card-h">Redirect URL</span>
+        <input name="redirect_url" class="inp text-xs" placeholder="Using https://127.0.0.1:8182? Paste the full redirected URL here" aria-label="Schwab redirect URL"></label>
+      <button class="btn btn-s text-xs">Submit</button>
+    </form>
+    <p class="text-xs text-slate-500">Callback URL: <code>{{ s.schwab_callback_url }}</code></p>
+    {% endif %}
+    {% endfor %}
+    <p class="text-xs text-slate-500">CSV import stays on the <a href="/import" class="underline">Import</a> page. There is no scheduled sync.</p>
+  </div>
+</section>
+{% endif %}
+{% if which in ('all', 't212') %}
+<section class="acct-section" id="edit-connection-t212">
+  <h3 class="text-white font-medium mb-1">Trading 212</h3>
+  {% if t212.connected %}
+  <p class="text-xs text-slate-400 mb-2">Key <b class="text-slate-200">{{ t212.masked }}</b>{% if t212.practice %} · practice{% endif %}. Sync buttons are on the Trading 212 account.</p>
+  <div class="acct-actions mb-2">
+    <button type="button" hx-post="/settings/brokers/t212/sync" hx-target="#acct-modal-sync" class="btn btn-p text-xs">Sync Trading 212</button>
+    <button type="button" hx-post="/settings/brokers/t212/resync" hx-target="#acct-modal-sync" hx-confirm="Re-scan the full Trading 212 history? Existing fills are kept." class="btn btn-s text-xs">Re-scan full history</button>
+    <form method="post" action="/settings/brokers/t212/test"><button class="btn btn-s text-xs">Test connection</button></form>
+    <form method="post" action="/settings/brokers/t212/disconnect" onsubmit="return confirm('Delete the stored API key? Imported trades stay.')"><button class="btn btn-d text-xs">Disconnect</button></form>
+  </div>
+  <div id="acct-modal-sync"></div>
+  {% if t212.instruments %}
+  <details id="instruments" class="text-xs">
+    <summary class="text-slate-400">Instruments &amp; price symbols ({{ t212.instruments|length }})</summary>
+    <p class="text-slate-500 my-1">Yahoo price symbol per instrument (e.g. VUSA.L, SAP.DE). Leave both fields empty and press Save to restore the automatic mapping. Mapping is derived from the Trading 212 ticker; check any marked “no price symbol”.</p>
+    {% for i in t212.instruments %}
+    <form method="post" action="/settings/brokers/instruments/{{ i.id }}" class="set-grid py-2 border-b border-slate-800/80">
+      <label class="set-field"><span class="card-h">Symbol</span>
+        <input name="symbol" value="{{ i.symbol if i.user_override else '' }}" placeholder="{{ i.symbol }}" class="inp text-xs" aria-label="Symbol"></label>
+      <div class="set-field"><span class="card-h">ISIN · market · ccy</span>
+        <span class="text-slate-400 break-all" title="{{ i.name }}">{{ i.isin or '—' }} · {{ i.exchange or '?' }} · {{ i.currency or '' }}</span></div>
+      <label class="set-field"><span class="card-h">Price symbol</span>
+        <input name="price_symbol" value="{{ i.price_symbol or '' }}" placeholder="{{ 'no price symbol' if not i.price_symbol }}" class="inp text-xs {{ 'border-amber-500/60' if not i.price_symbol }}" aria-label="Price symbol"></label>
+      <div class="set-field"><span class="card-h">Save</span><button class="text-indigo-300 text-left">Save</button></div>
+    </form>
+    {% endfor %}
+  </details>
+  {% endif %}
+  {% else %}
+  {% if not t212.enc_key %}<p class="text-xs text-amber-300">Set TOKEN_ENCRYPTION_KEY on the server before connecting (keys are stored encrypted).</p>{% endif %}
+  <form method="post" action="/settings/brokers/t212/connect" class="space-y-2" autocomplete="off">
+    <input name="key" class="inp w-full text-xs" placeholder="API key" autocomplete="off" spellcheck="false">
+    <input name="secret" type="password" class="inp w-full text-xs" placeholder="API secret (shown once by Trading 212)" autocomplete="new-password">
+    <label class="flex items-center gap-2 text-xs text-slate-400"><input type="checkbox" name="practice" value="1"> Practice (demo) account key</label>
+    <button class="btn btn-p text-xs">Connect Trading 212 (tests the key first)</button>
+  </form>
+  {% endif %}
+  <details class="text-xs text-slate-400 mt-2">
+    <summary>API key instructions</summary>
+    <p class="mt-1">{{ t212.scope_help }}</p>
+  </details>
+</section>
+{% endif %}
+{% if which in ('all', 'ibkr') %}
+<section class="acct-section" id="edit-connection-ibkr">
+  <h3 class="text-white font-medium mb-1">Interactive Brokers</h3>
+  <p class="text-xs text-slate-500 mb-2">One Flex token and one query cover every account. Opening this form does not call Interactive Brokers.</p>
+  {% if not ibkr.connected and not ibkr.enc_key %}<p class="text-xs text-amber-300">Set TOKEN_ENCRYPTION_KEY on the server before connecting (the Flex token is stored encrypted).</p>{% endif %}
+  {% if ibkr.connected %}
+  <div class="acct-actions mb-2">
+    <button type="button" hx-post="/settings/brokers/ibkr/sync" hx-target="#acct-modal-ibkr-sync" class="btn btn-p text-xs">Sync new</button>
+    <button type="button" hx-post="/settings/brokers/ibkr/resync" hx-target="#acct-modal-ibkr-sync" hx-confirm="Full history fetches year-sized windows from the history start date through the previous US business day. Failed windows (1001/1003) are retried; a 1001 year is retried as quarters, a 1001 quarter as months. Existing fills are kept." class="btn btn-s text-xs">Full history</button>
+    <form method="post" action="/settings/brokers/ibkr/test"><button class="btn btn-s text-xs">Test connection</button></form>
+    <form method="post" action="/settings/brokers/ibkr/disconnect" onsubmit="return confirm('Delete the stored Flex token? Imported trades stay.')"><button class="btn btn-d text-xs">Disconnect</button></form>
+  </div>
+  <div id="acct-modal-ibkr-sync"></div>
+  {% endif %}
+  <form method="post" action="/settings/brokers/ibkr/history-start" class="acct-actions mb-2">
+    <label class="text-xs text-slate-400 set-field">History start
+      <input type="date" name="history_start" value="{{ ibkr.history_start or '2022-01-01' }}" class="inp text-xs" aria-label="History start date">
+    </label>
+    <button class="btn btn-s text-xs">Save start date</button>
+  </form>
+  <p class="text-xs text-slate-500">Full history walks year-sized windows from this date through the previous US business day. Sync new continues from the last synced date.</p>
+  <details class="text-xs text-slate-400">
+    <summary>How to create the Flex query and token</summary>
+    <p class="mt-1 leading-relaxed">{{ ibkr.how_to }}</p>
+  </details>
+  {% if ibkr.connected %}
+  <form method="post" action="/settings/brokers/ibkr/connect" class="space-y-2 mt-2" autocomplete="off">
+    <input name="token" type="password" class="inp w-full text-xs" placeholder="New Flex token (leave blank to keep saved)" autocomplete="new-password">
+    <input name="query_id" class="inp w-full text-xs" value="{{ ibkr.query_id or '' }}" placeholder="Flex Query ID" autocomplete="off">
+    <input name="currency" class="inp w-full text-xs" value="{{ ibkr.currency or 'USD' }}" placeholder="Account currency" maxlength="3" autocomplete="off">
+    <button class="btn btn-s text-xs">Save</button>
+  </form>
+  {% else %}
+  <form method="post" action="/settings/brokers/ibkr/connect" class="space-y-2 mt-2" autocomplete="off">
+    <input name="token" type="password" class="inp w-full text-xs" placeholder="Flex token" autocomplete="new-password" spellcheck="false">
+    <input name="query_id" class="inp w-full text-xs" placeholder="Flex Query ID" autocomplete="off" spellcheck="false">
+    <input name="currency" class="inp w-full text-xs" value="USD" placeholder="Account currency (default USD)" maxlength="3" autocomplete="off">
+    <button class="btn btn-p text-xs">Save Interactive Brokers (tests the token first)</button>
+  </form>
+  {% endif %}
+  <form method="post" action="/settings/brokers/ibkr/upload" enctype="multipart/form-data" class="acct-actions mt-2">
+    <label class="text-xs text-slate-400 set-field">Upload IBKR Activity Statement (XML)
+      <input type="file" name="files" accept=".xml,application/xml,text/xml" class="inp text-xs" multiple>
+    </label>
+    <button class="btn btn-s text-xs">Upload XML</button>
+  </form>
+  <p class="text-xs text-slate-500 mt-1">You can select several XML files; they are processed one by one in the background. Same mapping and dedupe as Flex sync. 100 MB per file, 10 files max. A re-upload of the same statement adds nothing.</p>
+  <form method="post" action="/settings/brokers/ibkr/reprocess" class="mt-2"
+        onsubmit="return confirm('Re-read stored IBKR JSON/XML (no call to Interactive Brokers). Existing fills stay; duplicates are skipped.')">
+    <button class="btn btn-s text-xs">Reprocess stored history</button>
+  </form>
+</section>
+{% endif %}
+{% if which in ('all', 'tos') %}
+<section class="acct-section" id="edit-connection-tos">
+  <h3 class="text-white font-medium mb-1">thinkorswim email feed</h3>
+  <p class="text-xs text-slate-400 mb-2">Endpoint <code>{{ tos_email.url }}</code>{% if tos_email.has_token %} · token <code>{{ tos_email.token_hint }}</code> (stored encrypted){% else %} · no token yet{% endif %}</p>
+  <form method="post" action="/settings/tos-email/token" {% if tos_email.has_token %}onsubmit="return confirm('Create a new token? The current script stops working until you paste the updated one.')"{% endif %}>
+    <button class="btn {{ 'btn-s' if tos_email.has_token else 'btn-p' }} text-xs">{{ 'Regenerate token' if tos_email.has_token else 'Create ingest token' }}</button>
+  </form>
+  <p class="text-xs text-slate-500 mt-2">The Apps Script (token included) is on the email-feed account, so it is not copied into this window. Select that account to copy it.</p>
+</section>
+{% endif %}

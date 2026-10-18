@@ -1,0 +1,163 @@
+{# One accounts screen: a grid of every account, then one detail panel. Modals load on demand. #}
+<div id="brokers">
+  <div class="conn-head mb-2">
+    <h2 class="card-h mb-0" id="accounts-list">Accounts</h2>
+    <button type="button" class="btn btn-p text-xs" hx-get="/settings/accounts/new" hx-target="#acct-modal" hx-swap="innerHTML">Add account</button>
+  </div>
+  <p class="text-[11px] text-slate-500 mb-3" id="account-sync-help"><b>Sync new</b> reads fills after that account's stored cursor. <b>Full history</b> is a full re-scan of that account once (SnapTrade or Schwab cursor reset, a Trading 212 full re-scan, or IBKR year-sized windows from the history start date). Existing fills are kept. Sync all runs every connected account except Interactive Brokers, which is paced and syncs from its own account. Opening an account does not sync and does not call the broker.</p>
+
+  {% if snaptrade and snaptrade.connections %}
+  <div class="acct-chip-row mb-2" id="schwab-status">
+    {% for c in snaptrade.connections %}
+    <span class="pill {{ 'bg-rose-500/15 text-rose-300' if c.disabled else 'bg-emerald-500/15 text-emerald-300' }}">{{ 'login expired' if c.disabled else 'connected' }}</span>
+    <span class="text-xs text-slate-300">{{ c.broker or 'Schwab' }}</span>
+    <form method="post" action="/settings/snaptrade/reconnect?id={{ c.id }}"><button class="btn {{ 'btn-p' if c.disabled else 'btn-s' }} text-xs">Reconnect {{ c.broker or 'Schwab' }}</button></form>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% if ibkr.connected %}
+  <p class="text-xs text-slate-400 mb-2" id="ibkr-chip">Interactive Brokers · Flex token <b class="text-slate-200">saved</b>{% if ibkr.query_id %} · query <b class="text-slate-200">{{ ibkr.query_id }}</b>{% endif %}{% if (ibkr.cooldown_s or 0) > 0 %} · <span class="text-amber-300">Paused · cooldown {{ (ibkr.cooldown_s // 60) + 1 }} min</span>{% elif ibkr.history_status == 'paused' %} · <span class="text-amber-300">Paused · cooldown</span>{% endif %}</p>
+  {% endif %}
+  {% if t212.connected %}
+  <p class="text-xs text-slate-400 mb-2" id="t212-chip">Trading 212 · key <b class="text-slate-200">{{ t212.masked }}</b>{% if t212.practice %} · practice{% endif %}</p>
+  {% endif %}
+  {% if ibkr.connected and ibkr.flex_end %}
+  <p class="text-xs text-slate-500 mb-2" id="ibkr-available">Data available through {{ ibkr.flex_end }} (IBKR has data up to the previous business day).</p>
+  {% endif %}
+  {% if ibkr.progress %}
+  <div class="text-xs text-slate-300 mb-2" id="ibkr-progress">{{ ibkr.progress }}</div>
+  {% endif %}
+  {% include "partials/ibkr_upload_progress.html" %}
+
+  <form method="get" action="/settings" class="acct-mselect" id="acct-mform">
+    <label class="set-field">Account
+      <select name="account" class="inp" aria-label="Account" onchange="if (window.htmx) { var id=this.value; var url=id?('/settings/accounts/'+encodeURIComponent(id)+'/detail'):'/settings/accounts/0/detail'; window.htmx.ajax('GET', url, {target:'#account-detail', swap:'outerHTML'}); history.pushState({}, '', id?('/settings?account='+encodeURIComponent(id)+'#accounts'):'/settings#accounts'); document.querySelectorAll('#brokers [data-account]').forEach(function(el){ el.classList.toggle('is-selected', el.getAttribute('data-account')===id); }); }">
+        <option value="">Select an account</option>
+        {% for row in acct_rows %}{% set a = row.a %}
+        <option value="{{ a.id }}" {{ 'selected' if selected_key == (a.id|string) }}>{{ row.broker_label }} · {{ a.name }}{% if row.masked %} · {{ row.masked }}{% endif %} · {{ a.currency }}</option>
+        {% endfor %}
+        <option value="tos-email" {{ 'selected' if selected_key == 'tos-email' }}>thinkorswim · email feed</option>
+      </select>
+    </label>
+    <button class="btn btn-s text-xs nojs-only" type="submit">Show</button>
+  </form>
+
+  <div class="acct-table-wrap">
+    <table class="acct-table">
+      <thead>
+        <tr><th>Broker</th><th>Account</th><th>Currency</th><th>Status</th><th>Last sync</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for row in acct_rows %}{% set a = row.a %}
+        <tr class="acct-line {{ 'is-selected' if selected_key == (a.id|string) }}" data-account="{{ a.id }}" data-broker="{{ row.broker_label }}">
+          <td>
+            <a class="acct-stretch" href="/settings?account={{ a.id }}#accounts"
+               hx-get="/settings/accounts/{{ a.id }}/detail" hx-target="#account-detail" hx-swap="outerHTML"
+               hx-push-url="/settings?account={{ a.id }}#accounts"><span class="sr-only">Open {{ a.name }}</span></a>
+            {{ row.broker_label }}
+          </td>
+          <td>
+            <span class="text-white">{{ a.name }}</span>
+            {% if row.masked %}<span class="text-slate-500"> {{ row.masked }}</span>{% endif %}
+            {% if a.is_demo %}<span class="pill bg-amber-500/20 text-amber-300">sample</span>{% endif %}
+            {% if row.attention %}<span class="pill bg-amber-500/15 text-amber-300">Needs attention {{ row.attention }}</span>{% endif %}
+          </td>
+          <td>{{ a.currency }}</td>
+          <td><span class="status-dot" data-status="{{ row.dot or 'never' }}" title="{{ row.status_label }}"></span> {{ row.status_label }}</td>
+          <td class="text-slate-400">{% if row.last_sync %}{% if row.last_sync is string %}{{ row.last_sync }}{% else %}{{ row.last_sync|local_dt }}{% endif %}{% else %}never synced{% endif %}</td>
+          <td class="acct-actions">
+            <button type="button" class="btn btn-s text-xs" hx-get="/settings/accounts/{{ a.id }}/edit" hx-target="#acct-modal" hx-swap="innerHTML">Edit</button>
+            {% if not a.is_demo %}<button type="button" class="btn btn-d text-xs" hx-get="/settings/accounts/{{ a.id }}/delete" hx-target="#acct-modal" hx-swap="innerHTML">Delete</button>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+        {% set td = 'error' if tos_email.status.errors else ('never' if not tos_email.status.emails else 'ok') %}
+        <tr class="acct-line {{ 'is-selected' if selected_key == 'tos-email' }}" data-account="tos-email" data-broker="thinkorswim" id="{{ 'tos-email-row' if selected_key == 'tos-email' else 'tos-email' }}">
+          <td>
+            <a class="acct-stretch" href="/settings?account=tos-email#accounts"
+               hx-get="/settings/accounts/tos-email/detail" hx-target="#account-detail" hx-swap="outerHTML"
+               hx-push-url="/settings?account=tos-email#accounts"><span class="sr-only">Open thinkorswim email feed</span></a>
+            thinkorswim
+          </td>
+          <td><span class="text-white">Email feed</span></td>
+          <td class="text-slate-500">—</td>
+          <td><span class="status-dot" data-status="{{ td }}"></span> {{ {'ok':'OK','error':'Error'}.get(td, 'Never synced') }}</td>
+          <td class="text-slate-400">{% if tos_email.status.last %}{{ tos_email.status.last|local_dt }}{% else %}never synced{% endif %}</td>
+          <td class="acct-actions">
+            <button type="button" class="btn btn-s text-xs" hx-get="/settings/accounts/tos-email/edit" hx-target="#acct-modal" hx-swap="innerHTML">Edit</button>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="acct-cards">
+    {% for row in acct_rows %}{% set a = row.a %}
+    <article class="acct-card {{ 'is-selected' if selected_key == (a.id|string) }}" data-account="{{ a.id }}">
+      <a class="acct-card-main" href="/settings?account={{ a.id }}#accounts"
+         hx-get="/settings/accounts/{{ a.id }}/detail" hx-target="#account-detail" hx-swap="outerHTML"
+         hx-push-url="/settings?account={{ a.id }}#accounts">
+        <span class="status-dot" data-status="{{ row.dot or 'never' }}"></span>
+        <span class="text-white font-medium">{{ a.name }}</span>
+        <span class="text-xs text-slate-400">{{ row.broker_label }}</span>
+        {% if row.masked %}<span class="text-xs text-slate-500">{{ row.masked }}</span>{% endif %}
+        <span class="text-xs text-slate-300">{{ a.currency }}</span>
+        <span class="text-xs text-slate-400">{{ row.status_label }}</span>
+        <span class="text-xs text-slate-500">{% if row.last_sync %}{% if row.last_sync is string %}{{ row.last_sync }}{% else %}{{ row.last_sync|local_dt }}{% endif %}{% else %}never synced{% endif %}</span>
+        {% if a.is_demo %}<span class="pill bg-amber-500/20 text-amber-300">sample</span>{% endif %}
+        {% if row.attention %}<span class="pill bg-amber-500/15 text-amber-300">Needs attention {{ row.attention }}</span>{% endif %}
+      </a>
+      <div class="acct-actions">
+        <button type="button" class="btn btn-s text-xs" hx-get="/settings/accounts/{{ a.id }}/edit" hx-target="#acct-modal" hx-swap="innerHTML">Edit</button>
+        {% if not a.is_demo %}<button type="button" class="btn btn-d text-xs" hx-get="/settings/accounts/{{ a.id }}/delete" hx-target="#acct-modal" hx-swap="innerHTML">Delete</button>{% endif %}
+      </div>
+    </article>
+    {% endfor %}
+    {% set td = 'error' if tos_email.status.errors else ('never' if not tos_email.status.emails else 'ok') %}
+    <article class="acct-card {{ 'is-selected' if selected_key == 'tos-email' }}" data-account="tos-email">
+      <a class="acct-card-main" href="/settings?account=tos-email#accounts"
+         hx-get="/settings/accounts/tos-email/detail" hx-target="#account-detail" hx-swap="outerHTML"
+         hx-push-url="/settings?account=tos-email#accounts">
+        <span class="status-dot" data-status="{{ td }}"></span>
+        <span class="text-white font-medium">Email feed</span>
+        <span class="text-xs text-slate-400">thinkorswim</span>
+        <span class="text-xs text-slate-400">{{ {'ok':'OK','error':'Error'}.get(td, 'Never synced') }}</span>
+        <span class="text-xs text-slate-500">{% if tos_email.status.last %}{{ tos_email.status.last|local_dt }}{% else %}never synced{% endif %}</span>
+      </a>
+      <div class="acct-actions">
+        <button type="button" class="btn btn-s text-xs" hx-get="/settings/accounts/tos-email/edit" hx-target="#acct-modal" hx-swap="innerHTML">Edit</button>
+      </div>
+    </article>
+  </div>
+
+  {% if panel %}
+    {% include "partials/account_detail.html" %}
+  {% else %}
+    {% with panel = {"kind": "empty", "key": ""} %}{% include "partials/account_detail.html" %}{% endwith %}
+  {% endif %}
+</div>
+<dialog id="acct-modal" class="acct-modal"></dialog>
+<script>
+(function () {
+  var d = document.getElementById('acct-modal');
+  if (!d || d.dataset.bound) return;
+  d.dataset.bound = '1';
+  document.body.addEventListener('htmx:afterSwap', function (e) {
+    if (e.detail && e.detail.target === d && !d.open) d.showModal();
+  });
+  d.addEventListener('click', function (e) { if (e.target === d) d.close(); });
+  d.addEventListener('close', function () { d.replaceChildren(); });
+  var root = document.getElementById('brokers');
+  if (root) root.addEventListener('click', function (e) {
+    if (e.target.closest('button, form, .acct-actions')) return;
+    var hit = e.target.closest('[data-account]');
+    if (!hit || !root.contains(hit)) return;
+    var id = hit.getAttribute('data-account');
+    root.querySelectorAll('[data-account]').forEach(function (el) {
+      el.classList.toggle('is-selected', el.getAttribute('data-account') === id);
+    });
+    var sel = document.querySelector('#acct-mform select');
+    if (sel) sel.value = id;
+  });
+})();
+</script>

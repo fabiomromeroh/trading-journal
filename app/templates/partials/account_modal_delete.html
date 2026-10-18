@@ -1,0 +1,18 @@
+<div class="acct-modal-body" id="acct-delete"
+     data-account="{{ account.id }}"
+     data-executions="{{ counts.executions }}"
+     data-trades="{{ counts.trades }}"
+     data-corporate-actions="{{ counts.corporate_actions }}"
+     data-sync-files="{{ counts.sync_files }}">
+  <div class="conn-head mb-3">
+    <h3 class="text-white font-medium" id="acct-modal-title">Delete {{ account.name }}</h3>
+    <button type="button" class="btn btn-s text-xs" onclick="this.closest('dialog').close()">Close</button>
+  </div>
+  <p class="text-sm text-slate-200 mb-3">{{ removal }}</p>
+  <form method="post" action="/settings/accounts/{{ account.id }}/delete" class="space-y-2">
+    <label class="set-field">Type the account name to confirm
+      <input name="confirm" class="inp" autocomplete="off" aria-label="Type the account name to confirm delete" placeholder="{{ account.name }}">
+    </label>
+    <button class="btn btn-d text-xs">Delete account</button>
+  </form>
+</div>

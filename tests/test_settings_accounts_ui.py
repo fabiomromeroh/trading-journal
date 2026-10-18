@@ -83,19 +83,30 @@ def test_both_tabs_render_for_a_logged_in_user(db):
     db.commit()
     anon = TestClient(__import__("app.main", fromlist=["create_app"]).create_app())
     assert anon.get("/settings", follow_redirects=False).status_code == 303
-    page = _client(db).get("/settings")
+    c = _client(db)
+    page = c.get("/settings")
     assert page.status_code == 200
     html = page.text
+    acct_id = db.query(Account).one().id
     for anchor in ("id=\"accounts\"", "id=\"accounts-list\"", "id=\"brokers\"", "id=\"sync\"",
-                   "id=\"sync-history\"", "id=\"sync-latest\"", "id=\"sync-attention\"",
-                   "id=\"attention-counts\"", "id=\"tos-email\"", "id=\"edit-connection-ibkr\"",
-                   "id=\"edit-connection-t212\"", "id=\"edit-connection-schwab\"", "id=\"edit-connection-tos\""):
+                   "id=\"sync-history\"", "id=\"sync-attention\"", "id=\"tos-email\""):
         assert anchor in html, anchor
     assert "Accounts" in html and "Sync history" in html and "Corporate actions" in html and "Needs attention" in html
-    assert html.index('id="accounts"') < html.index('id="brokers"') < html.index('id="sync"')
-    assert html.index('id="sync"') < html.index('id="sync-attention"') < html.index('id="tos-email"')
+    assert html.index('id="accounts"') < html.index('id="brokers"') < html.index('id="tos-email"')
+    assert html.index('id="tos-email"') < html.index('id="sync-attention"') < html.index('id="sync"')
+    # Connection forms and the one account panel load on demand. The grid itself does not
+    # render every account's sync, history, and corporate actions together.
+    add = c.get("/settings/accounts/new").text
+    edit = c.get(f"/settings/accounts/{acct_id}/edit").text
+    delete = c.get(f"/settings/accounts/{acct_id}/delete").text
+    detail = c.get(f"/settings/accounts/{acct_id}/detail").text
+    for anchor in ("id=\"edit-connection-ibkr\"", "id=\"edit-connection-t212\"",
+                   "id=\"edit-connection-schwab\"", "id=\"edit-connection-tos\""):
+        assert anchor in add, anchor
+    assert "Main" in detail and "Delete Main" in delete or "Delete" in delete
+    blob = html + add + edit + delete + detail
     for bit in ALWAYS:
-        assert bit in html, bit
+        assert bit in blob, bit
 
 
 def test_connected_broker_endpoints_stay(db, monkeypatch):
@@ -123,13 +134,17 @@ def test_connected_broker_endpoints_stay(db, monkeypatch):
     db.add(InboundEmail(message_id="<m1>", received_at=datetime(2026, 10, 1, 12, 0), status="fills",
                         fills=1, subject="fill"))
     db.commit()
-    html = _client(db).get("/settings").text
+    c = _client(db)
+    page = c.get("/settings").text
+    add = c.get("/settings/accounts/new").text
+    tos = c.get("/settings?account=tos-email").text
+    blob = page + add + tos
     for bit in CONNECTED + SCHWAB:
-        assert bit in html, bit
-    assert 'action="/settings/tos-email/' in html and "/discard" in html
-    assert "T212KEYVALUE99" not in html and "T212SECRETVALUE" not in html
-    assert "IBKR_FLEX_TOKEN_SECRET_XYZ" not in html
-    assert "enc-access" not in html and "enc-refresh" not in html
+        assert bit in blob, bit
+    assert 'action="/settings/tos-email/' in tos and "/discard" in tos
+    assert "T212KEYVALUE99" not in blob and "T212SECRETVALUE" not in blob
+    assert "IBKR_FLEX_TOKEN_SECRET_XYZ" not in blob
+    assert "enc-access" not in blob and "enc-refresh" not in blob
 
 
 def test_three_ibkr_accounts_share_one_connection(db, monkeypatch):
@@ -143,26 +158,32 @@ def test_three_ibkr_accounts_share_one_connection(db, monkeypatch):
                        external_ref=ext, account_number_masked=f"U***{ext[-4:]}"))
     db.commit()
     ibkr._trip(900)
-    html = _client(db).get("/settings").text
-    assert html.count('data-connection="ibkr"') == 1
-    group = html.split('id="ibkr-box"', 1)[1].split("</section>", 1)[0]
-    assert group.count("data-account=") == 3
+    c = _client(db)
+    html = c.get("/settings").text
     for name in ("Personal", "ISA", "Margin"):
-        assert name in group.split('id="ibkr-accounts"', 1)[1].split('id="edit-connection-ibkr"', 1)[0]
-    edit = group.split('id="edit-connection-ibkr"', 1)[1]
-    assert 'name="token"' in edit and 'name="query_id"' in edit and 'name="history_start"' in edit
-    assert 'name="currency"' in edit
+        assert name in html
     assert token not in html
     for ext in full_ids:
         assert ext not in html
     assert "U***5678" in html and "U***6789" in html and "U***7890" in html
-    assert 'data-status="paused"' in group
-    assert "paused-cooldown" in group or "cooldown" in group
-    # One connection sync. The generic per-account /sync buttons are not repeated on each IBKR row.
-    accts = group.split('id="ibkr-accounts"', 1)[1].split('id="edit-connection-ibkr"', 1)[0]
-    assert 'hx-post="/sync"' not in accts
-    assert 'hx-post="/settings/brokers/ibkr/sync"' in group
-    assert 'hx-post="/settings/brokers/ibkr/resync"' in group
+    assert 'data-status="paused"' in html
+    assert "cooldown" in html
+    # One shared connection. Opening one account does not render the other two, and IBKR rows
+    # do not get the generic per-account /sync buttons.
+    first = db.query(Account).filter(Account.name == "Personal").one()
+    detail = c.get(f"/settings/accounts/{first.id}/detail").text
+    assert detail.count('data-connection="ibkr"') == 1
+    assert "Personal" in detail and "ISA" not in detail and "Margin" not in detail
+    assert 'hx-post="/sync"' not in detail
+    assert 'hx-post="/settings/brokers/ibkr/sync"' in detail
+    assert 'hx-post="/settings/brokers/ibkr/resync"' in detail
+    edit = c.get(f"/settings/accounts/{first.id}/edit").text
+    block = edit.split('id="edit-connection-ibkr"', 1)[1]
+    assert 'name="token"' in block and 'name="query_id"' in block and 'name="history_start"' in block
+    assert 'name="currency"' in block
+    assert token not in edit
+    for ext in full_ids:
+        assert ext not in edit and ext not in detail
 
 
 def test_upload_polls_every_3s_while_running_and_stops_when_done(db, monkeypatch):
@@ -196,12 +217,19 @@ def test_needs_attention_counts_by_account_and_kind(db):
     db.add(CorporateAdjustment(account_id=b.id, symbol="BBB", kind="RENAME", status="needs_attention",
                                source="broker", external_key="t:bbb", note="Suggest: rename BBB -> CCC on 2024-02-01 (broker)"))
     db.commit()
-    html = _client(db).get("/settings").text
-    block = html.split('id="attention-counts"', 1)[1].split("</div>", 1)[0]
-    assert 'data-attention-total="2"' in block
-    assert 'data-kind="SPLIT"' in block and "SPLIT 1" in block
-    assert 'data-kind="RENAME"' in block and "RENAME 1" in block
-    assert f'data-account="{a.id}"' in block and "Schwab main 1" in block
-    assert f'data-account="{b.id}"' in block and "T212 book 1" in block
-    assert 'name="when" value="2024-01-31"' in html
-    assert ">Save</button>" in html
+    c = _client(db)
+    grid = c.get("/settings").text
+    assert "Needs attention 1" in grid
+    assert "Schwab main" in grid and "T212 book" in grid
+    a_html = c.get(f"/settings/accounts/{a.id}/detail").text
+    b_html = c.get(f"/settings/accounts/{b.id}/detail").text
+    a_block = a_html.split('id="attention-counts"', 1)[1].split("</div>", 1)[0]
+    b_block = b_html.split('id="attention-counts"', 1)[1].split("</div>", 1)[0]
+    assert 'data-attention-total="1"' in a_block and 'data-kind="SPLIT"' in a_block and "SPLIT 1" in a_block
+    assert f'data-account="{a.id}"' in a_block and "Schwab main 1" in a_block
+    assert "T212 book" not in a_html and 'data-kind="RENAME"' not in a_block
+    assert 'data-attention-total="1"' in b_block and 'data-kind="RENAME"' in b_block and "RENAME 1" in b_block
+    assert f'data-account="{b.id}"' in b_block and "T212 book 1" in b_block
+    assert "Schwab main" not in b_html and 'data-kind="SPLIT"' not in b_block
+    assert 'name="when" value="2024-01-31"' in a_html
+    assert ">Save</button>" in a_html

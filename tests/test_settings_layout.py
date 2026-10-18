@@ -29,9 +29,9 @@ def test_settings_tabs_fill_the_page_and_keep_every_form(db):
                    "id=\"journal-settings\"", "id=\"break-even\"", "id=\"data\"", "id=\"backups\"",
                    "id=\"aliases\"", "id=\"company-info\"", "id=\"security\"", "id=\"install-app\""):
         assert anchor in page, anchor
-    assert page.index('id="accounts"') < page.index('id="brokers"') < page.index('id="sync"')
-    assert page.index('id="sync"') < page.index('id="sync-attention"') < page.index('id="tos-email"')
-    assert page.index('id="tos-email"') < page.index('id="display"') < page.index('name="timezone"')
+    assert page.index('id="accounts"') < page.index('id="brokers"') < page.index('id="tos-email"')
+    assert page.index('id="tos-email"') < page.index('id="sync-attention"') < page.index('id="sync"')
+    assert page.index('id="sync"') < page.index('id="display"') < page.index('name="timezone"')
     assert page.index('name="timezone"') < page.index('id="rules"')
     rules = page[page.index('id="rules"'):page.index('id="data"')]
     assert "Auto stop (5m low of day before entry)" in rules
@@ -40,11 +40,14 @@ def test_settings_tabs_fill_the_page_and_keep_every_form(db):
     assert 'id="backups"' in data and 'id="aliases"' in data and "Refresh company info" in data
     assert 'action="/settings/security/password"' in page[page.index('id="security"'):]
     for action in ("/settings/accounts/", "/settings/accounts/", "/meta", "/auto-stop", "/delete",
-                   "/settings/adjustments", "/settings/break-even", "/settings/aliases",
+                   "/settings/break-even", "/settings/aliases",
                    "/settings/backup/token", "/settings/demo/load", "/settings/rebuild",
                    "/settings/recompute-excursions", "/settings/companies/refresh",
                    "/prefs", "/sync"):
         assert action in page, action
+    acct_id = db.query(Account).one().id
+    detail = _client(db).get(f"/settings/accounts/{acct_id}/detail").text
+    assert "/settings/adjustments" in detail
     # Account rows are a wrapping grid, not a fixed-width table cell.
     assert "set-grid" in page and "set-cards" in page
     assert "w-56" not in page and "w-36" not in page and "w-28" not in page

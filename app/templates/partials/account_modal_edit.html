@@ -1,0 +1,42 @@
+<div class="acct-modal-body">
+  <div class="conn-head mb-3">
+    <h3 class="text-white font-medium" id="acct-modal-title">Edit account</h3>
+    <button type="button" class="btn btn-s text-xs" onclick="this.closest('dialog').close()">Close</button>
+  </div>
+  {% if panel.kind == 'tos' %}
+  <p class="text-sm text-slate-300 mb-2">thinkorswim email feed</p>
+  {% with which = 'tos' %}{% include "partials/account_connect_forms.html" %}{% endwith %}
+  {% else %}
+  {% set a = panel.account %}
+  <form method="post" action="/settings/accounts/{{ a.id }}" class="set-inline mb-3">
+    <input type="hidden" name="next" value="/settings?account={{ a.id }}#accounts">
+    <label class="set-field">Name
+      <input name="name" value="{{ a.name }}" class="inp" required maxlength="120" aria-label="Account name">
+    </label>
+    <button class="btn btn-s text-xs">Rename</button>
+  </form>
+  <form method="post" action="/settings/accounts/{{ a.id }}/meta" class="set-grid mb-4">
+    <input type="hidden" name="next" value="/settings?account={{ a.id }}#accounts">
+    <label class="set-field">Currency
+      <select name="currency" class="inp" aria-label="Currency">{% for c in ['USD','EUR','GBP'] %}<option {{ 'selected' if a.currency == c }}>{{ c }}</option>{% endfor %}</select>
+    </label>
+    <label class="set-field">Time zone
+      <input name="timezone" value="{{ a.timezone }}" class="inp" aria-label="Time zone">
+    </label>
+    <label class="set-field">Market
+      <select name="market" class="inp" aria-label="Market">{% for m in ['US','UK','DE','EU'] %}<option {{ 'selected' if a.market == m }}>{{ m }}</option>{% endfor %}</select>
+    </label>
+    <div class="set-field"><span class="card-h">Save</span><button class="btn btn-s text-xs">Save</button></div>
+  </form>
+  <p class="text-xs text-slate-500 mb-2">{{ panel.row.broker_label }}{% if panel.row.masked %} · {{ panel.row.masked }}{% endif %} · {{ a.currency }}. Saving these fields does not sync and does not call the broker.</p>
+  {% if panel.bucket == 'ibkr' %}
+    {% with which = 'ibkr' %}{% include "partials/account_connect_forms.html" %}{% endwith %}
+  {% elif panel.bucket == 't212' %}
+    {% with which = 't212' %}{% include "partials/account_connect_forms.html" %}{% endwith %}
+  {% elif panel.bucket == 'schwab' %}
+    {% with which = 'schwab' %}{% include "partials/account_connect_forms.html" %}{% endwith %}
+  {% else %}
+  <p class="text-sm text-slate-400">No broker connection on this account. Use Add account to connect one, or import a CSV.</p>
+  {% endif %}
+  {% endif %}
+</div>

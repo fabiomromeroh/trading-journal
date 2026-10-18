@@ -2,7 +2,7 @@
 {% set no_boost = true %}
 {% block title %}Settings · Trading Journal{% endblock %}
 {% block head %}
-<link rel="stylesheet" href="/static/settings.css?v=3">
+<link rel="stylesheet" href="/static/settings.css?v=4">
 {% endblock %}
 {% block content %}
 <div id="settings-page">
@@ -19,86 +19,22 @@
 </nav>
 
 <section id="accounts" class="stab stab-default">
-{% include "partials/brokers_settings.html" %}
+{% include "partials/accounts_screen.html" %}
 </section>
 
 <section id="sync" class="stab">
 <div class="card p-4 mb-4 min-w-0" id="sync-history">
   <div class="conn-head mb-2">
-    <h2 class="card-h">Sync history &amp; results</h2>
+    <h2 class="card-h">Sync history</h2>
     <div class="acct-actions">
       <button hx-post="/sync" hx-target="#sync-panel" hx-vals='{"mode":"new"}' class="btn btn-p text-xs">Sync new</button>
       <button hx-post="/sync" hx-target="#sync-panel" hx-vals='{"mode":"full"}' hx-confirm="Re-read the full history for every connected account? Existing fills are kept." class="btn btn-s text-xs">Full history</button>
     </div>
   </div>
-  <p class="text-[11px] text-slate-500 mb-3">These two skip Interactive Brokers. Sync new continues from each stored cursor. Full history re-scans once. IBKR stays on its own connection.</p>
+  <p class="text-[11px] text-slate-500 mb-3">These two skip Interactive Brokers. Sync new continues from each stored cursor. Full history re-scans once. Per-account results, corporate actions, and the thinkorswim email feed are on the selected account.</p>
   <div id="sync-panel" class="mb-3">{% if active_run %}{% with run = active_run %}{% include "partials/sync_status.html" %}{% endwith %}{% endif %}</div>
-  <h3 class="text-xs uppercase tracking-wide text-slate-500 mb-1">Latest result</h3>
-  <ul class="latest-list mb-3" id="sync-latest">
-    {% for row in acct_rows if not row.a.is_demo %}
-    <li>
-      <span class="status-dot" data-status="{{ row.dot or 'never' }}" title="{{ {'ok': 'ok', 'error': 'error', 'paused': 'paused-cooldown'}.get(row.dot or 'never', 'never synced') }}"></span>
-      <b class="text-slate-200">{{ row.a.name }}</b>
-      <span class="text-xs text-slate-400">{{ row.a.broker }}</span>
-      <span class="text-xs text-slate-300">{{ row.a.currency }}</span>
-      <span class="text-xs text-slate-500">{% if row.last_sync %}{% if row.last_sync is string %}{{ row.last_sync }}{% else %}{{ row.last_sync|local_dt }}{% endif %}{% else %}never synced{% endif %}</span>
-      {% if row.result %}<span class="text-xs text-slate-400">{{ row.result }}</span>{% endif %}
-    </li>
-    {% endfor %}
-    <li data-source="tos_email">
-      {% set td = 'error' if tos_email.status.errors else ('never' if not tos_email.status.emails else 'ok') %}
-      <span class="status-dot" data-status="{{ td }}"></span>
-      <b class="text-slate-200">thinkorswim email feed</b>
-      <span class="text-xs text-slate-500">{% if tos_email.status.emails %}{{ tos_email.status.fills }} fills{% else %}never synced{% endif %}</span>
-    </li>
-  </ul>
-  {% if ibkr.flex_end %}
-  <p class="text-xs text-slate-500 mb-2" id="ibkr-available">Data available through {{ ibkr.flex_end }} (IBKR has data up to the previous business day).</p>
-  {% endif %}
-  {% if ibkr.progress %}
-  <div class="text-xs text-slate-300 mb-2" id="ibkr-progress">{{ ibkr.progress }}</div>
-  {% endif %}
-  {% include "partials/ibkr_upload_progress.html" %}
-  {% if t212.last.skipped_detail %}
-  <details class="text-xs mb-2">
-    <summary class="cursor-pointer text-slate-400">Skipped rows, by reason and ticker</summary>
-    <p class="text-slate-500 mt-1">Trading 212</p>
-    <ul class="mt-1 space-y-1 text-slate-400">
-    {% for reason, tickers in t212.last.skipped_detail.items() %}
-      <li><span class="text-slate-200">{{ t212.last.skipped.get(reason, tickers|length) }} {{ reason }}</span>
-        — {{ tickers|join(', ') }}
-        {% if t212.last.skip_fields and t212.last.skip_fields.get(reason) %}
-        <div class="text-slate-500">fields: {{ t212.last.skip_fields[reason]|join(', ') }}</div>
-        {% endif %}
-      </li>
-    {% endfor %}
-    </ul>
-  </details>
-  {% endif %}
-  {% if ibkr.last.skipped_detail %}
-  <details class="text-xs mb-2">
-    <summary class="cursor-pointer text-slate-400">Skipped rows, by reason and ticker</summary>
-    <p class="text-slate-500 mt-1">Interactive Brokers</p>
-    <ul class="mt-1 space-y-1 text-slate-400">
-    {% for reason, tickers in ibkr.last.skipped_detail.items() %}
-      <li><span class="text-slate-200">{{ ibkr.last.skipped.get(reason, tickers|length) }} {{ reason }}</span>
-        — {{ tickers|join(', ') }}</li>
-    {% endfor %}
-    </ul>
-  </details>
-  {% endif %}
-  {% if t212.last.reconcile or t212.last.adjustments or ibkr.last.adjustments %}
-  <details class="text-xs mb-2">
-    <summary class="text-slate-400">Sync notes</summary>
-    {% if t212.last.reconcile %}<div class="text-amber-300 mt-1">Positions still differ from Trading 212:<ul class="list-disc ml-5">{% for r in t212.last.reconcile %}<li>{{ r }}</li>{% endfor %}</ul></div>{% endif %}
-    {% if t212.last.adjustments %}<div class="text-slate-400 mt-1">Reconciliation adjustments (estimated, editable on the trade):<ul class="list-disc ml-5">{% for r in t212.last.adjustments %}<li>{{ r }}</li>{% endfor %}</ul></div>{% endif %}
-    {% if ibkr.last.adjustments %}<div class="text-amber-300 mt-1">Corporate / holdings:<ul class="list-disc ml-5">{% for r in ibkr.last.adjustments %}<li>{{ r }}</li>{% endfor %}</ul></div>{% endif %}
-  </details>
-  {% endif %}
   <div id="sync-runs" class="set-scroll mt-3" hx-get="/sync/runs" hx-trigger="sync-finished from:body">{% include "partials/sync_runs.html" %}</div>
 </div>
-
-{% include "partials/tos_email_settings.html" %}
 </section>
 
 <section id="display" class="stab">

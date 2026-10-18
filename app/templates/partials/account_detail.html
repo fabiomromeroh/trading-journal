@@ -1,0 +1,285 @@
+{# One account. Same sections for every broker. Included by the accounts screen and returned on its own by HTMX. #}
+<div id="account-detail" class="acct-detail" data-kind="{{ panel.kind }}"{% if panel.kind == 'account' %} data-account="{{ panel.account.id }}" data-connection="{{ panel.bucket }}"{% elif panel.kind == 'tos' %} data-account="tos-email" data-connection="tos"{% endif %}>
+{% if panel.kind == 'empty' %}
+  <p class="text-sm text-slate-400">Select an account to see its connection, sync, and corporate actions. Nothing is synced by opening an account.</p>
+  <div id="sync-attention" class="mt-3">
+    <h3 class="card-h mb-1">Corporate actions · Needs attention</h3>
+    <p class="text-xs text-slate-500">Open an account to see items for that account only.</p>
+  </div>
+{% elif panel.kind == 'tos' %}
+  {% set t = panel.tos_email %}
+  {% set td = 'error' if t.status.errors else ('never' if not t.status.emails else 'ok') %}
+  <header class="acct-detail-h">
+    <span class="status-dot" data-status="{{ td }}"></span>
+    <h3 class="text-white font-medium">thinkorswim email feed</h3>
+    <span class="text-xs text-slate-400">Schwab</span>
+    <span class="text-xs text-slate-400">{{ {'ok':'OK','error':'Error'}.get(td, 'Never synced') }}</span>
+    <span class="text-xs text-slate-500">{% if t.status.last %}{{ t.status.last|local_dt }}{% else %}never synced{% endif %}</span>
+    <button type="button" class="btn btn-s text-xs" hx-get="/settings/accounts/tos-email/edit" hx-target="#acct-modal" hx-swap="innerHTML">Edit connection</button>
+  </header>
+  <section class="acct-section">
+    <h4 class="card-h">Connection</h4>
+    <p class="text-xs text-slate-400">Endpoint <code>{{ t.url }}</code>{% if t.has_token %} · token <code>{{ t.token_hint }}</code> (stored encrypted){% else %} · no token yet{% endif %}</p>
+  </section>
+  <section class="acct-section">
+    <h4 class="card-h">Sync</h4>
+    <p class="text-xs text-slate-500 mb-2">Fill emails arrive on their own. This does not call a broker.</p>
+    <form method="post" action="/settings/tos-email/token" {% if t.has_token %}onsubmit="return confirm('Create a new token? The current script stops working until you paste the updated one.')"{% endif %}>
+      <button class="btn {{ 'btn-s' if t.has_token else 'btn-p' }} text-xs">{{ 'Regenerate token' if t.has_token else 'Create ingest token' }}</button>
+    </form>
+  </section>
+  <section class="acct-section" id="acct-sync-results">
+    <h4 class="card-h">Results</h4>
+    {% with tos_email = t %}{% include "partials/tos_email_settings.html" %}{% endwith %}
+  </section>
+  <div id="sync-attention" class="acct-section">
+    <h3 class="card-h mb-1">Corporate actions · Needs attention</h3>
+    <p class="text-xs text-slate-500">The email feed has no corporate actions. Open a Schwab account for those.</p>
+  </div>
+{% else %}
+  {% set a = panel.account %}
+  {% set row = panel.row %}
+  {% set dot = row.dot or 'never' %}
+  <header class="acct-detail-h">
+    <span class="status-dot" data-status="{{ dot }}" title="{{ row.status_label }}"></span>
+    <h3 class="text-white font-medium">{{ a.name }}</h3>
+    <span class="text-xs text-slate-400">{{ row.broker_label }}</span>
+    {% if row.masked %}<span class="text-xs text-slate-500">{{ row.masked }}</span>{% endif %}
+    <span class="text-xs text-slate-200">{{ a.currency }}</span>
+    {% if a.is_demo %}<span class="pill bg-amber-500/20 text-amber-300">sample</span>{% endif %}
+    <span class="text-xs text-slate-400">{{ row.status_label }}</span>
+    <span class="text-xs text-slate-500">{% if row.last_sync %}{% if row.last_sync is string %}{{ row.last_sync }}{% else %}{{ row.last_sync|local_dt }}{% endif %}{% else %}never synced{% endif %}</span>
+    <button type="button" class="btn btn-s text-xs" hx-get="/settings/accounts/{{ a.id }}/edit" hx-target="#acct-modal" hx-swap="innerHTML">Edit connection</button>
+  </header>
+
+  <section class="acct-section" id="acct-connection">
+    <h4 class="card-h">Connection</h4>
+    {% if panel.bucket == 'ibkr' %}
+      {% set last = panel.ibkr.last %}
+      <p class="text-sm text-slate-300">{% if panel.ibkr.connected %}Flex token saved{% if panel.ibkr.query_id %} · query {{ panel.ibkr.query_id }}{% endif %} · history from {{ panel.ibkr.history_start }}{% else %}Not connected. Edit connection to add the Flex token and query.{% endif %}</p>
+      {% if (panel.ibkr.cooldown_s or 0) > 0 %}<p class="text-xs text-amber-300">Paused · cooldown {{ (panel.ibkr.cooldown_s // 60) + 1 }} min</p>{% elif panel.ibkr.history_status == 'paused' %}<p class="text-xs text-amber-300">Paused · cooldown</p>{% endif %}
+      {% if last.error %}<details class="acct-long"><summary>Last error</summary><pre class="acct-pre">{{ last.error }}</pre></details>{% endif %}
+      {% if panel.ibkr.progress %}<details class="acct-long"><summary>Sync progress</summary><p class="text-xs text-slate-300 mt-1">{{ panel.ibkr.progress }}</p></details>{% endif %}
+      {% if panel.ibkr.balance_checks %}
+      <details class="acct-long"><summary>Balance</summary>
+        <div class="text-xs text-slate-400 mt-1">
+          {% for c in panel.ibkr.balance_checks %}
+          <div>{{ c.name }}: journal NAV {% if c.journal_nav is not none %}<b class="text-slate-200">{{ '%.2f'|format(c.journal_nav) }}</b>{% else %}—{% endif %} vs IBKR {% if c.ibkr_nav is not none %}<b class="text-slate-200">{{ '%.2f'|format(c.ibkr_nav) }}</b>{% else %}—{% endif %}{% if c.diff is not none %} (diff <b class="{{ 'text-emerald-300' if c.diff|abs < 1 else 'text-amber-300' }}">{{ '%+.2f'|format(c.diff) }}</b>){% endif %}{% if c.ibkr_cash is not none %} · IBKR cash {{ '%.2f'|format(c.ibkr_cash) }}{% endif %} {{ c.currency }}</div>
+          {% endfor %}
+        </div>
+      </details>
+      {% endif %}
+    {% elif panel.bucket == 't212' %}
+      {% set last = panel.t212.last %}
+      <p class="text-sm text-slate-300">{% if panel.t212.connected %}Connected · key {{ panel.t212.masked }}{% if panel.t212.practice %} · practice{% endif %}{% else %}Not connected. Edit connection to add the API key.{% endif %}</p>
+      {% if last.error %}<details class="acct-long"><summary>Last error</summary><pre class="acct-pre">{{ last.error }}</pre></details>{% endif %}
+      {% if last.warning %}<p class="text-xs text-amber-300">{{ last.warning }}</p>{% endif %}
+      {% if panel.t212.instrument_issues %}
+      <details class="acct-long"><summary>Instruments to check ({{ panel.t212.instrument_issues|length }})</summary>
+        <ul class="mt-1 space-y-1 text-xs text-slate-400">{% for i in panel.t212.instrument_issues %}<li><span class="text-slate-200">{{ i.symbol }}</span>{% if i.notes %} — {{ i.notes|join('; ') }}{% endif %}</li>{% endfor %}</ul>
+      </details>
+      {% endif %}
+    {% elif panel.bucket == 'schwab' %}
+      <p class="text-sm text-slate-300">{% if panel.snaptrade and panel.snaptrade.connections %}SnapTrade {{ 'login expired' if panel.snaptrade.connections|selectattr('disabled')|list else 'connected' }}{% else %}Schwab connection is on Edit connection.{% endif %}</p>
+      {% if panel.snaptrade and panel.snaptrade.error %}<details class="acct-long"><summary>Last status check</summary><p class="text-xs text-amber-300 mt-1">{{ panel.snaptrade.error }}</p></details>{% endif %}
+      <p class="text-xs text-slate-500">Last successful sync: {{ panel.snaptrade.last_success|local_dt if panel.snaptrade and panel.snaptrade.last_success else 'never' }}</p>
+    {% else %}
+      <p class="text-sm text-slate-300">No broker connection on this account. Use Add account to connect Schwab, Trading 212, or Interactive Brokers, or import a CSV.</p>
+    {% endif %}
+    <p class="text-xs text-slate-500 mt-1">{{ row.executions }} fills · {{ row.trades }} trades{% if a.market %} · {{ a.market }}{% endif %} · {{ a.timezone }}</p>
+    {% if row.orphans %}
+    <details class="acct-long"><summary>{{ row.orphans|length }} fills closed positions opened before imported history</summary>
+      <p class="text-xs text-amber-300 mt-1">{% for o in row.orphans %}{{ o.symbol }} {{ o.quantity|qty }}{% if not loop.last %} · {% endif %}{% endfor %}</p>
+    </details>
+    {% endif %}
+  </section>
+
+  <section class="acct-section" id="acct-sync-actions">
+    <h4 class="card-h">Sync</h4>
+    {% if panel.sync_kind == 'ibkr' %}
+    {% if panel.ibkr.connected %}
+    <div class="acct-actions">
+      <button type="button" class="btn btn-p text-xs" hx-post="/settings/brokers/ibkr/sync" hx-target="#acct-sync-panel" hx-swap="innerHTML">Sync new</button>
+      <button type="button" class="btn btn-s text-xs" hx-post="/settings/brokers/ibkr/resync" hx-target="#acct-sync-panel" hx-swap="innerHTML" hx-confirm="Full history fetches year-sized windows from the history start date through the previous US business day. Failed windows (1001/1003) are retried; a 1001 year is retried as quarters, a 1001 quarter as months. Existing fills are kept.">Full history</button>
+      <form method="post" action="/settings/brokers/ibkr/test"><button class="btn btn-s text-xs">Test connection</button></form>
+      <form method="post" action="/settings/brokers/ibkr/disconnect" onsubmit="return confirm('Delete the stored Flex token? Imported trades stay.')"><button class="btn btn-d text-xs">Disconnect</button></form>
+    </div>
+    {% else %}
+    <p class="text-xs text-slate-500 mb-2">Not connected. Edit connection to add the Flex token and query. These buttons do not run until you press them.</p>
+    {% endif %}
+    <form method="post" action="/settings/brokers/ibkr/upload" enctype="multipart/form-data" class="acct-actions mt-2">
+      <label class="text-xs text-slate-400 set-field">Upload IBKR Activity Statement (XML)
+        <input type="file" name="files" accept=".xml,application/xml,text/xml" class="inp text-xs" multiple>
+      </label>
+      <button class="btn btn-s text-xs">Upload XML</button>
+    </form>
+    <p class="text-xs text-slate-500 mt-1">You can select several XML files; they are processed one by one in the background. Same mapping and dedupe as Flex sync. 100 MB per file, 10 files max. A re-upload of the same statement adds nothing.</p>
+    <form method="post" action="/settings/brokers/ibkr/reprocess" class="mt-2" onsubmit="return confirm('Re-read stored IBKR JSON/XML (no call to Interactive Brokers). Existing fills stay; duplicates are skipped.')">
+      <button class="btn btn-s text-xs">Reprocess stored history</button>
+    </form>
+    {% elif panel.sync_kind == 't212' %}
+    <div class="acct-actions">
+      {% if panel.t212.connected %}
+      <button type="button" class="btn btn-p text-xs" hx-post="/settings/brokers/t212/sync" hx-target="#acct-sync-panel" hx-swap="innerHTML">Sync Trading 212</button>
+      <button type="button" class="btn btn-s text-xs" hx-post="/settings/brokers/t212/resync" hx-target="#acct-sync-panel" hx-swap="innerHTML" hx-confirm="Re-scan the full Trading 212 history? Existing fills are kept.">Re-scan full history</button>
+      <form method="post" action="/settings/brokers/t212/test"><button class="btn btn-s text-xs">Test connection</button></form>
+      <form method="post" action="/settings/brokers/t212/disconnect" onsubmit="return confirm('Delete the stored API key? Imported trades stay.')"><button class="btn btn-d text-xs">Disconnect</button></form>
+      {% endif %}
+      <button type="button" class="btn btn-p text-xs" hx-post="/sync" hx-target="#acct-sync-panel" hx-swap="innerHTML" hx-vals='{"account":"{{ a.id }}","mode":"new"}'>Sync new</button>
+      <button type="button" class="btn btn-s text-xs" hx-post="/sync" hx-target="#acct-sync-panel" hx-swap="innerHTML" hx-vals='{"account":"{{ a.id }}","mode":"full"}' hx-confirm="Re-read the full history for this account? Existing fills are kept.">Full history</button>
+    </div>
+    {% elif panel.sync_kind == 'generic' %}
+    <div class="acct-actions">
+      <button type="button" class="btn btn-p text-xs" hx-post="/sync" hx-target="#acct-sync-panel" hx-swap="innerHTML" hx-vals='{"account":"{{ a.id }}","mode":"new"}'>Sync new</button>
+      <button type="button" class="btn btn-s text-xs" hx-post="/sync" hx-target="#acct-sync-panel" hx-swap="innerHTML" hx-vals='{"account":"{{ a.id }}","mode":"full"}' hx-confirm="Re-read the full history for this account? Existing fills are kept.">Full history</button>
+      {% for src, st in panel.sources if src.key == 'snaptrade' and st.configured %}
+        {% if panel.snaptrade and panel.snaptrade.connections %}
+          {% for c in panel.snaptrade.connections %}
+          <form method="post" action="/settings/snaptrade/reconnect?id={{ c.id }}"><button class="btn {{ 'btn-p' if c.disabled else 'btn-s' }} text-xs">Reconnect {{ c.broker or 'Schwab' }}</button></form>
+          {% endfor %}
+        {% else %}
+          <form method="post" action="/settings/snaptrade/connect"><button class="btn btn-p text-xs">Connect Schwab</button></form>
+        {% endif %}
+        <form method="post" action="/settings/snaptrade/resync" onsubmit="return confirm('Pull the full SnapTrade history again? Existing fills are skipped, nothing is deleted.')"><button class="btn btn-s text-xs">Full re-sync</button></form>
+      {% endfor %}
+      {% for src, st in panel.sources if src.key == 'schwab_api' and st.configured %}
+        <a href="/auth/schwab/connect" class="btn btn-p text-xs">{{ 'Reconnect' if st.expires_in_seconds is not none else 'Connect' }} Schwab</a>
+        {% if st.expires_in_seconds is not none %}<form method="post" action="/auth/schwab/disconnect"><button class="btn btn-d text-xs">Disconnect</button></form>{% endif %}
+      {% endfor %}
+    </div>
+    {% elif panel.sync_kind == 'none' %}
+    <p class="text-xs text-slate-500">{% if a.is_demo %}Sample data is not synced. Clear it under Data &amp; backup.{% else %}This account has no broker connection. Sync new and Full history run for a connected account.{% endif %}</p>
+    {% else %}
+    <p class="text-xs text-slate-500">Connect the broker from Edit connection. Sync stays off until then.</p>
+    {% endif %}
+    <div id="acct-sync-panel" class="mt-2"></div>
+  </section>
+
+  <section class="acct-section" id="acct-sync-results">
+    <h4 class="card-h">Results</h4>
+    <p class="text-sm text-slate-300">{% if row.result %}{{ row.result }}{% else %}No sync result stored yet.{% endif %}</p>
+    {% if panel.bucket == 't212' and panel.t212.last.skipped_detail %}
+    <details class="acct-long">
+      <summary>Skipped rows, by reason and ticker</summary>
+      <ul class="mt-1 space-y-1 text-xs text-slate-400">
+      {% for reason, tickers in panel.t212.last.skipped_detail.items() %}
+        <li><span class="text-slate-200">{{ panel.t212.last.skipped.get(reason, tickers|length) }} {{ reason }}</span> — {{ tickers|join(', ') }}
+          {% if panel.t212.last.skip_fields and panel.t212.last.skip_fields.get(reason) %}<div class="text-slate-500">fields: {{ panel.t212.last.skip_fields[reason]|join(', ') }}</div>{% endif %}
+        </li>
+      {% endfor %}
+      </ul>
+    </details>
+    {% endif %}
+    {% if panel.bucket == 'ibkr' and panel.ibkr.last.skipped_detail %}
+    <details class="acct-long">
+      <summary>Skipped rows, by reason and ticker</summary>
+      <ul class="mt-1 space-y-1 text-xs text-slate-400">
+      {% for reason, tickers in panel.ibkr.last.skipped_detail.items() %}
+        <li><span class="text-slate-200">{{ panel.ibkr.last.skipped.get(reason, tickers|length) }} {{ reason }}</span> — {{ tickers|join(', ') }}</li>
+      {% endfor %}
+      </ul>
+    </details>
+    {% endif %}
+    {% if panel.bucket == 't212' and (panel.t212.last.reconcile or panel.t212.last.adjustments) %}
+    <details class="acct-long"><summary>Sync notes</summary>
+      {% if panel.t212.last.reconcile %}<div class="text-amber-300 mt-1">Positions still differ from Trading 212:<ul class="list-disc ml-5">{% for r in panel.t212.last.reconcile %}<li>{{ r }}</li>{% endfor %}</ul></div>{% endif %}
+      {% if panel.t212.last.adjustments %}<div class="text-slate-400 mt-1">Reconciliation adjustments:<ul class="list-disc ml-5">{% for r in panel.t212.last.adjustments %}<li>{{ r }}</li>{% endfor %}</ul></div>{% endif %}
+    </details>
+    {% endif %}
+    {% if panel.bucket == 'ibkr' and panel.ibkr.last.adjustments %}
+    <details class="acct-long"><summary>Sync notes</summary>
+      <div class="text-amber-300 mt-1">Corporate / holdings:<ul class="list-disc ml-5">{% for r in panel.ibkr.last.adjustments %}<li>{{ r }}</li>{% endfor %}</ul></div>
+    </details>
+    {% endif %}
+  </section>
+
+  <section class="acct-section" id="acct-sync-history">
+    <h4 class="card-h">Sync history</h4>
+    <ul class="run-list">
+      {% for r in panel.runs %}
+      <li>
+        <span class="text-slate-500">#{{ r.id }}</span>
+        <span class="text-slate-400">{{ r.started_at|local_dt }}</span>
+        <span>{{ r.trigger }}</span>
+        <span class="pill {{ 'bg-emerald-500/15 text-emerald-300' if r.status == 'success' else 'bg-indigo-500/15 text-indigo-300' if r.status == 'running' else 'bg-slate-700 text-slate-300' if r.status == 'skipped' else 'bg-rose-500/15 text-rose-300' }}">{{ r.status }}</span>
+        <span class="text-slate-400">{{ r.sources or 'none enabled' }}</span>
+        <span>{{ r.inserted }} new</span>
+        {% if r.message or r.error %}<details class="acct-long"><summary>Log</summary><pre class="acct-pre">{{ r.message or '' }}{% if r.error %}{{ '\n' }}{{ r.error }}{% endif %}</pre></details>{% endif %}
+      </li>
+      {% else %}<li class="text-slate-500">No sync runs stored for this account yet.</li>{% endfor %}
+    </ul>
+    {% if panel.payloads %}
+    <div class="card-h mt-3 mb-1">Imported files</div>
+    <ul class="run-list">
+      {% for p in panel.payloads %}
+      <li>
+        <span class="text-slate-400">{{ p.created_at|local_dt }}</span>
+        <span class="text-slate-400">{{ p.source }}{% if p.sync_run_id %} · #{{ p.sync_run_id }}{% endif %}</span>
+        <span class="text-slate-300">{{ p.filename }}{% if p.gzipped %} <span class="text-slate-500">gzip</span>{% endif %}</span>
+        <span class="text-slate-500">{{ p.nbytes }}</span>
+        <a class="text-indigo-300" href="/settings/sync-payloads/{{ p.id }}">Download</a>
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </section>
+
+  <div id="sync-attention" class="acct-section">
+    <h3 class="card-h mb-2">Corporate actions · Needs attention</h3>
+    <div id="attention-counts" class="attn-counts mb-2">
+      {% if panel.attention %}
+      <span data-attention-total="{{ panel.attention|length }}">{{ panel.attention|length }} open</span>
+      {% for grp in panel.attention|groupby('kind') %}
+      <span data-kind="{{ grp.grouper }}">{{ grp.grouper }} {{ grp.list|length }}</span>
+      {% endfor %}
+      <span data-account="{{ a.id }}">{{ a.name }} {{ panel.attention|length }}</span>
+      {% else %}
+      <span data-attention-total="0">0 open</span>
+      {% endif %}
+    </div>
+    <details>
+      <summary>Details{% if panel.attention %} ({{ panel.attention|length }}){% endif %}</summary>
+      {% if panel.attention %}
+      <ul class="text-sm text-amber-200/90 space-y-2 my-2">
+        {% for item in panel.attention %}
+        <li>
+          <div>{{ item.note or item.symbol }}</div>
+          {% if item.candidate %}
+          <form method="post" action="/settings/adjustments" class="set-grid text-xs mt-1">
+            <input type="hidden" name="account_id" value="{{ a.id }}">
+            <input type="hidden" name="kind" value="{{ item.candidate.kind }}">
+            <input type="hidden" name="symbol" value="{{ item.candidate.symbol }}">
+            <input type="hidden" name="ratio" value="{{ item.candidate.ratio }}">
+            <input type="hidden" name="new_symbol" value="{{ item.candidate.new_symbol }}">
+            <input type="hidden" name="when" value="{{ item.candidate.when }}">
+            <span class="text-slate-400">{{ item.candidate.source }}, {{ item.candidate.when }}</span>
+            <button class="btn btn-s text-xs">Save</button>
+          </form>
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="text-xs text-slate-500 my-2">No ticker is waiting on a split or a rename.</p>
+      {% endif %}
+    </details>
+    {% if not a.is_demo %}
+    <form method="post" action="/settings/adjustments" class="set-grid text-xs mt-3">
+      <input type="hidden" name="account_id" value="{{ a.id }}">
+      <label class="set-field">Kind
+        <select name="kind" class="inp" aria-label="Kind"><option value="split">Split</option><option value="rename">Rename</option></select>
+      </label>
+      <label class="set-field">Ticker <input name="symbol" class="inp" required placeholder="WMT" aria-label="Ticker"></label>
+      <label class="set-field">Ratio <input name="ratio" class="inp" placeholder="3 or 1:10" aria-label="Ratio"></label>
+      <label class="set-field">New ticker <input name="new_symbol" class="inp" placeholder="META" aria-label="New ticker"></label>
+      <label class="set-field">Date <input name="when" type="date" class="inp" required aria-label="Date"></label>
+      <div class="set-field"><span class="card-h">Apply</span><button class="btn btn-s text-xs">Save adjustment</button></div>
+    </form>
+    {% endif %}
+    <details class="mt-2">
+      <summary class="text-xs text-slate-500">How adjustments work</summary>
+      <p class="text-[11px] text-slate-500 mt-1">A split multiplies the shares held before that date and divides those prices by the same ratio. Cost basis stays the same. A rename merges the old ticker into the new one. Saved adjustments are applied again on the next sync and are not applied twice.</p>
+    </details>
+  </div>
+{% endif %}
+</div>
