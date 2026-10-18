@@ -33,9 +33,8 @@ CHOICES = ("USD", "EUR")
 API = "https://api.frankfurter.dev/v1"
 CHUNK_DAYS = 80          # Frankfurter returns weekly points for ranges over ~90 days
 _last_try: dict[str, float] = {}
-_FX_TTL = 60.0           # in-memory copy of fx_rates; a row-count/max-day stamp drops it when new rates land
 _fx_lock = threading.Lock()
-_fx_mem: dict[str, tuple] = {}
+_fx_mem: dict[str, tuple] = {}  # db url -> (fx_stamp, {quote: (days, rates)})
 
 
 def _fx_key(db: Session) -> str:
@@ -43,6 +42,12 @@ def _fx_key(db: Session) -> str:
         return str(db.get_bind().url)
     except Exception:  # noqa: BLE001
         return "fx"
+
+
+def fx_stamp(db: Session) -> str:
+    """Cheap identity of the FX table: row count, newest day, and today's date (weekend carry)."""
+    n, last = db.execute(select(func.count(), func.max(FxRate.day))).one()
+    return f"{int(n or 0)}:{last}:{datetime.now().date()}"
 
 
 def symbol(ccy: str | None) -> str:
@@ -131,12 +136,10 @@ class RateBook:
 
     def _load(self):
         key = _fx_key(self.db)
-        n, last = self.db.execute(select(func.count(), func.max(FxRate.day))).one()
-        stamp = (int(n or 0), last)
-        now = time.monotonic()
+        stamp = fx_stamp(self.db)
         with _fx_lock:
             hit = _fx_mem.get(key)
-            if hit and hit[0] == stamp and now - hit[2] < _FX_TTL:
+            if hit and hit[0] == stamp:
                 self.data = hit[1]
                 return
         rows = self.db.execute(select(FxRate.quote, FxRate.day, FxRate.rate).order_by(FxRate.quote, FxRate.day)).all()
@@ -146,7 +149,7 @@ class RateBook:
             days.append(d)
             rates.append(r)
         with _fx_lock:
-            _fx_mem[key] = (stamp, data, time.monotonic())
+            _fx_mem[key] = (stamp, data)
         self.data = data
 
     def covers(self, ccy: str, start: date, end: date) -> bool:

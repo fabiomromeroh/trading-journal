@@ -2716,11 +2716,8 @@ class IbkrFlexSource(DataSource):
             run = db.get(SyncRun, ctx.run_id)
             if run is not None and run.status == "running":
                 run.message = text
-        if account_ids:
-            from app import balance
-            balance.after_sync(db, account_ids)  # commits this window, then rebuilds the curve
-        else:
-            db.commit()
+        # The curve is rebuilt once, after every window, from sync(). account_ids is unused here.
+        db.commit()
 
     def _fail_window(self, db: Session, ctx: SyncContext, hist: dict, exc: BaseException, token: str,
                      fd: date | None = None, td: date | None = None,
@@ -3213,6 +3210,9 @@ class IbkrFlexSource(DataSource):
                    adjustments=list(dict.fromkeys(corp_lines))[:30],
                    full=(mode == "full"), query_id=qid, last_synced=hist.get("last_synced"))
         db.commit()
+        if res.accounts:
+            from app import balance
+            balance.after_sync(db, list(res.accounts))
         return res
 
     def _instrument_for(self, db: Session, row: dict, cache: dict[str, Instrument]) -> Instrument | None:

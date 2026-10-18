@@ -11,7 +11,7 @@ from app.db import get_db
 from app.models import Execution, ImportBatch, Trade
 from app.routes.reports import dashboard_extras
 from app.stats import compute
-from app.web import apply_trade_filters, base_context, load_trades, parse_filters, realized_scope, templates
+from app.web import apply_trade_filters, base_context, load_trade_view, parse_filters, templates
 
 router = APIRouter()
 
@@ -25,19 +25,14 @@ def _series(buckets):
 def dashboard(request: Request, db: Session = Depends(get_db)):
     f = parse_filters(request)
     tz = get_settings().display_tz
-    stmt = apply_trade_filters(select(Trade), f)
     from app import currency
     from app import quotes as qmod
     from app import realized as rz
-    trades = _results.trades(db, stmt)
+    trades, wide = load_trade_view(db, f)
     open_count = sum(1 for t in trades if t.status == "OPEN")
-    # No date filter: this list is already every trade the calendar needs. A date filter still
-    # reloads the wider set so a partial exit inside the window counts.
-    if f.start or f.end:
-        evs, all_evs, _ = realized_scope(db, f)
-    else:
-        all_evs = rz.events(trades)
-        evs = all_evs
+    # One read covers the date filter and the wider set a partial exit needs.
+    all_evs = rz.events(wide)
+    evs = rz.clip(all_evs, tz, f.start, f.end) if (f.start or f.end) else all_evs
     st = compute(trades, tz, open_count=open_count, events=evs)
     all_days = rz.daily(all_evs, tz)  # calendar + daily bars navigate through every day
     has_any = db.scalar(select(func.count(Execution.id))) or 0
@@ -47,8 +42,8 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
     last_sync = db.scalar(select(SyncRun).where(SyncRun.status.in_(("success", "partial")), SyncRun.sources.is_not(None))
                           .order_by(SyncRun.id.desc()))
     recent = sorted([t for t in trades if t.status == "CLOSED"], key=lambda t: t.closed_at, reverse=True)[:8]
-    # Open positions ignore the date filter. Without one, they are already in ``trades``.
-    opens = None if (f.start or f.end) else [t for t in trades if t.status == "OPEN"]
+    # Open positions ignore the date filter. They are already in the wider read.
+    opens = [t for t in wide if t.status == "OPEN"]
     anchor = _anchor(db, f, trades, st, quotes=False, open_trades=opens)
     quotes_on = bool(anchor) and qmod.enabled()
     from datetime import datetime
@@ -147,16 +142,13 @@ def dashboard_live(request: Request, db: Session = Depends(get_db)):
     display = currency.get_display(db)
 
     def base():
-        stmt = apply_trade_filters(select(Trade), f)
-        if f.start or f.end:
-            evs, _, _ = realized_scope(db, f)
-            trades = _results.trades(db, stmt)
-        else:
-            trades = _results.trades(db, stmt)
-            evs = rz.events(trades)
+        from app.web import load_trade_view
+        trades, wide = load_trade_view(db, f)
+        all_evs = rz.events(wide)
+        evs = rz.clip(all_evs, tz, f.start, f.end) if (f.start or f.end) else all_evs
         open_count = sum(1 for t in trades if t.status == "OPEN")
         st = compute(trades, tz, open_count=open_count, events=evs)
-        opens = None if (f.start or f.end) else [t for t in trades if t.status == "OPEN"]
+        opens = [t for t in wide if t.status == "OPEN"]
         from app import balance as bmod
         from app import dividends as dmod
         return (trades, st, opens, dmod.total(db, f.account_id, display, f.start, f.end, tz),
@@ -189,7 +181,6 @@ def _anchor(db: Session, f, trades, st, *, quotes: bool = True, open_trades=None
     from app import quotes as qmod
     from app import currency
     if open_trades is None:
-        from app.web import load_trades
         open_trades = _results.trades(db, apply_trade_filters(
             select(Trade).where(Trade.status == "OPEN"), replace(f, start=None, end=None)))
     usd_fx = currency.RateBook(db).rate("USD", currency.get_display(db), datetime.now().date()) or 1.0

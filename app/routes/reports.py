@@ -15,7 +15,7 @@ from app.config import get_settings
 from app.db import get_db
 from app.models import Tag, Trade, TradeMistake
 from app.services import get_state, set_state
-from app.web import apply_trade_filters, base_context, load_trades, parse_filters, templates
+from app.web import apply_trade_filters, base_context, parse_filters, templates
 
 router = APIRouter()
 DEFAULT_RISK_STATE = "risk:default_per_trade"
@@ -62,11 +62,16 @@ def apply_extra_filters(stmt, q):
 
 def filtered_trades(request: Request, db: Session):
     f = parse_filters(request)
-    from app import companies, currency
-    stmt = companies.restrict(apply_extra_filters(apply_trade_filters(select(Trade), f), request.query_params),
+    from dataclasses import replace
+    from app import companies
+    from app.web import trade_in_filters
+    wide_f = replace(f, start=None, end=None)
+    stmt = companies.restrict(apply_extra_filters(apply_trade_filters(select(Trade), wide_f), request.query_params),
                               db, request.query_params)
-    trades = _results.trades(db, stmt)
-    companies.annotate(db, trades)
+    wide = _results.trades(db, stmt)
+    companies.annotate(db, wide)
+    trades = [t for t in wide if trade_in_filters(t, f)] if (f.start or f.end) else wide
+    request.state.report_wide = wide
     return f, trades
 
 
@@ -123,17 +128,9 @@ def reports(request: Request, db: Session = Depends(get_db)):
         tab = "overview"
     tz = get_settings().display_tz
     risk = default_risk(db)
-    if f.start or f.end:
-        from app import companies
-        from app.web import realized_scope
-
-        def _extra(st):
-            return companies.restrict(apply_extra_filters(st, request.query_params), db, request.query_params)
-
-        evs, _, _ = realized_scope(db, f, _extra)
-    else:
-        from app import realized as rz
-        evs = rz.events(trades)
+    from app import realized as rz
+    wide = getattr(request.state, "report_wide", trades)
+    evs = rz.clip(rz.events(wide), tz, f.start, f.end) if (f.start or f.end) else rz.events(trades)
     data = report_data(trades, tz, risk, events=evs)
     q = request.query_params
     from app.routes.trades import filter_options

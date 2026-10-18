@@ -186,6 +186,33 @@ def apply_trade_filters(stmt, f: Filters):
     return stmt
 
 
+def trade_in_filters(t, f: Filters) -> bool:
+    """Same date and account rule as ``apply_trade_filters``, applied to an already loaded trade."""
+    from datetime import time
+    if f.account_id and getattr(t, "account_id", None) != f.account_id:
+        return False
+    if not f.start and not f.end:
+        return True
+    ref = getattr(t, "closed_at", None) or getattr(t, "opened_at", None)
+    tz = get_settings().display_tz
+    if f.start and (ref is None or ref < local_to_utc_naive(f.start, time(0, 0), tz)):
+        return False
+    if f.end and (ref is None or ref >= local_to_utc_naive(f.end + timedelta(days=1), time(0, 0), tz)):
+        return False
+    return True
+
+
+def load_trade_view(db: Session, f: Filters):
+    """One ``results.trades`` read. Returns (trades inside the date filter, the wider account set)."""
+    from dataclasses import replace
+    wide = _results.trades(db, apply_trade_filters(select(Trade), replace(f, start=None, end=None)))
+    if f.start or f.end:
+        shown = [t for t in wide if trade_in_filters(t, f)]
+    else:
+        shown = wide
+    return shown, wide
+
+
 def _attention_marks(db: Session) -> set[str]:
     """Symbols needing attention (the sidebar dots). Reads every trade, so it is computed once per data
     version and reused by every page until something is written."""

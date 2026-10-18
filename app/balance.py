@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -22,7 +23,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app.models import Account, BalancePoint, CashFlow, Dividend, Trade, utcnow
+from app.models import Account, BalancePoint, CashFlow, DailyClose, Dividend, Trade, utcnow
 from app.services import get_state, set_state
 
 log = logging.getLogger(__name__)
@@ -197,30 +198,133 @@ def broker_snapshots(db: Session, account_ids: list[int]) -> dict[int, dict]:
 
 
 # ------------------------------------------------------------------ daily closes
-def _yahoo_closes(db: Session, trade, start: date, end: date) -> dict[date, float]:
+# Completed calendar years use a stable persistent candle window, copied once into daily_closes.
+# The current year is refreshed only when the last session's close is missing, and then at most
+# once per process per few minutes so a second rebuild the same day does not re-read candles.
+_TAIL_FRESH = 600.0
+_tail_seen: dict[str, float] = {}
+
+
+def _tail_key(db: Session, symbol: str) -> str:
+    try:
+        url = str(db.get_bind().url)
+    except Exception:  # noqa: BLE001
+        url = ""
+    return url + "|" + symbol
+
+
+def _tail_fresh(db: Session, symbol: str) -> bool:
+    seen = _tail_seen.get(_tail_key(db, symbol))
+    return seen is not None and (time.monotonic() - seen) < _TAIL_FRESH
+
+
+def _mark_tail(db: Session, symbol: str) -> None:
+    _tail_seen[_tail_key(db, symbol)] = time.monotonic()
+
+
+def _gaps_ok(days: list[date]) -> bool:
+    return all((b - a).days <= CARRY_DAYS + 1 for a, b in zip(days, days[1:]))
+
+
+def _history_ok(days: list[date], span_start: date) -> bool:
+    return bool(days) and (days[0] - span_start).days <= CARRY_DAYS and _gaps_ok(days)
+
+
+def _range_ok(days: list[date], span_start: date, span_end: date) -> bool:
+    return _history_ok(days, span_start) and (span_end - days[-1]).days <= CARRY_DAYS
+
+
+def _candles_to_closes(candles) -> dict[date, float]:
+    out: dict[date, float] = {}
+    for c in candles or []:
+        t = int(c["time"])
+        t = t // 1000 if t > 10**11 else t  # some providers use ms
+        out.setdefault(datetime.fromtimestamp(t, timezone.utc).date(), float(c["close"]))
+    return out
+
+
+def _load_daily(db: Session, symbol: str, start: date, end: date) -> dict[date, float]:
+    lo = start - timedelta(days=CARRY_DAYS + 1)
+    rows = db.execute(select(DailyClose.day, DailyClose.close).where(
+        DailyClose.symbol == symbol, DailyClose.day >= lo, DailyClose.day <= end)).all()
+    return {d: float(c) for d, c in rows}
+
+
+def _upsert_daily(db: Session, symbol: str, provider: str, mapping: dict[date, float]) -> None:
+    if not mapping:
+        return
+    from app.payloads import dialect_insert
+    dia = dialect_insert(db)
+    now = utcnow()
+    items = list(mapping.items())
+    for i in range(0, len(items), 80):
+        chunk = items[i:i + 80]
+        stmt = dia(DailyClose).values([{
+            "symbol": symbol, "day": d, "close": float(c), "provider": (provider or "")[:20], "updated_at": now,
+        } for d, c in chunk])
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["symbol", "day"],
+            set_={"close": stmt.excluded.close, "provider": stmt.excluded.provider,
+                  "updated_at": stmt.excluded.updated_at},
+        )
+        db.execute(stmt)
+    db.commit()
+
+
+def _fetch_year(db: Session, trade, provs: list[str], year: int, now: datetime):
     from app import prices
+    y_start = datetime(year, 1, 1)
+    y_end = datetime(year, 12, 31, 23, 0) if year < now.year else now
+    for prov in provs:
+        try:
+            candles = prices._fetch(db, prov, trade, "1d", y_start, y_end, now)
+        except Exception as exc:  # noqa: BLE001 - a missing price is a gap, never a failed sync
+            log.info("balance: no %s daily closes for %s: %s", prov, getattr(trade, "underlying", "?"), exc)
+            continue
+        got = _candles_to_closes(candles)
+        if got:
+            return prov, got
+    return None
+
+
+def _yahoo_closes(db: Session, trade, start: date, end: date) -> dict[date, float]:
+    """Daily closes for one symbol. Reads ``daily_closes`` when the span is already covered."""
+    from app import prices, symbolmap
     provs = prices._provider_order(trade)  # same order as the charts (Schwab / Polygon / Yahoo)
     if not provs:
         return {}
+    symbol = symbolmap.price_symbol(trade) or getattr(trade, "underlying", None) or getattr(trade, "symbol", None)
+    if not symbol:
+        return {}
     now = datetime.now(timezone.utc).replace(tzinfo=None)
-    s = datetime.combine(start - timedelta(days=CARRY_DAYS + 1), datetime.min.time())
-    cut = datetime.combine(min(end, now.date()) - timedelta(days=3), datetime.min.time())
-    out: dict[date, float] = {}
-    spans = [(s, cut), (max(s, cut - timedelta(days=7)), now)] if cut > s else [(s, now)]
-    for prov in provs:
-        for a, b in spans:
-            try:
-                candles = prices._fetch(db, prov, trade, "1d", a, b, now)
-            except Exception as exc:  # noqa: BLE001 - a missing price is a gap, never a failed sync
-                log.info("balance: no %s daily closes for %s: %s", prov, getattr(trade, "underlying", "?"), exc)
-                continue
-            for c in candles or []:
-                t = int(c["time"])
-                t = t // 1000 if t > 10**11 else t  # some providers use ms
-                out.setdefault(datetime.fromtimestamp(t, timezone.utc).date(), float(c["close"]))
-        if out:
-            break
-    return out
+    end_d = min(end, now.date())
+    if end_d < start:
+        end_d = start
+    have = _load_daily(db, symbol, start, end_d)
+    missing: list[int] = []
+    for year in range(start.year, end_d.year + 1):
+        span_start = max(start, date(year, 1, 1))
+        y_end = date(year, 12, 31) if year < now.year else end_d
+        lo = span_start - timedelta(days=CARRY_DAYS + 1)
+        days = sorted(d for d in have if lo <= d <= y_end)
+        if year < now.year:
+            if not _range_ok(days, span_start, y_end):
+                missing.append(year)
+            continue
+        newest = days[-1] if days else None
+        tail_ok = (newest is not None and newest >= prices.last_session_date(now)) or _tail_fresh(db, symbol)
+        if not (_history_ok(days, span_start) and tail_ok):
+            missing.append(year)
+    for year in missing:
+        fetched = _fetch_year(db, trade, provs, year, now)
+        if fetched:
+            prov, got = fetched
+            _upsert_daily(db, symbol, prov, got)
+            have.update(got)
+        if year == now.year:
+            _mark_tail(db, symbol)
+    lo = start - timedelta(days=CARRY_DAYS + 1)
+    return {d: c for d, c in have.items() if lo <= d <= end_d}
 
 
 class Closes:
@@ -399,11 +503,15 @@ def missing_accounts(db: Session, ccy: str | None = None) -> list[int]:
 def after_sync(db: Session, account_ids) -> None:
     # No SAVEPOINT: the price cache and FX top-up commit on their own, which would close one.
     # The sync's own work is committed first so a failure here can only lose the curve.
+    # ``balance_fresh`` lets a caller that already rebuilt (IBKR, once at the end) skip a second pass.
     db.commit()
     try:
         ids = sorted(set(account_ids) | set(missing_accounts(db)))
         rebuild(db, ids or None)
         db.commit()
+        fresh = set(db.info.get("balance_fresh") or ())
+        fresh.update(ids or list(db.scalars(select(Account.id))))
+        db.info["balance_fresh"] = fresh
     except Exception as exc:  # noqa: BLE001 - the curve is informational; never fail a sync
         db.rollback()
         log.warning("balance rebuild failed: %s", exc)

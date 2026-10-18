@@ -27,7 +27,8 @@ MAX_ENTRIES = 80
 PAGES = [(re.compile(r"^/$"), 600), (re.compile(r"^/trades$"), 600), (re.compile(r"^/reports$"), 600),
          (re.compile(r"^/settings$"), 90), (re.compile(r"^/trades/\d+$"), 120)]
 # writes that never change a page: price candles cache, raw sync files
-_IGNORE = re.compile(r"^\s*(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+\"?(price_cache|sync_payloads|trade_results)\b", re.I)
+_IGNORE = re.compile(
+    r"^\s*(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+\"?(price_cache|sync_payloads|trade_results|daily_closes)\b", re.I)
 _WRITE = re.compile(r"^\s*(INSERT|UPDATE|DELETE|REPLACE|ALTER|CREATE|DROP)\b", re.I)
 stats = {"hit": 0, "miss": 0}
 _PLAIN_SESSION = {"auth", "av", "test_email_at"}
@@ -40,8 +41,13 @@ def enabled() -> bool:
 _RECENT: "OrderedDict[tuple, list]" = OrderedDict()   # key -> request headers, most recent last (in memory only)
 _APP = None
 _WARM = {"timer": None}
-_USER = {"busy": 0, "last": -999.0}   # real (non-warming) requests in flight / when the last one ended
+_USER = {"busy": 0, "last": -999.0, "seen": -1e12}  # busy/last: any real request; seen: a logged-in one
 WARM_IDLE = 2.0                       # seconds of quiet before each warming render
+ACTIVE_WINDOW = 15 * 60               # re-warm only after a recent logged-in request
+
+
+def user_active() -> bool:
+    return time.monotonic() - _USER.get("seen", -1e12) < ACTIVE_WINDOW
 
 
 def yield_to_user(max_wait: float = 30.0) -> None:
@@ -51,7 +57,7 @@ def yield_to_user(max_wait: float = 30.0) -> None:
     while (_USER["busy"] or time.monotonic() - _USER["last"] < WARM_IDLE) and waited < max_wait:
         time.sleep(0.25)
         waited += 0.25
-WARM_PAGES = 6
+WARM_PAGES = 2
 WARM_DELAY = 4.0   # seconds after the last write (a sync commits many times)
 
 
@@ -62,7 +68,7 @@ def bump() -> None:
         _CACHE.clear()
         _MEMO.clear()
         # never re-warm because of a write made while warming (no loop)
-        if _APP is not None and _RECENT and enabled() and not os.environ.get("PYTEST_CURRENT_TEST") \
+        if _APP is not None and _RECENT and enabled() and user_active() and not os.environ.get("PYTEST_CURRENT_TEST") \
                 and not _WARM.get("running") and time.monotonic() - _WARM.get("ended", -999) > 5:
             t = _WARM["timer"]
             if t is not None:
@@ -77,6 +83,8 @@ def _prewarm() -> None:
     import asyncio
 
     import httpx
+    if not user_active():
+        return
     with _LOCK:
         jobs = list(_RECENT.items())[-WARM_PAGES:]
 
@@ -171,6 +179,11 @@ def install(app) -> None:
         if not request.headers.get("x-tj-warm"):  # a real request: background warming waits for it
             _USER["busy"] += 1
             _USER["last"] = time.monotonic()
+            try:
+                if request.session.get("auth"):
+                    _USER["seen"] = time.monotonic()
+            except Exception:  # noqa: BLE001 - a request without a session is not a logged-in visit
+                pass
             try:
                 return await _page_cache(request, call_next)
             finally:

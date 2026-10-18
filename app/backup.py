@@ -26,7 +26,7 @@ TOKEN_HASH_STATE = "backup:token_sha256"
 TOKEN_CREATED_STATE = "backup:token_created_at"
 LAST_STATE = "backup:last"           # json: exported_at, size, sha256, rows, tables, confirmed_at, result
 OMIT_TABLES = {"oauth_tokens": "credentials", "sync_payloads": "raw sync files"}
-CACHE_TABLES = {"price_cache", "fx_rates", "balance_points"}       # re-fetchable market data: left out of scheduled exports
+CACHE_TABLES = {"price_cache", "fx_rates", "balance_points", "trade_results", "daily_closes"}
 EXCLUDED_STATE_PREFIXES = ("auth:", "backup:", "cred:")  # cred:* = broker API keys (encrypted), re-enter after a restore
 MIN_INTERVAL = 600                   # seconds between successful exports (rate limit)
 _last_export_at = 0.0
@@ -104,12 +104,75 @@ def rate_limited(now: float | None = None) -> int:
     return max(0, int(MIN_INTERVAL - (now - _last_export_at)))
 
 
-def mark_export(db: Session, body: bytes, data: dict, now: float | None = None) -> dict:
+def _app_state_part(db: Session, table) -> str:
+    """Identity of the settings a backup would keep. Token, auth and broker-credential rows are excluded
+    from the count, the max key and the hash, so recording the export itself cannot change the stamp."""
+    kept_only = [~table.c.key.startswith(prefix) for prefix in EXCLUDED_STATE_PREFIXES]
+    rows = db.execute(select(table.c.key, table.c.value).where(*kept_only)).all()
+    kept = sorted(
+        (str(key), "" if value is None else value if isinstance(value, str) else str(value))
+        for key, value in rows
+    )
+    digest = hashlib.sha256()
+    for key, raw in kept:
+        digest.update(key.encode())
+        digest.update(b"\0")
+        digest.update(raw.encode())
+        digest.update(b"\0")
+    max_key = kept[-1][0] if kept else ""
+    return "|".join(["app_state", str(len(kept)), "key:" + max_key, digest.hexdigest()])
+
+
+def _stamp_parts(db: Session) -> list[str]:
+    """Pieces of the export stamp. Derived tables and secret app_state keys are left out."""
+    from app.db import Base
+    parts: list[str] = []
+    for table in Base.metadata.sorted_tables:
+        if table.name in OMIT_TABLES or table.name in CACHE_TABLES:
+            continue
+        if table.name == "app_state":
+            parts.append(_app_state_part(db, table))
+            continue
+        n = db.scalar(select(func.count()).select_from(table)) or 0
+        bits = [table.name, str(int(n))]
+        pk_names = {col.name for col in table.primary_key.columns}
+        if "updated_at" in table.c:
+            bits.append(str(db.scalar(select(func.max(table.c.updated_at)))))
+        if "id" in table.c:
+            bits.append(str(db.scalar(select(func.max(table.c.id)))))
+        for name in sorted(pk_names - {"id"}):
+            bits.append(name + ":" + str(db.scalar(select(func.max(table.c[name])))))
+        parts.append("|".join(bits))
+    return parts
+
+
+def content_stamp(db: Session) -> str:
+    """Cheap identity of the journal itself. Derived tables and secrets are left out.
+
+    Each kept table contributes its row count, max(updated_at), max(id) and the other primary-key
+    columns. ``app_state`` values are hashed in process (they have no updated_at). Nothing here is logged.
+    """
+    return hashlib.sha256("\n".join(_stamp_parts(db)).encode()).hexdigest()
+
+
+def last_stamp(db: Session) -> str | None:
+    raw = get_state(db, LAST_STATE)
+    if not raw:
+        return None
+    try:
+        return json.loads(raw).get("stamp")
+    except ValueError:
+        return None
+
+
+def mark_export(db: Session, body: bytes, data: dict, now: float | None = None, stamp: str | None = None) -> dict:
     global _last_export_at
     _last_export_at = time.time() if now is None else now
     counts = row_counts(data)
     info = {"exported_at": data["exported_at"], "size": len(body), "sha256": hashlib.sha256(body).hexdigest(),
             "rows": sum(counts.values()), "counts": counts, "confirmed_at": None, "result": "exported"}
+    if stamp is not None:
+        info["stamp"] = stamp
     set_state(db, LAST_STATE, json.dumps(info))
     db.commit()
     return info

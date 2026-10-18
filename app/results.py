@@ -21,14 +21,14 @@ behave like the ORM trades (same classes' properties, same CTrade wrapper).
 from __future__ import annotations
 
 import hashlib
-import json
 from datetime import date, datetime
 
 from sqlalchemy import func, inspect, select
 from sqlalchemy.orm import Session
 
-from app.models import (Account, Execution, FxRate, Instrument, Tag, Trade, TradeFill, TradeMistake, TradeResult,
+from app.models import (Account, Execution, Instrument, Tag, Trade, TradeFill, TradeMistake, TradeResult,
                         trade_tags, utcnow)
+from app.payloads import pack_json, unpack_json
 
 NATIVE = "NATIVE"
 _SKIP = {Execution: {"raw"}}
@@ -90,7 +90,11 @@ def _make(cls, d: dict):
 
 
 def _load(text: str) -> dict:
-    return json.loads(text, object_hook=lambda o: _dec(o) if ("$dt" in o or "$d" in o) and len(o) == 1 else o)
+    def hook(o):
+        if isinstance(o, dict) and ("$dt" in o or "$d" in o) and len(o) == 1:
+            return _dec(o)
+        return o
+    return unpack_json(text, object_hook=hook)
 
 
 # decoded payloads of this process, keyed (trade id, currency) -> (sig, payload); rows are immutable per sig
@@ -150,22 +154,29 @@ def _h(*parts) -> str:
     return hashlib.sha1(repr(parts).encode()).hexdigest()
 
 
-def _trade_cols():
-    return [getattr(Trade, c) for c in _cols(Trade)]
-
-
 def native_sigs(db: Session, ids: list[int], trows: dict | None = None) -> dict[int, str]:
-    """Fingerprint of everything a snapshot holds, read as plain rows (no ORM objects)."""
+    """Cheap fingerprint: trade stamp, fill/execution aggregates, tags, and the small account/instrument rows.
+
+    Fill and execution bodies (price, description, raw) are not selected. ``updated_at`` on those
+    rows changes when the ORM writes them, which is every mutation path in this app.
+    """
     if not ids:
         return {}
     if trows is None:
-        trows = {r[0]: r for r in db.execute(select(Trade.id, *_trade_cols()).where(Trade.id.in_(ids)))}
-    fc = [getattr(TradeFill, c) for c in _cols(TradeFill)]
-    ec = [getattr(Execution, c) for c in _cols(Execution)]
-    fills: dict[int, list] = {}
-    for r in db.execute(select(TradeFill.trade_id, *fc, *ec).outerjoin(Execution, Execution.id == TradeFill.execution_id)
-                        .where(TradeFill.trade_id.in_(ids)).order_by(TradeFill.trade_id, TradeFill.position, TradeFill.id)):
-        fills.setdefault(r[0], []).append(tuple(r[1:]))
+        trows = {r[0]: r for r in db.execute(select(
+            Trade.id, Trade.updated_at, Trade.account_id, Trade.instrument_id).where(Trade.id.in_(ids)))}
+    fills: dict[int, tuple] = {}
+    for tid, n, mx, mu in db.execute(select(
+            TradeFill.trade_id, func.count(TradeFill.id), func.max(TradeFill.id), func.max(TradeFill.updated_at))
+            .where(TradeFill.trade_id.in_(ids)).group_by(TradeFill.trade_id)):
+        fills[tid] = (int(n or 0), mx, mu)
+    execs: dict[int, tuple] = {}
+    for tid, n, mx, mu in db.execute(select(
+            TradeFill.trade_id, func.count(Execution.id), func.max(Execution.id), func.max(Execution.updated_at))
+            .select_from(TradeFill)
+            .outerjoin(Execution, Execution.id == TradeFill.execution_id)
+            .where(TradeFill.trade_id.in_(ids)).group_by(TradeFill.trade_id)):
+        execs[tid] = (int(n or 0), mx, mu)
     tags: dict[int, list] = {}
     for tid, name in db.execute(select(trade_tags.c.trade_id, Tag.name).join(Tag, Tag.id == trade_tags.c.tag_id)
                                 .where(trade_tags.c.trade_id.in_(ids))):
@@ -173,19 +184,28 @@ def native_sigs(db: Session, ids: list[int], trows: dict | None = None) -> dict[
     mis: dict[int, list] = {}
     for tid, name in db.execute(select(TradeMistake.trade_id, TradeMistake.name).where(TradeMistake.trade_id.in_(ids))):
         mis.setdefault(tid, []).append(name)
-    accts = {r[0]: tuple(r) for r in db.execute(select(*[getattr(Account, c) for c in _cols(Account)]))}
-    insts = {r[0]: tuple(r) for r in db.execute(select(*[getattr(Instrument, c) for c in _cols(Instrument)]))}
+    aids = {r[2] for r in trows.values() if r[2] is not None}
+    iids = {r[3] for r in trows.values() if r[3] is not None}
+    accts: dict = {}
+    if aids:
+        keys = _cols(Account)
+        for r in db.execute(select(*[getattr(Account, c) for c in keys]).where(Account.id.in_(aids))):
+            accts[dict(zip(keys, r))["id"]] = tuple(r)
+    insts: dict = {}
+    if iids:
+        keys = _cols(Instrument)
+        for r in db.execute(select(*[getattr(Instrument, c) for c in keys]).where(Instrument.id.in_(iids))):
+            insts[dict(zip(keys, r))["id"]] = tuple(r)
     out = {}
     for tid, r in trows.items():
-        t = dict(zip(["id"] + _cols(Trade), r))
-        out[tid] = _h(tuple(r), fills.get(tid, []), sorted(tags.get(tid, [])), sorted(mis.get(tid, [])),
-                      accts.get(t.get("account_id")), insts.get(t.get("instrument_id")))
+        out[tid] = _h(tuple(r), fills.get(tid), execs.get(tid), sorted(tags.get(tid, [])), sorted(mis.get(tid, [])),
+                      accts.get(r[2]), insts.get(r[3]))
     return out
 
 
 def fx_stamp(db: Session) -> str:
-    n, last = db.execute(select(func.count(), func.max(FxRate.day))).one()
-    return f"{int(n or 0)}:{last}:{datetime.now().date()}"
+    from app import currency
+    return currency.fx_stamp(db)
 
 
 # ------------------------------------------------------------------ build / read
@@ -224,7 +244,7 @@ def _store(db: Session, trades: list[Trade], ccys: set[str], sigs: dict[int, str
             if r is None:
                 r = TradeResult(trade_id=t.id, currency=c)
                 db.add(r)
-            r.sig, r.payload, r.computed_at = sig, json.dumps(payload), now
+            r.sig, r.payload, r.computed_at = sig, pack_json(payload), now
             r.account_id, r.symbol, r.status, r.direction, r.setup = t.account_id, t.symbol, t.status, t.direction, t.setup
             r.opened_at, r.closed_at = t.opened_at, t.closed_at
             r.net, r.gross, r.fees = src.get("net_pnl"), src.get("gross_pnl"), src.get("fees")
@@ -248,7 +268,7 @@ def view(db: Session, stmt, display: str | None = None) -> list:
     # the caller's statement, same FROM / WHERE / ORDER (so the same row order), as plain rows
     trows = {}
     ids = []
-    for r in db.execute(stmt.with_only_columns(Trade.id, *_trade_cols())):
+    for r in db.execute(stmt.with_only_columns(Trade.id, Trade.updated_at, Trade.account_id, Trade.instrument_id)):
         if r[0] not in trows:
             ids.append(r[0])
             trows[r[0]] = r
@@ -286,8 +306,8 @@ def view(db: Session, stmt, display: str | None = None) -> list:
         orm = list(db.scalars(select(Trade).where(Trade.id.in_(stale)).options(*trade_options())))
         built = _store(db, orm, {display}, sigs, fx)
         for k, p in built.items():  # same decoded form as a stored read
-            payloads[k] = p = _load(json.dumps(p))
-            _remember(k, want.get(k) if k[1] == NATIVE else None, p)
+            payloads[k] = p = _load(pack_json(p))
+            _remember(k, want.get(k), p)
         try:
             db.commit()
         except Exception:  # noqa: BLE001 - a read never fails because the cache could not be written

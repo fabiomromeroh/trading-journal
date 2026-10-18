@@ -40,12 +40,17 @@ async def export(request: Request, db: Session = Depends(get_db)):
                             headers={"Retry-After": str(wait)})
 
     def work():
+        stamp = backup.content_stamp(db)
+        if backup.last_stamp(db) == stamp:
+            return None, stamp
         data = backup.build(db, include_cache=False)
         body = backup.encode(data)
-        info = backup.mark_export(db, body, data)
+        info = backup.mark_export(db, body, data, stamp=stamp)
         return body, info
 
     body, info = await run_in_threadpool(work)
+    if body is None:
+        return JSONResponse({"ok": True, "unchanged": True, "stamp": info})
     fname = f"trading-journal-{utcnow():%Y%m%d-%H%M%S}.json.gz"
     return Response(body, media_type="application/gzip", headers={
         "Content-Disposition": f'attachment; filename="{fname}"', "X-Backup-Sha256": info["sha256"],

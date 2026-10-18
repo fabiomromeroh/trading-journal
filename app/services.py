@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 from datetime import time, timedelta
 
 from sqlalchemy import delete, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 from app.instruments import ExecRecord
 from app.matching import Item, Match, day_from_match_key, match
@@ -538,7 +538,7 @@ def rebuild_trades(db: Session, account_ids: list[int] | None = None) -> int:
         acct = db.get(Account, acct_id)
         if acct is None:
             continue
-        execs = list(db.scalars(select(Execution).where(Execution.account_id == acct_id)))
+        execs = list(db.scalars(select(Execution).where(Execution.account_id == acct_id).options(defer(Execution.raw))))
         by_id = {e.id: e for e in execs}
         inst_ids = {e.instrument_id for e in execs if e.instrument_id}
         instruments = {i.id: i for i in db.scalars(select(Instrument).where(Instrument.id.in_(inst_ids or [-1])))}

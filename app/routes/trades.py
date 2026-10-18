@@ -16,7 +16,7 @@ from app.db import get_db
 from app.models import Tag, Trade, TradeFill, TradeMistake
 from app.prices import excursion_basis, excursion_note, get_chart, update_trade_excursions
 from app.routes.reports import trade_extras
-from app.web import apply_trade_filters, base_context, load_trades, parse_filters, templates, trade_options
+from app.web import apply_trade_filters, base_context, parse_filters, templates, trade_options
 
 router = APIRouter()
 PAGE = 50
@@ -31,20 +31,15 @@ LIST_KEYS = ("preset", "start", "end", "account", "symbol", "direction", "asset"
              "tag", "mistake", "sector", "industry", "sort", "dir", "realized_day")
 
 
-def realized_on_day(db: Session, f, day) -> dict:
-    """Trades with a realized event (closing fill, incl. partial exits of open trades, or fees) on
-    ``day`` (display-tz date), with each trade's realized amount that day. Same rule as the calendar,
-    so the total reconciles with the calendar cell / daily bar."""
-    from dataclasses import replace
+def _per_from_trades(trades, day) -> dict:
+    """Realized amount on ``day`` per trade. Opening fills without fees realize nothing."""
     from app import realized as rz
     from app.config import get_settings
     tz = get_settings().display_tz
-    from app import currency
-    trades = _results.trades(db, apply_trade_filters(select(Trade), replace(f, start=None, end=None)))
     per: dict[int, dict] = {}
     for e in rz.clip(rz.events(trades), tz, day, day):
         if not e.is_close and abs(e.fees) < 0.004:
-            continue  # an opening fill without fees realizes nothing (same rule as the calendar)
+            continue
         r = per.setdefault(e.trade_id, {"net": 0.0, "gross": 0.0, "fees": 0.0, "qty": 0.0, "exits": 0,
                                         "partial": False, "final": False})
         r["net"] += e.net
@@ -58,6 +53,15 @@ def realized_on_day(db: Session, f, day) -> dict:
     return per
 
 
+def realized_on_day(db: Session, f, day) -> dict:
+    """Trades with a realized event (closing fill, incl. partial exits of open trades, or fees) on
+    ``day`` (display-tz date), with each trade's realized amount that day. Same rule as the calendar,
+    so the total reconciles with the calendar cell / daily bar."""
+    from dataclasses import replace
+    trades = _results.trades(db, apply_trade_filters(select(Trade), replace(f, start=None, end=None)))
+    return _per_from_trades(trades, day)
+
+
 def _day_param(q):
     from datetime import date
     try:
@@ -66,19 +70,22 @@ def _day_param(q):
         return None
 
 
-def filtered_trades(request: Request, db: Session | None = None):
+def filtered_trades(request: Request, db: Session | None = None, resolve_day: bool = True):
     """Trades-list query (filters + sort) shared by the list and the trade page's sidebar.
     ``realized_day=YYYY-MM-DD`` selects the trades that realized P&L that day (calendar / daily bar
-    drill-down) instead of filtering by open date."""
+    drill-down) instead of filtering by open date. ``resolve_day=False`` leaves that load to the
+    caller so a page reads the stored trades once."""
     f = parse_filters(request)
     q = request.query_params
     day = _day_param(q)
     if day is not None and db is not None:
         from dataclasses import replace
-        per = realized_on_day(db, f, day)
         f = replace(f, start=None, end=None)
-        stmt = apply_trade_filters(select(Trade), f).where(Trade.id.in_(list(per) or [-1]))
-        request.state.realized_day = (day, per)
+        stmt = apply_trade_filters(select(Trade), f)
+        if resolve_day:
+            per = realized_on_day(db, f, day)
+            stmt = stmt.where(Trade.id.in_(list(per) or [-1]))
+            request.state.realized_day = (day, per)
     else:
         stmt = apply_trade_filters(select(Trade), f)
     if q.get("symbol"):
@@ -117,33 +124,53 @@ def filtered_trades(request: Request, db: Session | None = None):
     return stmt, f, q, sort, desc, list_qs
 
 
+def _by_status(trades) -> dict[str, tuple[float, int]]:
+    out: dict[str, tuple[float, int]] = {}
+    for t in trades:
+        p_, n_ = out.get(t.status, (0.0, 0))
+        out[t.status] = (p_ + (t.net_pnl or 0.0), n_ + 1)
+    return out
+
+
 @router.get("/trades")
 def trades_list(request: Request, db: Session = Depends(get_db)):
-    stmt, f, q, sort, desc, list_qs = filtered_trades(request, db)
-    day, day_rows = getattr(request.state, "realized_day", (None, None))
-    total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+    stmt, f, q, sort, desc, list_qs = filtered_trades(request, db, resolve_day=False)
     try:
         page = max(1, int(q.get("page", 1) or 1))
     except ValueError:
         page = 1
     from app import currency
-    rows = load_trades(db, stmt.offset((page - 1) * PAGE).limit(PAGE))
-    if currency.needs_conversion(db):  # mixed currencies: convert each trade, then total in Python
-        if total <= PAGE and page == 1:
-            rows = _results.trades(db, stmt.offset((page - 1) * PAGE).limit(PAGE))
-            summed = rows
-        else:
-            rows = _results.trades(db, stmt.offset((page - 1) * PAGE).limit(PAGE))
-            summed = _results.trades(db, stmt.order_by(None))
-        by_status: dict[str, tuple[float, int]] = {}
-        for t in summed:
-            p_, n_ = by_status.get(t.status, (0.0, 0))
-            by_status[t.status] = (p_ + (t.net_pnl or 0.0), n_ + 1)
+    from app import trade_columns as tc
+    cols = tc.get_columns(db)
+    day = _day_param(q)
+    if day is not None:
+        from dataclasses import replace
+        wide = _results.trades(db, apply_trade_filters(select(Trade), replace(f, start=None, end=None)))
+        day_rows = _per_from_trades(wide, day)
+        request.state.realized_day = (day, day_rows)
+        by_id = {t.id: t for t in wide}
+        ordered = [i for i in db.scalars(stmt.with_only_columns(Trade.id)) if i in day_rows]
+        total = len(ordered)
+        rows = [by_id[i] for i in ordered[(page - 1) * PAGE:page * PAGE] if i in by_id]
+        by_status = _by_status(by_id[i] for i in ordered if i in by_id)
+    elif currency.needs_conversion(db):
+        all_rows = _results.trades(db, stmt)
+        total = len(all_rows)
+        rows = all_rows[(page - 1) * PAGE:page * PAGE]
+        by_status = _by_status(all_rows)
+        day_rows = {}
     else:
+        total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+        page_stmt = stmt.offset((page - 1) * PAGE).limit(PAGE)
+        if set(cols) & (tc.METRIC_COLS | tc.DIVIDEND_COLS):
+            rows = _results.trades(db, page_stmt)
+        else:
+            rows = list(db.scalars(page_stmt))
         sub = stmt.order_by(None).subquery()
         agg = db.execute(select(sub.c.status, func.coalesce(func.sum(sub.c.net_pnl), 0.0), func.count(sub.c.id))
                          .group_by(sub.c.status)).all()
         by_status = {st: (float(pnl or 0.0), int(n)) for st, pnl, n in agg}
+        day_rows = {}
     closed_pnl, n_closed = by_status.get("CLOSED", (0.0, 0))
     open_pnl, n_open = by_status.get("OPEN", (0.0, 0))
     setups, tags, mistakes = filter_options(db)
@@ -151,8 +178,6 @@ def trades_list(request: Request, db: Session = Depends(get_db)):
     companies.annotate(db, rows)
     sectors, industries = companies.choices(db)
     params = {k: v for k, v in q.items() if k not in ("sort", "dir", "page")}
-    from app import trade_columns as tc
-    cols = tc.get_columns(db)
     return templates.TemplateResponse(request, "trades.html", base_context(
         request, db, nav="trades", f=f, trades=rows, cols=[tc.BY_ID[c] for c in cols], all_cols=tc.COLUMNS,
         row_m=tc.row_metrics(db, rows, cols), default_cols=tc.default_columns(), total=total, page=page, pages=max(1, -(-total // PAGE)),
@@ -255,13 +280,22 @@ def trade_detail(trade_id: int, request: Request, db: Session = Depends(get_db))
 @router.get("/trades/{trade_id}/list")
 def trade_detail_list(trade_id: int, request: Request, db: Session = Depends(get_db)):
     """The trade page's side list (loaded after the page paints; it is most of the page's HTML)."""
-    stmt, f, q, sort, desc, list_qs = filtered_trades(request, db)
+    stmt, f, q, sort, desc, list_qs = filtered_trades(request, db, resolve_day=False)
     from app import currency
-    cols = stmt.with_only_columns(Trade.id, Trade.symbol, Trade.opened_at, Trade.closed_at, Trade.direction,
-                                  Trade.status, Trade.net_pnl, Trade.time_known, Trade.is_demo)
-    if currency.needs_conversion(db):  # list amounts in the display currency (the page itself stays native)
-        nav_rows = _results.trades(db, stmt.limit(SIDEBAR_LIMIT))
+    day = _day_param(q)
+    if day is not None or currency.needs_conversion(db):
+        if day is not None:
+            from dataclasses import replace
+            wide = _results.trades(db, apply_trade_filters(select(Trade), replace(f, start=None, end=None)))
+            per = _per_from_trades(wide, day)
+            by_id = {t.id: t for t in wide}
+            ids = [i for i in db.scalars(stmt.with_only_columns(Trade.id)) if i in per][:SIDEBAR_LIMIT]
+            nav_rows = [by_id[i] for i in ids if i in by_id]
+        else:
+            nav_rows = _results.trades(db, stmt.limit(SIDEBAR_LIMIT))
     else:
+        cols = stmt.with_only_columns(Trade.id, Trade.symbol, Trade.opened_at, Trade.closed_at, Trade.direction,
+                                      Trade.status, Trade.net_pnl, Trade.time_known, Trade.is_demo)
         nav_rows = db.execute(cols.limit(SIDEBAR_LIMIT)).all()
     return templates.TemplateResponse(request, "partials/trade_list_items.html", {
         "nav_rows": nav_rows, "cur_id": trade_id, "list_qs": list_qs,

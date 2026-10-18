@@ -221,8 +221,9 @@ class Execution(Base):
     position_effect: Mapped[str | None] = mapped_column(String(8))  # OPEN | CLOSE
     kind: Mapped[str] = mapped_column(String(16), default="TRADE")  # TRADE|EXPIRATION|ASSIGNMENT|EXERCISE
     description: Mapped[str | None] = mapped_column(String(300))
-    raw: Mapped[str | None] = mapped_column(Text)
+    raw: Mapped[str | None] = mapped_column(Text, deferred=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
     account: Mapped[Account] = relationship()
 
 
@@ -343,6 +344,7 @@ class TradeFill(Base):
     price: Mapped[float] = mapped_column(Float)
     fees: Mapped[float] = mapped_column(Float)
     executed_at: Mapped[datetime] = mapped_column(DateTime)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
     trade: Mapped[Trade] = relationship(back_populates="fills")
     execution: Mapped[Execution | None] = relationship()
 
@@ -436,6 +438,21 @@ class PriceCache(Base):
     provider: Mapped[str] = mapped_column(String(30))
     payload: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class DailyClose(Base):
+    """One daily close per symbol. Balance rebuilds read this instead of whole candle payloads."""
+    __tablename__ = "daily_closes"
+    __table_args__ = (
+        UniqueConstraint("symbol", "day", name="uq_daily_close"),
+        Index("ix_daily_close_symbol", "symbol"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(64))
+    day: Mapped[date] = mapped_column(Date)
+    close: Mapped[float] = mapped_column(Float)
+    provider: Mapped[str | None] = mapped_column(String(20))
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
 class AppState(Base):

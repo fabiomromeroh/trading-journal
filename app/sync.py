@@ -186,7 +186,10 @@ def execute_run(run_id: int, sources=None, send_reminders: bool = False, only: s
         db.flush()
         if touched:  # stored balance curve (deposits + realized + dividends + unrealized at daily closes)
             from app import balance
-            balance.after_sync(db, touched)
+            fresh = set(db.info.get("balance_fresh") or ())
+            need = [i for i in touched if i not in fresh]
+            if need:  # IBKR already rebuilt once at the end of its own sync
+                balance.after_sync(db, need)
             try:  # stored per-trade results for the touched accounts (pages then only read them)
                 from app import results
                 results.rebuild(db, sorted(touched) if all(isinstance(x, int) for x in touched) else None)

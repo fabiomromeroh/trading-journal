@@ -15,11 +15,11 @@ Daily/weekly bar times are normalised to 00:00 UTC of their New York trading dat
 """
 from __future__ import annotations
 
-import json
 import logging
 import random
 import time as _time
 from bisect import bisect_right
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 
@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.models import PriceCache, Trade, utcnow
+from app.payloads import dialect_insert, pack_json, unpack_json
 from app.timeutil import ET, local_to_utc_naive, utc_naive_to_tz
 
 log = logging.getLogger(__name__)
@@ -341,6 +342,46 @@ PROVIDER_LABEL = {"demo": "Synthetic sample prices (not real market data)", "sch
                   "polygon": "Polygon.io", "yahoo": "Yahoo Finance (unofficial)"}
 _MEM: dict[str, tuple[float, list[dict]]] = {}  # short-lived cache for windows that end "now"
 _MEM_TTL = 120  # seconds; windows end at "now", so keep them fresh
+# Bounded LRU of price_cache payloads, keyed by database + cache key. Checked before any price_cache read.
+_CANDLE_LRU: "OrderedDict[str, tuple]" = OrderedDict()
+_CANDLE_LRU_MAX = 128
+
+
+def _db_tag(db) -> str:
+    try:
+        return str(db.get_bind().url)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _lru_get(db, key: str):
+    item = _CANDLE_LRU.get(_db_tag(db) + "|" + key)
+    if item is None:
+        return None
+    _CANDLE_LRU.move_to_end(_db_tag(db) + "|" + key)
+    return item  # (payload, created_at, provider)
+
+
+def _lru_put(db, key: str, payload, created_at, provider) -> None:
+    k = _db_tag(db) + "|" + key
+    _CANDLE_LRU[k] = (payload, created_at, provider)
+    _CANDLE_LRU.move_to_end(k)
+    while len(_CANDLE_LRU) > _CANDLE_LRU_MAX:
+        _CANDLE_LRU.popitem(last=False)
+
+
+def _upsert_price(db, key: str, prov: str, payload: str) -> None:
+    """Insert or replace a price_cache row without reading the old payload back."""
+    dia = dialect_insert(db)
+    now = utcnow()
+    stmt = dia(PriceCache).values(cache_key=key, provider=prov, payload=payload, created_at=now)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["cache_key"],
+        set_={"payload": stmt.excluded.payload, "provider": stmt.excluded.provider,
+              "created_at": stmt.excluded.created_at},
+    )
+    db.execute(stmt)
+    db.commit()
 
 
 def last_session_date(now: datetime):
@@ -386,9 +427,14 @@ def _fetch(db: Session, prov: str, trade: Trade, interval: str, start: datetime,
     key = f"{CACHE_VERSION}|{prov}|{symbol}|{interval}|{start:%Y%m%d%H%M}|{end:%Y%m%d%H%M}"
     persistent = end < now - timedelta(hours=12)
     if persistent:
+        hit = _lru_get(db, key)
+        if hit is not None:
+            return hit[0]
         cached = db.scalar(select(PriceCache).where(PriceCache.cache_key == key))
         if cached:
-            return json.loads(cached.payload)
+            payload = unpack_json(cached.payload)
+            _lru_put(db, key, payload, cached.created_at, cached.provider)
+            return payload
     mem_key = f"{CACHE_VERSION}|{prov}|{symbol}|{interval}|{start:%Y%m%d%H}|{end:%Y%m%d%H}"
     hit = _MEM.get(mem_key)
     if hit and _time.monotonic() - hit[0] < _MEM_TTL and not _stale(hit[1], interval, now):
@@ -404,16 +450,28 @@ def _fetch(db: Session, prov: str, trade: Trade, interval: str, start: datetime,
     if persistent:
         candles = _download(db, prov, symbol, interval, start, end, ykw)
         if candles:
-            db.add(PriceCache(cache_key=key, provider=prov, payload=json.dumps(candles)))
-            db.commit()
+            _upsert_price(db, key, prov, pack_json(candles))
+            _lru_put(db, key, candles, utcnow(), prov)
         return candles
     # A window that ends "now": the last download is stored (key without the end) and served at once;
     # when it is older than RECENT_FRESH it is refreshed in the background for the next view.
+    # The in-memory LRU is checked before the price_cache read.
     rkey = f"recent|{CACHE_VERSION}|{prov}|{symbol}|{interval}|{start:%Y%m%d}"
-    row = db.scalar(select(PriceCache).where(PriceCache.cache_key == rkey))
-    stored = json.loads(row.payload) if row is not None else None
-    age = ((utcnow() - row.created_at).total_seconds() if row is not None and row.created_at else 1e9)
-    if stored and (not _stale(stored, interval, now) or (row.provider.endswith(":nonew") and age < RECENT_FRESH)):
+    cached_hit = _lru_get(db, rkey)
+    if cached_hit is not None:
+        stored, created_at, provider = cached_hit
+    else:
+        row = db.scalar(select(PriceCache).where(PriceCache.cache_key == rkey))
+        if row is None:
+            stored, created_at, provider = None, None, ""
+        else:
+            stored = unpack_json(row.payload)
+            created_at, provider = row.created_at, row.provider or ""
+            _lru_put(db, rkey, stored, created_at, provider)
+    age = ((utcnow() - created_at).total_seconds() if created_at is not None else 1e9)
+    fresh_enough = bool(stored) and (
+        not _stale(stored, interval, now) or (str(provider).endswith(":nonew") and age < RECENT_FRESH))
+    if fresh_enough:
         if age > RECENT_FRESH:
             _refresh_later(prov, symbol, interval, start, end, ykw, rkey)
         _MEM[mem_key] = (_time.monotonic(), stored)
@@ -441,13 +499,10 @@ def _download(db, prov, symbol, interval, start, end, ykw):
 
 
 def _store_recent(db, rkey, prov, candles):
+    """Upsert the recent window. Does not SELECT the row (the old payload is not read back)."""
     try:
-        row = db.scalar(select(PriceCache).where(PriceCache.cache_key == rkey))
-        if row is None:
-            db.add(PriceCache(cache_key=rkey, provider=prov, payload=json.dumps(candles)))
-        else:
-            row.payload, row.created_at, row.provider = json.dumps(candles), utcnow(), prov
-        db.commit()
+        _upsert_price(db, rkey, prov, pack_json(candles))
+        _lru_put(db, rkey, candles, utcnow(), prov)
     except Exception:  # noqa: BLE001 - a concurrent writer stored it first
         db.rollback()
 
