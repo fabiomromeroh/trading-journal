@@ -193,6 +193,7 @@ class Execution(Base):
         UniqueConstraint("account_id", "source", "external_id", name="uq_exec_source_ext"),
         Index("ix_exec_account_symbol", "account_id", "symbol"),
         Index("ix_exec_match", "account_id", "match_key"),
+        Index("ix_exec_transfer_pair", "transfer_pair_id"),
     )
     id: Mapped[int] = mapped_column(primary_key=True)
     account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"))
@@ -224,6 +225,7 @@ class Execution(Base):
     raw: Mapped[str | None] = mapped_column(Text, deferred=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+    transfer_pair_id: Mapped[str | None] = mapped_column(String(64))  # links an internal transfer OUT to its IN
     account: Mapped[Account] = relationship()
 
 
@@ -459,6 +461,32 @@ class AppState(Base):
     __tablename__ = "app_state"
     key: Mapped[str] = mapped_column(String(80), primary_key=True)
     value: Mapped[str | None] = mapped_column(Text)
+
+
+class IbkrFlexFact(Base):
+    """One parsed number from an IBKR Flex section. Key columns are empty strings, never NULL.
+
+    ``section`` is cash, nav, change_nav, funds, interest, div_accrual, performance, or position.
+    ``amount`` is the primary figure (ending cash, NAV, realized P&L, position quantity).
+    ``numbers`` is a compact JSON object of the other floats. Raw XML is not copied here.
+    """
+    __tablename__ = "ibkr_flex_facts"
+    __table_args__ = (
+        UniqueConstraint(
+            "account_id", "section", "day", "currency", "symbol", "conid", "line_key",
+            name="uq_ibkr_flex_fact"),
+        Index("ix_ibkr_flex_fact_lookup", "account_id", "section", "day"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"))
+    section: Mapped[str] = mapped_column(String(24))
+    day: Mapped[date] = mapped_column(Date)
+    currency: Mapped[str] = mapped_column(String(8), default="")
+    symbol: Mapped[str] = mapped_column(String(64), default="")
+    conid: Mapped[str] = mapped_column(String(32), default="")
+    line_key: Mapped[str] = mapped_column(String(80), default="")
+    amount: Mapped[float | None] = mapped_column(Float)
+    numbers: Mapped[str | None] = mapped_column(Text)
 
 
 class InboundEmail(Base):

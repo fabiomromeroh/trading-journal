@@ -996,6 +996,13 @@ class ParsedFlex:
     cash_report: list[dict] = field(default_factory=list)
     transfers: list[dict] = field(default_factory=list)
     option_eae: list[dict] = field(default_factory=list)
+    change_nav: list[dict] = field(default_factory=list)
+    funds: list[dict] = field(default_factory=list)
+    interest_accruals: list[dict] = field(default_factory=list)
+    dividend_accruals: list[dict] = field(default_factory=list)
+    performance: list[dict] = field(default_factory=list)
+    nav: list[dict] = field(default_factory=list)
+    has_positions: bool = False
 
 
 def _xml_root(xml_text: str) -> ET.Element:
@@ -1099,27 +1106,19 @@ def _parse_statement_el(stmt: ET.Element) -> ParsedFlex:
             row = fields_of(el)
             if row and (row.get("transactionType") or row.get("symbol") or row.get("conid")):
                 out.option_eae.append(row)
-    best: tuple[date, dict] | None = None
+    equity_best: list = []
     for el in list(_elems(stmt, "EquitySummaryByReportDateInBase")) + list(_elems(stmt, "EquitySummaryInBase")):
-        row = fields_of(el)
-        if not row:
-            continue
-        day = parse_ibkr_date(row.get("reportDate") or row.get("fromDate") or "") or date.min
-        total = _num(row.get("total") or row.get("totalLong") or row.get("equity"))
-        if total is None:
-            continue
-        cash = _num(row.get("cash"))
-        stock = _num(row.get("stock") or row.get("securities"))
-        cand = {"reportDate": day.isoformat() if day != date.min else None, "cash": cash,
-                "invested": stock, "total": total, "currency": (row.get("currency") or "").upper() or None}
-        out.equity_rows.append(cand)
-        if best is None or day >= best[0]:
-            best = (day, cand)
-    out.equity = best[1] if best else None
+        _take_equity(out, fields_of(el), equity_best)
+    for child in list(stmt):
+        if _local(child.tag) == "OpenPositions":
+            out.has_positions = True
+    if out.positions:
+        out.has_positions = True
     for section, tag in (("CashReport", "CashReportCurrency"), ("CashReport", "CashReport")):
         for row in _rows_in_section(stmt, section, tag):
             if row:
                 out.cash_report.append(row)
+    _absorb_extra_dom(stmt, out, equity_best)
     cash_end = _latest_cash_report(out.cash_report)
     if cash_end is not None and out.equity is not None and out.equity.get("cash") is None:
         out.equity["cash"] = cash_end
@@ -1209,6 +1208,32 @@ _ROW_ATTR = {
 }
 _EQUITY_TAGS = {"EquitySummaryByReportDateInBase", "EquitySummaryInBase"}
 _CASH_REPORT_ROWS = {"CashReportCurrency", "CashReport"}
+# Optional Flex sections. Labels in Client Portal vary; these are the XML tags we accept.
+_EXTRA_SECTION_TAGS = {
+    "ChangeInNAV": "change_nav", "ChangeInNav": "change_nav",
+    "StatementOfFunds": "funds", "StmtFunds": "funds",
+    "InterestAccruals": "interest_accruals",
+    "ChangeInDividendAccruals": "dividend_accruals",
+    "FIFOPerformanceSummaryInBase": "performance",
+    "MTMPerformanceSummaryInBase": "performance",
+    "UnrealizedRealizedPerformanceSummary": "performance",
+    "RealizedAndUnrealizedPerformanceSummary": "performance",
+    "RealizedUnrealized": "performance",
+    "NetAssetValue": "nav", "NetAssetValueInBase": "nav",
+}
+_EXTRA_ROW_TAGS = {
+    "funds": {"StatementOfFundsLine", "StmtFundsLine"},
+    "interest_accruals": {"InterestAccrualsCurrency", "InterestAccrual"},
+    "dividend_accruals": {"ChangeInDividendAccrual"},
+    "nav": {"NAV", "NetAssetValue"},
+}
+_EXTRA_BY_LOWER = {k.lower(): v for k, v in _EXTRA_SECTION_TAGS.items()}
+
+
+def _extra_name(tag: str) -> str | None:
+    if tag in _EXTRA_SECTION_TAGS:
+        return _EXTRA_SECTION_TAGS[tag]
+    return _EXTRA_BY_LOWER.get((tag or "").lower())
 
 
 def _drop_elem(parent: ET.Element | None, elem: ET.Element) -> None:
@@ -1238,7 +1263,93 @@ def _take_equity(out: ParsedFlex, row: dict, best: list) -> None:
         out.equity = cand
 
 
+def _extra_interesting(kind: str, row: dict) -> bool:
+    """Skip empty wrappers that only carry accountId. Both parsers use this filter."""
+    if not row:
+        return False
+    if kind == "change_nav":
+        keys = ("startingValue", "endingValue", "mtm", "realized", "depositsWithdrawals")
+        return any(_num(row.get(k)) is not None for k in keys)
+    if kind == "funds":
+        return any(_num(row.get(k)) is not None for k in ("amount", "balance", "credit", "debit"))
+    if kind == "interest_accruals":
+        return any(_num(row.get(k)) is not None for k in (
+            "endingAccrualBalance", "interestAccrued", "startingAccrualBalance"))
+    if kind == "dividend_accruals":
+        return any(_num(row.get(k)) is not None for k in ("netAmount", "grossAmount", "quantity"))
+    if kind == "performance":
+        for key in ("totalRealizedPnl", "realizedPnl", "realized", "totalRealizedPNL", "realizedPNL"):
+            if row.get(key) not in (None, ""):
+                return True
+        if any("realized" in str(k).lower() for k in row):
+            return True
+        return bool((row.get("symbol") or row.get("conid") or row.get("underlyingSymbol"))
+                    and _num(row.get("unrealized") or row.get("unrealizedPnl") or row.get("unrealizedPNL")) is not None)
+    if kind == "nav":
+        return _num(row.get("total") or row.get("totalLong") or row.get("equity")
+                    or row.get("cash") or row.get("stock")) is not None
+    return False
+
+
+def _row_key(row: dict) -> tuple:
+    return tuple(sorted((str(k), str(v)) for k, v in row.items()))
+
+
+def _flush_extra(out: ParsedFlex, kind: str, rows: list[dict], self_row: dict | None,
+                 equity_best: list | None = None) -> None:
+    """Descendants in document order, then the section element itself if it is a real row."""
+    dest = getattr(out, kind)
+    seen: set[tuple] = set()
+    kept: list[dict] = []
+    for row in rows:
+        if not _extra_interesting(kind, row):
+            continue
+        key = _row_key(row)
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(row)
+    if self_row and _extra_interesting(kind, self_row):
+        key = _row_key(self_row)
+        if key not in seen:
+            kept.append(self_row)
+    if kind == "performance":
+        detailed = [r for r in kept if str(r.get("symbol") or r.get("underlyingSymbol") or r.get("conid") or "").strip()]
+        if detailed:
+            kept = detailed
+    dest.extend(kept)
+    if kind == "nav" and equity_best is not None:
+        for row in kept:
+            folded = dict(row)
+            if not folded.get("reportDate") and not folded.get("fromDate"):
+                folded["reportDate"] = folded.get("toDate") or ""
+            _take_equity(out, folded, equity_best)
+
+
+def _section_rows(elem: ET.Element) -> list[dict]:
+    rows: list[dict] = []
+    for el in elem.iter():
+        if el is elem:
+            continue
+        row = fields_of(el)
+        if row:
+            rows.append(row)
+    return rows
+
+
+def _absorb_extra_dom(stmt: ET.Element, out: ParsedFlex, equity_best: list) -> None:
+    if any(_local(el.tag) == "OpenPositions" for el in list(stmt)) or out.positions:
+        out.has_positions = True
+    for child in list(stmt):
+        kind = _extra_name(_local(child.tag))
+        if not kind:
+            continue
+        _flush_extra(out, kind, _section_rows(child), fields_of(child), equity_best)
+
+
 def _finish_parsed(out: ParsedFlex, stmt_fields: dict, info: dict) -> ParsedFlex:
+    if out.positions:
+        out.has_positions = True
     cash_end = _latest_cash_report(out.cash_report)
     if cash_end is not None and out.equity is not None and out.equity.get("cash") is None:
         out.equity["cash"] = cash_end
@@ -1272,6 +1383,7 @@ def _iterparse_statements(path: Path):
     info: dict = {}
     equity_best: list = []
     section_stack: list[str] = []
+    extra_stack: list[str] = []
     option_eae_count_at_section = 0
     cash_report_count_at_section = 0
 
@@ -1295,10 +1407,18 @@ def _iterparse_statements(path: Path):
                 info = {}
                 equity_best = []
                 section_stack = []
+                extra_stack = []
+            elif cur is not None and _extra_name(tag):
+                parent = tag_stack[-2] if len(tag_stack) >= 2 else ""
+                if parent == "FlexStatement" and not extra_stack:
+                    extra_stack.append(tag)
+                    continue
             elif cur is not None and tag in _SECTION_ROW:
                 parent = tag_stack[-2] if len(tag_stack) >= 2 else ""
                 if parent == "FlexStatement" or not section_stack:
                     section_stack.append(tag)
+                    if tag == "OpenPositions":
+                        cur.has_positions = True
                     if tag == "OptionEAE":
                         option_eae_count_at_section = len(cur.option_eae)
                     if tag == "CashReport":
@@ -1315,6 +1435,16 @@ def _iterparse_statements(path: Path):
             _drop_elem(parent, elem)
             continue
 
+        if extra_stack:
+            # Keep descendants attached so the section close walks the same tree as the DOM parser.
+            if tag == extra_stack[-1] and parent_tag == "FlexStatement":
+                extra_stack.pop()
+                kind = _extra_name(tag)
+                if kind:
+                    _flush_extra(cur, kind, _section_rows(elem), fields_of(elem), equity_best)
+                _drop_elem(parent, elem)
+            continue
+
         if tag == "AccountInformation":
             info = fields_of(elem)
             if info.get("accountId"):
@@ -1326,6 +1456,7 @@ def _iterparse_statements(path: Path):
             yield _finish_parsed(cur, stmt_fields, info)
             cur = None
             section_stack = []
+            extra_stack = []
             _drop_elem(parent, elem)
             continue
 
@@ -1413,6 +1544,9 @@ def parsed_as_comparable(p: ParsedFlex) -> dict:
         "trades": p.trades, "cash": p.cash, "positions": p.positions,
         "corporate": p.corporate, "equity": p.equity, "equity_rows": p.equity_rows,
         "cash_report": p.cash_report, "transfers": p.transfers, "option_eae": p.option_eae,
+        "change_nav": p.change_nav, "funds": p.funds, "interest_accruals": p.interest_accruals,
+        "dividend_accruals": p.dividend_accruals, "performance": p.performance, "nav": p.nav,
+        "has_positions": p.has_positions,
     }
 
 
@@ -1685,7 +1819,12 @@ _SPLIT_CODES = {"FS", "RS", "SD", "SPLIT", "REVERSE SPLIT", "REVERSE_SPLIT", "ST
 _FORWARD_SPLIT = {"FS", "SPLIT", "STOCK SPLIT", "STOCK_SPLIT", "SD", "STOCK DIVIDEND", "STOCK_DIVIDEND"}
 _REVERSE_SPLIT = {"RS", "REVERSE SPLIT", "REVERSE_SPLIT"}
 _RENAME_CODES = {"IC", "SYMBOL CHANGE", "SYMBOL_CHANGE", "TICKER CHANGE", "RENAME", "CUSIP CHANGE"}
-_MERGE_CODES = {"MA", "TC", "TO", "MERGER", "ACQUISITION"}
+_MERGE_CODES = {"MA", "TC", "MERGER", "ACQUISITION"}
+_TENDER_CODES = {"TO", "TENDER", "TENDER OFFER"}
+_MATURITY_CODES = {"BM", "BOND MATURITY", "MATURITY"}
+_LIEU_CODES = {"DI", "CD"}
+_RIGHTS_CODES = {"RI", "SR"}
+_NAME_CODES = {"HI", "CH"}
 _SPIN_CODES = {"SO", "SPIN", "SPINOFF", "SPIN OFF", "SPIN_OFF"}
 _WORTHLESS_CODES = {"DW", "DELIST", "WORTHLESS", "DELISTED"}
 _PARENS_TICKER = re.compile(r"\(([A-Z][A-Z0-9.]{0,7})\s*,")
@@ -1798,6 +1937,29 @@ def _looks_ticker(s: str | None) -> bool:
     return bool(re.fullmatch(r"[A-Z][A-Z0-9.]{0,7}", t)) and t not in _NOT_TICKER
 
 
+def _name_only_change(desc: str) -> bool:
+    """A name or CUSIP edit that does not name a new ticker. That is not a rename."""
+    text = desc or ""
+    if _new_ticker("", text):
+        return False
+    if re.search(r"symbol change|ticker change", text, re.I):
+        return False
+    return bool(re.search(r"\b(name change|cusip)\b", text, re.I))
+
+
+def _ca_cash_total(row: dict) -> float | None:
+    """Cash on a corporate row. A positive proceeds/amount, or USD in the description times shares."""
+    for key in ("proceeds", "amount"):
+        number = _num(row.get(key))
+        if number is not None and abs(number) > 1e-9:
+            return abs(number)
+    per = _cash_per_share(_ca_desc(row))
+    qty = _num(row.get("quantity"))
+    if per is not None and per > 0 and qty is not None and abs(qty) > 1e-9:
+        return abs(per * abs(qty))
+    return None
+
+
 def _new_ticker(symbol: str, desc: str) -> str:
     for rx in (_PARENS_TICKER, _CHANGE_TO, _MERGE_TO):
         m = rx.search(desc or "")
@@ -1882,6 +2044,9 @@ def _tc_group(gid: str, group: list[dict]) -> tuple[list[dict], list[ExecRecord]
                 synth = dict(row)
                 synth["symbol"] = new
                 synth["quantity"] = new_qty
+                # The new ticker is not the old conid. Attaching that conid would glue them together.
+                synth.pop("conid", None)
+                synth.pop("conId", None)
                 new_legs.append(synth)
     if not old_legs and new_legs:
         # only the new ticker was listed; description may name the old one
@@ -1944,6 +2109,75 @@ def _tc_group(gid: str, group: list[dict]) -> tuple[list[dict], list[ExecRecord]
     return events, recs
 
 
+def _handle_extra_ca(row: dict, code: str, sym: str, desc: str, blob: str, qty: float | None,
+                     when: datetime, events: list[dict], recs: list[ExecRecord]) -> bool:
+    """Tender, maturity, cash-in-lieu, rights, and name/CUSIP changes. True when this row is done."""
+    share = abs(qty) if qty is not None and abs(qty) > 1e-9 else None
+    cash = _ca_cash_total(row)
+
+    if code in _TENDER_CODES or re.search(r"\btender( offer)?\b", blob, re.I):
+        if sym and share and cash:
+            recs.append(_ca_record(
+                row, ext=f"ca:{_ca_id(row)}:{_conid_of(row) or sym}:TO", symbol=sym, side="SELL",
+                qty=share, price=cash / share, kind="ADJUST", effect="CLOSE", when=when,
+                desc=desc or f"{sym} tender"))
+        elif sym:
+            events.append({"kind": "ATTENTION", "symbol": sym, "code": "ca",
+                           "note": f"{sym}: IBKR tender offer needs quantity and cash ({desc or code})."})
+        return True
+
+    if code in _MATURITY_CODES or re.search(r"\bbond maturity\b", blob, re.I):
+        if sym and share and cash:
+            recs.append(_ca_record(
+                row, ext=f"ca:{_ca_id(row)}:{_conid_of(row) or sym}:BM", symbol=sym, side="SELL",
+                qty=share, price=cash / share, kind="ADJUST", effect="CLOSE", when=when,
+                desc=desc or f"{sym} bond maturity"))
+        elif sym:
+            events.append({"kind": "ATTENTION", "symbol": sym, "code": "ca",
+                           "note": f"{sym}: IBKR bond maturity needs quantity and cash ({desc or code})."})
+        return True
+
+    if code in _LIEU_CODES or re.search(r"\bcash in lieu\b|\bdelisted\b", blob, re.I):
+        if sym and share and cash:
+            recs.append(_ca_record(
+                row, ext=f"ca:{_ca_id(row)}:{_conid_of(row) or sym}:DI", symbol=sym, side="SELL",
+                qty=share, price=cash / share, kind="ADJUST", effect="CLOSE", when=when,
+                desc=desc or f"{sym} cash in lieu"))
+        elif sym and share:
+            recs.append(_ca_record(
+                row, ext=f"ca:{_ca_id(row)}:{_conid_of(row) or sym}:DI", symbol=sym, side="SELL",
+                qty=share, price=0.0, kind="ADJUST", effect="CLOSE", when=when,
+                desc=desc or f"{sym} delisted"))
+        elif cash and not share:
+            events.append({"kind": "CASH", "symbol": sym or "?", "amount": round(cash if (qty or 0) >= 0 else -cash, 6),
+                           "currency": (row.get("currency") or "").upper() or None, "when": when,
+                           "key": f"ibkr:ca-cash:{_ca_id(row)}:{code or 'DI'}",
+                           "note": f"{sym or 'Cash'}: cash in lieu {cash:.2f}"})
+        elif sym:
+            events.append({"kind": "ATTENTION", "symbol": sym, "code": "ca",
+                           "note": f"{sym}: IBKR cash-in-lieu/delist needs quantity or cash ({desc or code})."})
+        return True
+
+    if code in _RIGHTS_CODES or re.search(r"\b(rights issue|subscription)\b", blob, re.I):
+        if sym and qty is not None and qty > 1e-9 and not cash:
+            recs.append(_ca_record(
+                row, ext=f"ca:{_ca_id(row)}:{_conid_of(row) or sym}:RI", symbol=sym, side="BUY",
+                qty=qty, price=0.0, kind="DISTRIBUTION", effect="OPEN", when=when,
+                desc=desc or f"{sym} rights delivery"))
+        elif sym:
+            events.append({"kind": "ATTENTION", "symbol": sym, "code": "ca",
+                           "note": f"{sym}: IBKR rights issue/subscription needs attention ({desc or code})."})
+        return True
+
+    if code in _NAME_CODES:
+        new = _new_ticker(sym, desc) or _new_ticker(sym, blob)
+        if sym and new:
+            events.append({"kind": "RENAME", "symbol": sym, "new_symbol": new, "when": when,
+                           "key": f"rename:{sym}:{new}:{when.date().isoformat()}"})
+        return True
+    return False
+
+
 def corporate_events(rows: list[dict]) -> tuple[list[dict], list[ExecRecord]]:
     """Splits / renames / TC mergers / SO / SD / DW. Unrecognised -> needs-attention. No invented fills."""
     from app.corporate import ratio_from_text, clean_ratio
@@ -1956,7 +2190,10 @@ def corporate_events(rows: list[dict]) -> tuple[list[dict], list[ExecRecord]]:
         code = _ca_code(row)
         desc = _ca_desc(row)
         blob = f"{code} {desc}"
-        if code in _MERGE_CODES or _MERGER_WORD.search(blob):
+        handled_aside = code in (_TENDER_CODES | _MATURITY_CODES | _LIEU_CODES | _RIGHTS_CODES | _NAME_CODES)
+        if handled_aside:
+            rest.append(row)
+        elif code in _MERGE_CODES or _MERGER_WORD.search(blob):
             gid = _ca_action_id(row) or f"tc:{_ca_id(row)}"
             groups.setdefault(gid, []).append(row)
         else:
@@ -1971,6 +2208,8 @@ def corporate_events(rows: list[dict]) -> tuple[list[dict], list[ExecRecord]]:
         key = f"ibkr:{_ca_id(row)}:{code or 'ca'}"
         blob = f"{code} {desc}"
         qty = _num(row.get("quantity"))
+        if _handle_extra_ca(row, code, sym, desc, blob, qty, when, events, recs):
+            continue
         if code in _SPIN_CODES or re.search(r"\bspin[- ]?off\b", blob, re.I):
             new = _new_ticker(sym, desc) or _new_ticker(sym, blob) or sym
             share_qty = abs(qty) if qty and abs(qty) > 1e-9 else None
@@ -2023,10 +2262,12 @@ def corporate_events(rows: list[dict]) -> tuple[list[dict], list[ExecRecord]]:
             continue
         if code in _RENAME_CODES or re.search(r"symbol change|ticker change|name change|cusip", blob, re.I):
             new = _new_ticker(sym, desc) or _new_ticker(sym, blob)
+            symbol_change = code in {"IC", "SYMBOL CHANGE", "SYMBOL_CHANGE", "TICKER CHANGE", "RENAME"} or bool(
+                re.search(r"symbol change|ticker change", blob, re.I))
             if sym and new and when:
                 events.append({"kind": "RENAME", "symbol": sym, "new_symbol": new, "when": when,
                                "key": f"rename:{sym}:{new}:{when.date().isoformat()}"})
-            elif sym:
+            elif symbol_change and sym:
                 events.append({"kind": "ATTENTION", "symbol": sym, "code": "rename",
                                "note": f"{sym}: IBKR symbol change is ambiguous ({desc or code})."})
             continue
@@ -2311,6 +2552,21 @@ def earliest_imported_day(db: Session, account_id: int, extra: list | None = Non
     return min(days) if days else None
 
 
+def _ibkr_execution_years(db: Session) -> set[str]:
+    """Calendar years that already have an IBKR fill. A 1003 note for those years is stale."""
+    from sqlalchemy import extract
+    from app.models import Execution
+    found: set[str] = set()
+    rows = db.execute(select(extract("year", Execution.executed_at)).join(
+        Account, Account.id == Execution.account_id).where(
+            Account.source_key == SOURCE_KEY, Execution.executed_at.is_not(None))).all()
+    for (year,) in rows:
+        if year is None:
+            continue
+        found.add(str(int(year)))
+    return found
+
+
 def history_gap_sentence(db: Session) -> str:
     """Mention a 1003 gap only from history notes, gaps, and failed windows — not the whole job JSON."""
     hist = load_history(db)
@@ -2324,14 +2580,20 @@ def history_gap_sentence(db: Session) -> str:
             blobs.append(text)
     if not blobs:
         return ""
+    covered = _ibkr_execution_years(db)
     years: list[str] = []
     seen: set[str] = set()
+    mentioned = False
     for blob in blobs:
         for match in re.finditer(r"20\d\d", blob):
+            mentioned = True
             year = match.group(0)
-            if year not in seen:
-                seen.add(year)
-                years.append(year)
+            if year in covered or year in seen:
+                continue
+            seen.add(year)
+            years.append(year)
+    if mentioned and not years:
+        return ""
     if len(years) == 1:
         return f"{years[0]} had no statement (IBKR 1003) and can be uploaded as XML."
     if years:
@@ -2377,8 +2639,12 @@ def _merger_check(row) -> bool:
 
 def finish_import_attention(db: Session, account_id: int, events: list[dict]) -> list[str]:
     """Drop stale merger warnings, keep one outside-history note per merger, and fix the date wording."""
-    from app.adjustments import dedupe_checks
+    from app.adjustments import clear_stale_attention, dedupe_checks
+    from app.models import Account as _Account
     from app.models import CorporateAdjustment
+    acct = db.get(_Account, account_id)
+    if acct is not None and acct.source_key == SOURCE_KEY:
+        clear_stale_attention(db, account_id)
     pairs: list[tuple[str, str]] = []
     outside: set[str] = set()
     for ev in events or []:
@@ -2458,23 +2724,60 @@ def _trade_codes(row: dict) -> set[str]:
     return {p.strip().upper() for p in re.split(r"[;,]", str(raw)) if p.strip()}
 
 
+def _transfer_direction(row: dict, qty: float) -> str:
+    """IN or OUT. ``INTERNAL`` is a type, not a direction. ``IN`` is not a substring of it."""
+    explicit = (row.get("direction") or "").strip().upper()
+    token = explicit.split()[0] if explicit else ""
+    if token in {"IN", "CREDIT"}:
+        return "IN"
+    if token in {"OUT", "DEBIT"}:
+        return "OUT"
+    words = set(re.split(r"[^A-Z]+", (row.get("type") or row.get("transferType") or "").upper()))
+    if "OUT" in words and "IN" not in words:
+        return "OUT"
+    if "IN" in words and "OUT" not in words:
+        return "IN"
+    return "OUT" if qty < 0 else "IN"
+
+
+def _transfer_cost(row: dict) -> float | None:
+    """Total cost. Zero is missing. ``amount`` is not cost (a transfer can carry a fee-like amount)."""
+    for key in ("costBasis", "positionAmountInBase", "positionAmount", "value"):
+        if row.get(key) in (None, ""):
+            continue
+        number = _num(row.get(key))
+        if number is None or abs(number) <= 1e-12:
+            continue
+        return abs(number)
+    return None
+
+
+def _transfer_counterparty(row: dict) -> str:
+    for key in ("transferAccount", "transferAccountId", "contraAccount"):
+        value = str(row.get(key) or "").strip()
+        if value:
+            return value
+    other = str(row.get("account") or "").strip()
+    own = str(row.get("accountId") or "").strip()
+    if other and other != own:
+        return other
+    return ""
+
+
 def transfer_to_record(row: dict, inst: Instrument | None = None, symbol: str | None = None
                        ) -> ExecRecord | Skip | None:
-    """Position transfer in/out. Needs quantity (and cost when present); otherwise Skip."""
-    qty = _num(row.get("quantity") or row.get("position") or row.get("shares"))
-    if qty is None or abs(qty) <= 1e-12:
+    """Position transfer in/out. A missing cost is stored and paired later; it does not open at $0."""
+    from app.transfers import xfer_blob
+    qty_raw = _num(row.get("quantity") or row.get("position") or row.get("shares"))
+    if qty_raw is None or abs(qty_raw) <= 1e-12:
         return Skip("transfer incomplete")
-    typ = (row.get("type") or row.get("direction") or row.get("transferType") or "").upper()
-    if "OUT" in typ:
-        side = "SELL"
-    elif "IN" in typ:
-        side = "BUY"
-    else:
-        side = "SELL" if qty < 0 else "BUY"
-    qty = abs(qty)
-    cost = _num(row.get("costBasis") or row.get("positionAmount") or row.get("value"))
-    price = (abs(cost) / qty) if cost is not None and qty else 0.0
+    direction = _transfer_direction(row, qty_raw)
+    qty = abs(qty_raw)
+    cost = _transfer_cost(row)
+    price = (cost / qty) if cost else 0.0
     when_local, time_known = _when_of(row)
+    if when_local is None and row.get("date"):
+        when_local, time_known = parse_ibkr_dt(str(row.get("date")))
     if when_local is None:
         return Skip("transfer incomplete")
     ext = _cash_id(row) or row.get("transactionID") or row.get("tradeID") or row.get("actionID")
@@ -2489,13 +2792,16 @@ def transfer_to_record(row: dict, inst: Instrument | None = None, symbol: str | 
     tz = markets.exchange_tz(exch or (inst.exchange if inst is not None else None), "America/New_York")
     executed = local_to_utc_naive(when_local.date(), when_local.time() if time_known else time(16, 0), tz)
     ccy = (row.get("currency") or (inst.currency if inst is not None else None) or "").upper() or None
+    conid = str(row.get("conid") or row.get("conId") or "").strip()
+    side = "BUY" if direction == "IN" else "SELL"
+    typ = (row.get("type") or row.get("transferType") or "")
     return ExecRecord(
         external_id=str(ext), symbol=sym, underlying=sym, asset_type="STOCK", side=side,
         quantity=round(qty, 8), price=float(price or 0.0), executed_at=executed, fees=0.0,
         time_known=time_known, position_effect="OPEN" if side == "BUY" else "CLOSE", kind="TRANSFER",
         description=(row.get("description") or typ or "Transfer")[:300] or None,
-        raw={"type": typ, "conid": row.get("conid"), "quantity": row.get("quantity"),
-             "costBasis": row.get("costBasis") or row.get("positionAmount")},
+        raw={"xfer": xfer_blob(row, direction, qty, cost, executed, _transfer_counterparty(row), conid, str(ext)),
+             "conid": conid or None},
         trade_date=when_local.date(), currency=ccy,
         instrument_id=inst.id if inst is not None else None, multiplier=1.0,
     )
@@ -2930,7 +3236,8 @@ class IbkrFlexSource(DataSource):
                            default_ccy: str, res: SourceResult, *, final: bool,
                            xml_text: str | None = None, window: tuple[date, date] | None = None,
                            xml_gzip: bytes | None = None, xml_nbytes: int | None = None,
-                           store_json: bool = True, commit_each: bool = False):
+                           store_json: bool = True, commit_each: bool = False,
+                           defer_build: bool = False):
         from app.adjustments import detect_and_apply, record_payload, record_payload_gzipped
         from app.balance import save_ibkr_summary
         from app.services import IngestStats
@@ -2956,6 +3263,7 @@ class IbkrFlexSource(DataSource):
             if acct.id not in touched:
                 touched.append(acct.id)
             observe_conid_rows(db, parsed.trades, prefer=False)
+            observe_conid_rows(db, parsed.corporate, prefer=False)
             observe_conid_rows(db, parsed.positions, prefer=True)
             recs, sk, det = self.convert(db, parsed.trades, acct.id)
             xfer_recs, xfer_sk, xfer_det, xfer_attn = self._convert_transfers(db, parsed.transfers, acct.id)
@@ -2971,6 +3279,7 @@ class IbkrFlexSource(DataSource):
             sk.update(eae_sk)
             events, ca_recs = corporate_events(parsed.corporate)
             _drop_stale_merger_legs(db, acct.id, parsed.corporate, ca_recs, events)
+            self._attach_ca_instruments(db, ca_recs)
             recs.extend(ca_recs)
             self._price_conversions(db, acct.id, recs, events)
             recs.sort(key=lambda r: (r.executed_at, r.external_id))
@@ -2980,6 +3289,13 @@ class IbkrFlexSource(DataSource):
                 "equity": parsed.equity, "equity_rows": parsed.equity_rows,
                 "cash_report": parsed.cash_report, "transfers": parsed.transfers,
                 "option_eae": parsed.option_eae,
+                "change_nav": parsed.change_nav, "funds": parsed.funds,
+                "interest_accruals": parsed.interest_accruals,
+                "dividend_accruals": parsed.dividend_accruals,
+                "performance": parsed.performance, "nav": parsed.nav,
+                "has_positions": parsed.has_positions,
+                "from_date": parsed.from_date, "to_date": parsed.to_date,
+                "currency": parsed.currency,
             }
             if store_json:
                 record_payload(db, acct.id, SOURCE_KEY, payload, run_id=ctx.run_id,
@@ -3022,9 +3338,15 @@ class IbkrFlexSource(DataSource):
             for aid in apply_conid_symbols(db):
                 if aid not in touched:
                     touched.append(aid)
+            from app.flex_facts import latest_position_map, store_parsed
+            store_parsed(db, acct.id, parsed)
             by_conid = {i.conid: i for i in db.scalars(select(Instrument).where(
                 Instrument.source_key == SOURCE_KEY, Instrument.conid.is_not(None))) if i.conid}
-            pos = position_map(parsed.positions, by_conid)
+            if final:
+                latest_pos = latest_position_map(db, acct.id)
+                pos = latest_pos if latest_pos is not None else position_map(parsed.positions, by_conid)
+            else:
+                pos = None
             if xfer_attn:
                 from app.adjustments import upsert as _upsert
                 for item in xfer_attn:
@@ -3049,7 +3371,13 @@ class IbkrFlexSource(DataSource):
             self._save_equity_history(db, acct.id, parsed.equity_rows)
             if commit_each:
                 db.commit()
-        if touched:
+        if touched and not defer_build:
+            from app.transfers import pair_transfers
+            for aid in pair_transfers(db, touched):
+                if aid not in touched:
+                    touched.append(aid)
+            if final:
+                self._refresh_qty_flags(db, touched)
             rebuild_trades(db, touched)
             if final:
                 for aid in touched:
@@ -3307,6 +3635,26 @@ class IbkrFlexSource(DataSource):
                            fees=round(fee_o, 6), position_effect="OPEN")
         return [close_rec, open_rec]
 
+    def _attach_ca_instruments(self, db: Session, recs: list[ExecRecord]) -> None:
+        """Point each corporate execution at the instrument for its own conid."""
+        for rec in recs:
+            raw = rec.raw if isinstance(rec.raw, dict) else {}
+            conid = str(raw.get("conid") or "").strip()
+            if not conid or rec.instrument_id:
+                continue
+            inst = symbolmap.upsert_ibkr(
+                db, broker_symbol=conid, isin=None, name=None, currency=rec.currency,
+                exchange=None, display_symbol=rec.symbol, conid=conid)
+            rec.instrument_id = inst.id
+
+    def _refresh_qty_flags(self, db: Session, account_ids: list[int]) -> None:
+        """Re-check quantities after transfer pairing removed rows. Do not extend the user message."""
+        from app.adjustments import detect_and_apply
+        from app.flex_facts import latest_position_map
+        for aid in account_ids:
+            detect_and_apply(db, aid, fetch=lambda *_a, **_k: [], positions=latest_position_map(db, aid),
+                             broker_events=[])
+
     def _convert_transfers(self, db: Session, rows: list[dict], account_id: int
                            ) -> tuple[list[ExecRecord], Counter, dict, list[dict]]:
         skipped: Counter = Counter()
@@ -3314,6 +3662,10 @@ class IbkrFlexSource(DataSource):
         recs: list[ExecRecord] = []
         attn: list[dict] = []
         cache: dict[str, Instrument] = {}
+        from app.models import CorporateAdjustment
+        voided = set(db.scalars(select(CorporateAdjustment.external_key).where(
+            CorporateAdjustment.account_id == account_id,
+            CorporateAdjustment.external_key.like("xfer-void:%"))))
         for row in rows:
             inst = self._instrument_for(db, row, cache)
             r = transfer_to_record(row, inst, inst.symbol if inst is not None else None)
@@ -3332,6 +3684,9 @@ class IbkrFlexSource(DataSource):
                         "symbol": sym,
                         "note": f"{sym}: IBKR transfer has no quantity/cost; not imported.",
                     })
+                continue
+            marker = f"xfer-void:{(r.external_id or '')[:180]}"
+            if marker in voided:
                 continue
             recs.append(r)
         return recs, skipped, detail, attn
@@ -3652,6 +4007,17 @@ def parsed_from_payload(data: dict) -> ParsedFlex:
     p.cash_report = list(data.get("cash_report") or [])
     p.transfers = list(data.get("transfers") or [])
     p.option_eae = list(data.get("option_eae") or [])
+    p.change_nav = list(data.get("change_nav") or [])
+    p.funds = list(data.get("funds") or [])
+    p.interest_accruals = list(data.get("interest_accruals") or [])
+    p.dividend_accruals = list(data.get("dividend_accruals") or [])
+    p.performance = list(data.get("performance") or [])
+    p.nav = list(data.get("nav") or [])
+    p.has_positions = bool(data.get("has_positions"))
+    p.from_date = data.get("from_date")
+    p.to_date = data.get("to_date")
+    if not p.has_positions and p.positions:
+        p.has_positions = True
     return p
 
 

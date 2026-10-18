@@ -1,0 +1,21 @@
+<div class="acct-modal-body" id="acct-rebuild">
+  <div class="conn-head mb-3">
+    <h3 class="text-white font-medium" id="acct-modal-title">Rebuild {{ account.name }}</h3>
+    <button type="button" class="btn btn-s text-xs" onclick="this.closest('dialog').close()">Close</button>
+  </div>
+  {% if scope == 'all' %}
+  <p class="text-sm text-slate-200 mb-3">This deletes executions, trades, corporate actions, and needs-attention notes for every IBKR account, then imports them again from the statements already stored here. Other brokers stay. A backup is written first. Nothing is downloaded from IBKR.</p>
+  <p class="text-xs text-slate-400 mb-2">Type REBUILD to confirm.</p>
+  {% else %}
+  <p class="text-sm text-slate-200 mb-3">This deletes executions, trades, corporate actions, and needs-attention notes for {{ account.name }}, then imports them again from the statements already stored here. Other brokers stay. A backup is written first. Nothing is downloaded from IBKR.</p>
+  <p class="text-xs text-slate-400 mb-2">Type {{ account.name }} or REBUILD to confirm.</p>
+  {% endif %}
+  <form method="post" action="/settings/brokers/ibkr/rebuild" class="space-y-2">
+    <input type="hidden" name="account_id" value="{{ account.id }}">
+    <input type="hidden" name="scope" value="{{ scope }}">
+    <label class="set-field">Confirmation
+      <input name="confirm" class="inp" autocomplete="off" aria-label="Type the confirmation to rebuild">
+    </label>
+    <button class="btn btn-s text-xs">Rebuild</button>
+  </form>
+</div>

@@ -567,7 +567,41 @@ def series(db: Session, account_id: int | None, ccy: str, start: date | None = N
     out["gap_days"], out["gap_symbols"] = gap_days, sorted(gap_syms)
     out["computed_at"] = max(p.computed_at for p in pts if p.computed_at) if any(p.computed_at for p in pts) else None
     out["check"] = check(db, list(by_acct), ccy, latest["balance"])
+    _overlay_ibkr_nav(db, account_id, out)
     return out
+
+
+def _overlay_ibkr_nav(db: Session, account_id: int | None, out: dict) -> None:
+    """Replace the curve with stored IBKR NAV inside the dates IBKR reported. One account only.
+
+    The stored BalancePoint rows, latest, total return, and the broker check stay as the journal computed them.
+    """
+    if not account_id or not out.get("labels"):
+        return
+    acct = db.get(Account, account_id)
+    if acct is None or acct.source_key != "ibkr_flex":
+        return
+    from app.models import IbkrFlexFact
+    rows = list(db.scalars(select(IbkrFlexFact).where(
+        IbkrFlexFact.account_id == account_id, IbkrFlexFact.section == "nav",
+        IbkrFlexFact.symbol == "", IbkrFlexFact.conid == "", IbkrFlexFact.line_key == "",
+        IbkrFlexFact.amount.is_not(None)).order_by(IbkrFlexFact.day)))
+    if not rows:
+        return
+    by_day = {row.day: float(row.amount) for row in rows}
+    nav_days = sorted(by_day)
+    first, last = nav_days[0], nav_days[-1]
+    balance = list(out["balance"])
+    index = 0
+    last_nav = None
+    for i, label in enumerate(out["labels"]):
+        day = date.fromisoformat(label)
+        while index < len(nav_days) and nav_days[index] <= day:
+            last_nav = by_day[nav_days[index]]
+            index += 1
+        if first <= day <= last and last_nav is not None:
+            balance[i] = round(last_nav, 2)
+    out["balance"] = balance
 
 
 def check(db: Session, account_ids: list[int], ccy: str, journal_balance: float) -> dict | None:

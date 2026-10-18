@@ -177,11 +177,15 @@ def load_panel(request, db: Session, key: str) -> dict | None:
     row = _row_for(db, account, ibkr, t212, snap, sources)
     attention = [a for a in attention_view(db) if a.account_id == account.id]
     runs, payloads = _runs_for(db, account.id)
+    statement = None
+    if bucket == "ibkr":
+        from app.flex_facts import account_statement
+        statement = account_statement(db, account.id)
     return {
         "kind": "account", "key": str(account.id), "bucket": bucket, "account": account, "row": row,
         "ibkr": ibkr, "t212": t212, "snaptrade": snap, "sources": sources,
         "runs": runs, "payloads": payloads, "attention": attention, "accounts": [account],
-        "sync_kind": _sync_kind(db, bucket, account), "s": get_settings(),
+        "sync_kind": _sync_kind(db, bucket, account), "s": get_settings(), "statement": statement,
         "connected": bool(ibkr.get("connected")) if bucket == "ibkr" else bool(t212.get("connected")) if bucket == "t212" else None,
     }
 

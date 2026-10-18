@@ -516,7 +516,10 @@ def test_multi_account_creates_maps_and_dedupes(db, enc, monkeypatch):
     assert trades[by["U2222222"].id, "9001"] == "SAP"
     assert trades[by["U3333333"].id, "9001"] == "MSFT"
     ghost = [e for e in db.scalars(select(Execution)) if e.symbol == "GHOST"]
-    assert len(ghost) == 1 and ghost[0].kind == "TRANSFER" and ghost[0].quantity == pytest.approx(1)
+    assert ghost == []
+    ghost_notes = list(db.scalars(select(CorporateAdjustment).where(
+        CorporateAdjustment.symbol == "GHOST", CorporateAdjustment.status == "needs_attention")))
+    assert ghost_notes and "cost" in (ghost_notes[0].note or "").lower()
     assert db.query(Execution).filter(Execution.account_id == by["U1111111"].id,
                                       Execution.kind == "SPLIT", Execution.symbol == "IBM").count() == 1
 
@@ -533,6 +536,7 @@ def test_multi_account_creates_maps_and_dedupes(db, enc, monkeypatch):
     flags = list(db.scalars(select(CorporateAdjustment).where(
         CorporateAdjustment.account_id == by["U1111111"].id, CorporateAdjustment.status == "needs_attention")))
     assert any(a.symbol == "ORCL" for a in flags)
+    assert any(a.symbol == "GHOST" and "cost" in (a.note or "").lower() for a in flags)
     ren = db.scalar(select(CorporateAdjustment).where(
         CorporateAdjustment.account_id == by["U2222222"].id, CorporateAdjustment.kind == "RENAME"))
     assert ren is not None and ren.symbol == "FB" and ren.new_symbol == "META"

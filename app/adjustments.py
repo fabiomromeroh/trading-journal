@@ -12,7 +12,7 @@ import gzip
 import json
 import os
 import re
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from types import SimpleNamespace
 
 from sqlalchemy import delete, select
@@ -226,6 +226,156 @@ def _check_reason(row) -> str:
     return key or note[:80]
 
 
+def _ratio_close(left, right) -> bool:
+    if left is None and right is None:
+        return True
+    if left is None or right is None:
+        return False
+    a, b = float(left), float(right)
+    if abs(a - b) <= 1e-6:
+        return True
+    return abs(a - b) / max(abs(a), abs(b), 1e-12) <= 1e-6
+
+
+def dedupe_same_action(db: Session, account_id: int) -> int:
+    """One applied split/rename/merger per action. A second key for the same day and ratio is dropped.
+
+    Manual rows stay. The SPLIT execution is not deleted; only the extra adjustment row is.
+    """
+    rows = list(db.scalars(select(CorporateAdjustment).where(
+        CorporateAdjustment.account_id == account_id,
+        CorporateAdjustment.status == "applied",
+        CorporateAdjustment.kind.in_(("SPLIT", "RENAME", "MERGER"))).order_by(CorporateAdjustment.id)))
+    buckets: dict[tuple, list] = {}
+    for row in rows:
+        if (row.source or "") == "manual":
+            continue
+        day = row.effective_on.date().isoformat() if row.effective_on else ""
+        key = (row.kind, (row.symbol or "").upper(), (row.new_symbol or "").upper(), day)
+        buckets.setdefault(key, []).append(row)
+    removed = 0
+    for group in buckets.values():
+        clusters: list[list] = []
+        for row in group:
+            placed = False
+            for cluster in clusters:
+                if _ratio_close(cluster[0].ratio, row.ratio):
+                    cluster.append(row)
+                    placed = True
+                    break
+            if not placed:
+                clusters.append([row])
+        for cluster in clusters:
+            if len(cluster) < 2:
+                continue
+            cluster.sort(key=lambda row: (0 if (row.source or "") == "broker" else 1, row.id))
+            for row in cluster[1:]:
+                db.delete(row)
+                removed += 1
+    removed += _dedupe_split_executions(db, account_id)
+    if removed:
+        db.flush()
+    return removed
+
+
+def _dedupe_split_executions(db: Session, account_id: int) -> int:
+    """One SPLIT execution per symbol, day, and ratio. A second key for the same action must not apply twice."""
+    from app.models import TradeFill
+    rows = [row for row in db.scalars(select(Execution).where(
+        Execution.account_id == account_id, Execution.kind == "SPLIT",
+        Execution.position_effect == "RATIO")) if row.quantity]
+    buckets: dict[tuple, list] = {}
+    for row in rows:
+        day = row.executed_at.date().isoformat() if row.executed_at else ""
+        buckets.setdefault(((row.symbol or "").upper(), day), []).append(row)
+    removed = 0
+    for group in buckets.values():
+        clusters: list[list] = []
+        for row in group:
+            placed = False
+            for cluster in clusters:
+                if _ratio_close(float(cluster[0].quantity), float(row.quantity)):
+                    cluster.append(row)
+                    placed = True
+                    break
+            if not placed:
+                clusters.append([row])
+        for cluster in clusters:
+            if len(cluster) < 2:
+                continue
+            cluster.sort(key=lambda row: (0 if (row.source or "") == "ibkr_flex" else 1, row.id or 0))
+            for row in cluster[1:]:
+                db.execute(delete(TradeFill).where(TradeFill.execution_id == row.id))
+                db.delete(row)
+                removed += 1
+    if removed:
+        db.flush()
+    return removed
+
+
+def clear_stale_attention(db: Session, account_id: int) -> int:
+    """Drop IBKR notes that the imported history has already answered. Other brokers are left alone."""
+    from app.models import Account
+    acct = db.get(Account, account_id)
+    if acct is None or acct.source_key != "ibkr_flex":
+        return 0
+    execs = list(db.scalars(select(Execution).where(Execution.account_id == account_id)))
+    years = {str(e.executed_at.year) for e in execs if e.executed_at}
+    days = {e.executed_at.date() for e in execs if e.executed_at}
+    iid_conid: dict[int, str] = {}
+    conids: dict[str, set[str]] = {}
+    for e in execs:
+        con = _exec_conid(e, iid_conid)
+        if con and e.instrument_id and e.instrument_id not in iid_conid:
+            iid_conid[e.instrument_id] = con
+    inst_ids = {e.instrument_id for e in execs if e.instrument_id}
+    if inst_ids:
+        for inst in db.scalars(select(Instrument).where(Instrument.id.in_(inst_ids))):
+            if inst.conid:
+                iid_conid[inst.id] = str(inst.conid)
+                conids.setdefault((inst.symbol or "").upper(), set()).add(str(inst.conid))
+    for e in execs:
+        con = _exec_conid(e, iid_conid)
+        sym = (e.symbol or "").upper()
+        if con and sym:
+            conids.setdefault(sym, set()).add(con)
+    rows = list(db.scalars(select(CorporateAdjustment).where(
+        CorporateAdjustment.account_id == account_id,
+        CorporateAdjustment.kind == "CHECK",
+        CorporateAdjustment.status == "needs_attention")))
+    removed = 0
+    gap_key = re.compile(r"attn:gap:(\d{4}-\d{2}-\d{2}):(\d{4}-\d{2}-\d{2})")
+    ambiguous = re.compile(r"rename between ([A-Z0-9.]+) and ([A-Z0-9.]+) is ambiguous")
+    for row in rows:
+        note = row.note or ""
+        low = note.lower()
+        key = row.external_key or ""
+        drop = False
+        if "1003" in low or "no statement" in low or "had no statement" in low:
+            mentioned = re.findall(r"20\d\d", note)
+            # A year with no IBKR fill is still a real gap. Drop the note only when every year it
+            # names already has a fill.
+            if mentioned and all(year in years for year in mentioned):
+                drop = True
+        found = gap_key.search(key)
+        if found:
+            start = date.fromisoformat(found.group(1))
+            end = date.fromisoformat(found.group(2))
+            if any(start <= day <= end for day in days):
+                drop = True
+        pair = ambiguous.search(note)
+        if pair:
+            left, right = conids.get(pair.group(1), set()), conids.get(pair.group(2), set())
+            if left and right and left.isdisjoint(right):
+                drop = True
+        if drop:
+            db.delete(row)
+            removed += 1
+    if removed:
+        db.flush()
+    return removed
+
+
 def dedupe_checks(db: Session, account_id: int) -> int:
     """One CHECK row per account + symbol + reason. The earliest row is kept."""
     rows = list(db.scalars(select(CorporateAdjustment).where(
@@ -270,10 +420,79 @@ def _as_view(e, symbol: str):
         raw=getattr(e, "raw", None))
 
 
+def _raw_dict(raw) -> dict:
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw:
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            return {}
+        return data if isinstance(data, dict) else {}
+    return {}
+
+
+def _exec_conid(e, iid_conid: dict[int, str]) -> str:
+    raw = _raw_dict(getattr(e, "raw", None))
+    con = str(raw.get("conid") or raw.get("conId") or "").strip()
+    if not con and isinstance(raw.get("xfer"), dict):
+        con = str(raw["xfer"].get("conid") or "").strip()
+    if not con and getattr(e, "instrument_id", None):
+        con = iid_conid.get(e.instrument_id) or ""
+    return con
+
+
+def _ibkr_groups(execs) -> tuple[dict[str, list], dict[str, set[str]]]:
+    """One quantity bucket per conid. Aliases do not merge AMZ with AMZN or INL with INTC."""
+    iid_conid: dict[int, str] = {}
+    latest: dict[str, tuple] = {}
+    parsed: list[tuple] = []
+    for e in execs:
+        if not _is_stock(e) or (getattr(e, "kind", None) or "") == "VOID":
+            continue
+        con = _exec_conid(e, iid_conid)
+        if con and getattr(e, "instrument_id", None) and e.instrument_id not in iid_conid:
+            iid_conid[e.instrument_id] = con
+        parsed.append((e, con))
+    # A second pass picks up conids learned from a sibling row on the same instrument.
+    rows: list[tuple] = []
+    for e, con in parsed:
+        if not con:
+            con = _exec_conid(e, iid_conid)
+        sym = (e.symbol or "").upper()
+        when = getattr(e, "executed_at", None) or datetime.min
+        if con:
+            prev = latest.get(con)
+            if prev is None or when >= prev[0]:
+                latest[con] = (when, sym)
+        rows.append((e, con, sym))
+    display_counts: dict[str, set[str]] = {}
+    for _e, con, _sym in rows:
+        if not con:
+            continue
+        shown = latest.get(con, (None, _sym))[1] or _sym
+        display_counts.setdefault(shown, set()).add(con)
+    groups: dict[str, list] = {}
+    members: dict[str, set[str]] = {}
+    for e, con, sym in rows:
+        if con:
+            shown = latest.get(con, (None, sym))[1] or sym
+            key = f"{shown}#{con}" if len(display_counts.get(shown) or ()) > 1 else shown
+        else:
+            key = sym
+        if not key:
+            continue
+        groups.setdefault(key, []).append(_as_view(e, key.split("#", 1)[0]))
+        members.setdefault(key, set()).add(sym)
+    return groups, members
+
+
 def _canonical_groups(execs, aliases) -> tuple[dict[str, list], dict[str, set[str]]]:
     from collections import Counter, defaultdict
 
     from app.symbols import canonical_symbol
+    if any((getattr(e, "source", None) or "") == "ibkr_flex" for e in execs):
+        return _ibkr_groups(execs)
     iid_counts: dict[int, Counter] = defaultdict(Counter)
     for e in execs:
         if not _is_stock(e) or not e.instrument_id:
@@ -625,9 +844,11 @@ def detect_and_apply(db: Session, account_id: int, *, fetch=None, positions: dic
     lines.extend(materialize(db, account_id))
     from app.symbols import canonical_symbol, load_aliases
     aliases = load_aliases(db)
-    positions = _remap_positions(positions, aliases)
     execs = list(db.scalars(select(Execution).where(Execution.account_id == account_id)))
-    groups, members = _canonical_groups(execs, aliases)
+    ibkr = any((getattr(e, "source", None) or "") == "ibkr_flex" for e in execs)
+    if not ibkr:
+        positions = _remap_positions(positions, aliases)
+    groups, members = _canonical_groups(execs, {} if ibkr else aliases)
     wanted = ({canonical_symbol(s, aliases).upper() for s in symbols} if symbols is not None else None)
     for sym, rows in groups.items():
         if wanted is not None and sym not in wanted:
@@ -675,8 +896,8 @@ def detect_and_apply(db: Session, account_id: int, *, fetch=None, positions: dic
         from app.renames import explain_gap
         execs = list(db.scalars(select(Execution).where(Execution.account_id == account_id)))
         aliases = load_aliases(db)
-        groups, members = _canonical_groups(execs, aliases)
-        bought = _buy_totals(execs, aliases)
+        groups, members = _canonical_groups(execs, {} if ibkr else aliases)
+        bought = _buy_totals(execs, {} if ibkr else aliases)
         keys = set(groups) | set(positions)
         for sym in keys:
             if not sym or sym == "?" or " " in sym:
@@ -698,6 +919,7 @@ def detect_and_apply(db: Session, account_id: int, *, fetch=None, positions: dic
                     _clear_flag(db, account_id, raw, "qty")
             if _flag(db, account_id, sym, "qty", note):
                 lines.append(note)
+    dedupe_same_action(db, account_id)
     dedupe_checks(db, account_id)
     db.flush()
     return lines

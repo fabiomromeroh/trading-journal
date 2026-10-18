@@ -69,6 +69,12 @@
         </div>
       </details>
       {% endif %}
+      {% if panel.statement %}
+      {% if panel.statement.cash_line %}<p class="text-xs text-slate-300 mt-1">{{ panel.statement.cash_line }}</p>{% endif %}
+      {% if panel.statement.nav_line %}<p class="text-xs text-slate-300 mt-1">{{ panel.statement.nav_line }}</p>{% endif %}
+      {% if panel.statement.recon_line %}<p class="text-xs text-slate-300 mt-1">{{ panel.statement.recon_line }}</p>{% endif %}
+      {% if panel.statement.hint %}<p class="text-xs text-slate-500 mt-1">{{ panel.statement.hint }}</p>{% endif %}
+      {% endif %}
     {% elif panel.bucket == 't212' %}
       {% set last = panel.t212.last %}
       <p class="text-sm text-slate-300">{% if panel.t212.connected %}Connected · key {{ panel.t212.masked }}{% if panel.t212.practice %} · practice{% endif %}{% else %}Not connected. Edit connection to add the API key.{% endif %}</p>
@@ -117,6 +123,10 @@
     <form method="post" action="/settings/brokers/ibkr/reprocess" class="mt-2" onsubmit="return confirm('Re-read stored IBKR JSON/XML (no call to Interactive Brokers). Existing fills stay; duplicates are skipped.')">
       <button class="btn btn-s text-xs">Reprocess stored history</button>
     </form>
+    <div class="acct-actions mt-2">
+      <button type="button" class="btn btn-s text-xs" hx-get="/settings/accounts/{{ a.id }}/ibkr-rebuild?scope=account" hx-target="#acct-modal" hx-swap="innerHTML">Rebuild this account</button>
+      <button type="button" class="btn btn-s text-xs" hx-get="/settings/accounts/{{ a.id }}/ibkr-rebuild?scope=all" hx-target="#acct-modal" hx-swap="innerHTML">Rebuild all IBKR accounts</button>
+    </div>
     {% elif panel.sync_kind == 't212' %}
     <div class="acct-actions">
       {% if panel.t212.connected %}

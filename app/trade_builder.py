@@ -43,6 +43,7 @@ class BuilderExec:
     kind: str = "TRADE"
     time_known: bool = True
     seq: int = 0
+    group_key: str | None = None  # IBKR conid identity; other brokers leave this empty
 
 
 @dataclass
@@ -172,7 +173,7 @@ def build_trades(executions: list[BuilderExec],
     is clamped and the excess is flagged as an orphan instead of a second trade."""
     groups: dict[tuple[int, str], list[BuilderExec]] = defaultdict(list)
     for e in executions:
-        groups[(e.account_id, e.symbol)].append(e)
+        groups[(e.account_id, e.group_key or e.symbol)].append(e)
     trades: list[BuiltTrade] = []
     orphans: list[Orphan] = []
     for (_acct, _sym), execs in sorted(groups.items(), key=lambda kv: (kv[0][0], kv[0][1])):

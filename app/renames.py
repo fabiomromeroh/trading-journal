@@ -273,8 +273,15 @@ def detect_pairs(db, execs) -> tuple[list[RenamePair], list[AmbiguousRename]]:
 
     groups: dict[tuple[str, str], set[str]] = defaultdict(set)
     symbol_isins: dict[str, set[str]] = defaultdict(set)
+    symbol_conids: dict[str, set[str]] = defaultdict(set)
     hints: set[tuple[str, str]] = set()
     fill_symbols: set[str] = set()
+
+    def note_conid(sym: str | None, conid) -> None:
+        token = str(conid or "").strip()
+        ok = _ok(sym)
+        if ok and token:
+            symbol_conids[ok].add(token)
 
     def add_hint(inst) -> None:
         old = _ok(getattr(inst, "symbol", None))
@@ -288,6 +295,8 @@ def detect_pairs(db, execs) -> tuple[list[RenamePair], list[AmbiguousRename]]:
     for inst in instruments.values():
         add_hint(inst)
         names = tickers_of(inst)
+        for name in names:
+            note_conid(name, getattr(inst, "conid", None))
         if getattr(inst, "isin", None) and _valid_id("isin", inst.isin):
             groups[("isin", inst.isin.upper())] |= names
             for s in names:
@@ -306,6 +315,17 @@ def detect_pairs(db, execs) -> tuple[list[RenamePair], list[AmbiguousRename]]:
             fill_symbols.add(sym)
         inst = instruments.get(getattr(e, "instrument_id", None))
         names = {sym}
+        raw = getattr(e, "raw", None)
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw or "{}")
+            except ValueError:
+                raw = {}
+        if isinstance(raw, dict):
+            note_conid(sym, raw.get("conid") or raw.get("conId"))
+            xfer = raw.get("xfer")
+            if isinstance(xfer, dict):
+                note_conid(sym, xfer.get("conid"))
         if inst is not None:
             names |= tickers_of(inst)
             if getattr(inst, "isin", None) and _valid_id("isin", inst.isin):
@@ -334,6 +354,10 @@ def detect_pairs(db, execs) -> tuple[list[RenamePair], list[AmbiguousRename]]:
         if len(names) < 2:
             continue
         via = f"{label.get(kind, kind)} {value}" if kind != "instrument" else "broker instrument"
+        conid_sets = [symbol_conids.get(s) or set() for s in names]
+        if all(conid_sets) and all(conid_sets[i].isdisjoint(conid_sets[j])
+                                   for i in range(len(conid_sets)) for j in range(i + 1, len(conid_sets))):
+            continue
         if len(names) > 2:
             shown = ", ".join(sorted(names))
             for s in sorted(names):
@@ -342,6 +366,9 @@ def detect_pairs(db, execs) -> tuple[list[RenamePair], list[AmbiguousRename]]:
                     s, f"{s}: more than one new ticker ({shown})."))
             continue
         a, b = sorted(names)
+        left, right = symbol_conids.get(a) or set(), symbol_conids.get(b) or set()
+        if left and right and left.isdisjoint(right):
+            continue
         way = _direction(a, b, aliases, hints)
         if way is None:
             blocked.update((a, b))

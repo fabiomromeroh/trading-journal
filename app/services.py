@@ -539,15 +539,29 @@ def rebuild_trades(db: Session, account_ids: list[int] | None = None) -> int:
         if acct is None:
             continue
         execs = list(db.scalars(select(Execution).where(Execution.account_id == acct_id).options(defer(Execution.raw))))
+        execs = [e for e in execs if (e.kind or "") != "VOID"]
         by_id = {e.id: e for e in execs}
         inst_ids = {e.instrument_id for e in execs if e.instrument_id}
         instruments = {i.id: i for i in db.scalars(select(Instrument).where(Instrument.id.in_(inst_ids or [-1])))}
         canon = group_symbols(execs, instruments, aliases)
-        bexecs = [BuilderExec(
-            id=e.id, account_id=e.account_id, symbol=canon[e.id], side=e.side, quantity=e.quantity,
-            price=e.price, executed_at=e.executed_at, fees=e.fees or 0.0, multiplier=e.multiplier or 1.0,
-            position_effect=e.position_effect, kind=e.kind, time_known=e.time_known, seq=e.seq or 0,
-        ) for e in execs]
+        grouped: dict[int, str | None] = {}
+        bexecs = []
+        for e in execs:
+            inst = instruments.get(e.instrument_id) if e.instrument_id else None
+            symbol = canon[e.id]
+            group_key = None
+            stock = (e.asset_type or "") != "OPTION" and " " not in (e.symbol or "")
+            if ((acct.source_key or "") == "ibkr_flex" and stock and inst is not None
+                    and inst.source_key == "ibkr_flex" and inst.conid):
+                group_key = f"conid:{inst.conid}"
+                symbol = (inst.symbol or e.symbol or "").upper()
+            grouped[e.id] = group_key
+            bexecs.append(BuilderExec(
+                id=e.id, account_id=e.account_id, symbol=symbol, side=e.side, quantity=e.quantity,
+                price=e.price, executed_at=e.executed_at, fees=e.fees or 0.0, multiplier=e.multiplier or 1.0,
+                position_effect=e.position_effect, kind=e.kind, time_known=e.time_known, seq=e.seq or 0,
+                group_key=group_key,
+            ))
         expirations = {canon[e.id]: _expiry_close_utc(e.expiration) for e in execs
                        if e.asset_type == "OPTION" and e.expiration}
         result = build_trades(bexecs, expirations=expirations, as_of=utcnow(),
@@ -566,8 +580,9 @@ def rebuild_trades(db: Session, account_ids: list[int] | None = None) -> int:
                 db.add(tr)
             seen.add(bt.key)
             built.append(tr)
-            tr.symbol, tr.underlying, tr.asset_type = (bt.symbol, canonical_ticker(first.underlying, aliases),
-                                                       first.asset_type)
+            und = bt.symbol if grouped.get(first.id) and (first.asset_type or "") != "OPTION" else canonical_ticker(
+                first.underlying, aliases)
+            tr.symbol, tr.underlying, tr.asset_type = (bt.symbol, und, first.asset_type)
             tr.option_type, tr.strike, tr.expiration = first.option_type, first.strike, first.expiration
             tr.multiplier, tr.direction, tr.status = bt.multiplier, bt.direction, bt.status
             tr.opened_at, tr.closed_at, tr.time_known = bt.opened_at, bt.closed_at, bt.time_known
