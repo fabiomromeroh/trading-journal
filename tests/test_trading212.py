@@ -421,7 +421,7 @@ def test_settings_connect_test_disconnect(db, enc, monkeypatch):
     from app.main import create_app
     c = TestClient(create_app())
     assert c.post("/login", data={"password": "test-pass", "next": "/"}, follow_redirects=False).status_code == 303
-    page = c.get("/settings").text
+    page = c.get("/settings/accounts/new").text
     assert "Trading 212" in page and "Connect Trading 212" in page
     assert "Orders - Execute" in page
     r = c.post("/settings/brokers/t212/connect", data={"key": KEY, "secret": SECRET}, follow_redirects=True)
@@ -691,7 +691,8 @@ def test_settings_shows_skip_list_and_rescan(db, enc, monkeypatch):
     from app.main import create_app
     c = TestClient(create_app())
     assert c.post("/login", data={"password": "test-pass", "next": "/"}, follow_redirects=False).status_code == 303
-    page = c.get("/settings").text
+    acct = db.scalar(select(Account).where(Account.source_key == "t212"))
+    page = c.get(f"/settings?account={acct.id}").text
     assert "Re-scan full history" in page
     assert "Skipped rows, by reason and ticker" in page
     assert "TSLA" in page and "cancelled" in page

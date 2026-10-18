@@ -212,3 +212,90 @@
 @media (max-width: 420px) {
   #settings-page .card { padding: .75rem; }
 }
+
+/* Accounts grid: one table on a wide screen, cards plus a select on a phone. */
+.acct-mselect { display: block; margin-bottom: .75rem; }
+.acct-table-wrap { display: none; }
+.acct-cards { display: grid; gap: .5rem; min-width: 0; }
+.acct-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.acct-table th,
+.acct-table td {
+  text-align: left;
+  padding: .45rem .35rem;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  vertical-align: top;
+  font-size: .8rem;
+  border-bottom: 1px solid rgba(30, 41, 59, .85);
+}
+.acct-table th { color: #94a3b8; font-weight: 500; font-size: .7rem; text-transform: uppercase; letter-spacing: .03em; }
+.acct-line { position: relative; }
+.acct-stretch { position: absolute; inset: 0; z-index: 1; }
+.acct-line .acct-actions,
+.acct-card .acct-actions { position: relative; z-index: 2; }
+.acct-line.is-selected,
+.acct-card.is-selected { background: rgba(79, 70, 229, .14); outline: 1px solid #818cf8; }
+.acct-card {
+  border: 1px solid rgba(51, 65, 85, .7);
+  border-radius: .75rem;
+  padding: .65rem;
+  display: flex;
+  flex-direction: column;
+  gap: .4rem;
+  min-width: 0;
+  max-width: 100%;
+}
+.acct-card-main {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .35rem .5rem;
+  align-items: center;
+  text-decoration: none;
+  color: inherit;
+  min-width: 0;
+}
+.acct-detail { margin-top: 1rem; min-width: 0; max-width: 100%; }
+.acct-detail-h {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .35rem .6rem;
+  align-items: center;
+  margin-bottom: .75rem;
+  min-width: 0;
+}
+.acct-section {
+  border: 1px solid rgba(51, 65, 85, .55);
+  border-radius: .75rem;
+  padding: .75rem;
+  margin-bottom: .75rem;
+  min-width: 0;
+  max-width: 100%;
+}
+.acct-long, .acct-pre, .acct-modal, #account-detail, #accounts, #brokers {
+  max-width: 100%;
+  min-width: 0;
+}
+.acct-pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: .35rem 0 0;
+  font-size: .75rem;
+}
+#accounts, #account-detail, #brokers { overflow-x: clip; }
+dialog.acct-modal {
+  border: 1px solid rgba(71, 85, 105, .9);
+  background: #0f172a;
+  color: #e2e8f0;
+  border-radius: .9rem;
+  padding: 1rem;
+  width: min(42rem, calc(100vw - 1.25rem));
+  max-width: calc(100vw - 1.25rem);
+  max-height: calc(100vh - 1.5rem);
+  overflow: auto;
+}
+dialog.acct-modal::backdrop { background: rgba(2, 6, 23, .72); }
+@media (min-width: 768px) {
+  .acct-mselect { display: none; }
+  .acct-cards { display: none; }
+  .acct-table-wrap { display: block; overflow-x: clip; max-width: 100%; }
+}

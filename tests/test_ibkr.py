@@ -300,10 +300,10 @@ def test_settings_card_saves_without_echoing_token(db, enc, monkeypatch):
     from app.main import create_app
     c = TestClient(create_app())
     assert c.post("/login", data={"password": "test-pass", "next": "/"}, follow_redirects=False).status_code == 303
-    page = c.get("/settings").text
-    assert "Interactive Brokers" in page
-    assert "Flex token" in page and "Query ID" in page
-    assert "coming soon" not in page.lower() or "ibkr" in page.lower()
+    setup = c.get("/settings/accounts/new").text
+    assert "Interactive Brokers" in setup
+    assert "Flex token" in setup and "Query ID" in setup
+    assert "coming soon" not in setup.lower() or "ibkr" in setup.lower()
     r = c.post("/settings/brokers/ibkr/connect",
                data={"token": TOKEN, "query_id": QUERY_ID, "currency": "USD"}, follow_redirects=True)
     assert r.status_code == 200 and "Interactive Brokers connected" in r.text
@@ -715,14 +715,14 @@ def test_card_shows_progress_and_how_to(db, enc, monkeypatch):
     _no_fx(monkeypatch)
     monkeypatch.setattr(ibkr, "_TRANSPORT", FakeFlex(statement=load("multi.xml")).transport())
     c = _client()
-    page = c.get("/settings").text
-    assert "Selecting all fields" in page or "all fields" in page
-    assert "several accounts" in page and "XML" in page
-    assert "yyyyMMdd" in page and "HHmmss" in page
-    assert "history start" in page.lower()
-    assert "History start" in page and 'name="history_start"' in page
-    assert 'name="files"' in page and "multiple" in page
-    assert "processed one by one in the background" in page
+    setup = c.get("/settings/accounts/new").text
+    assert "Selecting all fields" in setup or "all fields" in setup
+    assert "several accounts" in setup and "XML" in setup
+    assert "yyyyMMdd" in setup and "HHmmss" in setup
+    assert "history start" in setup.lower()
+    assert "History start" in setup and 'name="history_start"' in setup
+    assert 'name="files"' in setup and "multiple" in setup
+    assert "processed one by one in the background" in setup
     r = c.post("/settings/brokers/ibkr/connect",
                data={"token": TOKEN, "query_id": QUERY_ID, "currency": "USD"}, follow_redirects=True)
     assert "Interactive Brokers connected" in r.text and TOKEN not in r.text
@@ -1275,7 +1275,7 @@ def test_equity_and_cash_report_balance_check(db, enc, monkeypatch):
     snap = json.loads(raw)
     assert snap["total"] == 100 and snap["cash"] == pytest.approx(42)
     c = _client()
-    page = c.get("/settings").text
+    page = c.get(f"/settings?account={acct.id}").text
     assert "journal NAV" in page and "IBKR" in page
 
 
@@ -1355,7 +1355,7 @@ def test_reprocess_is_idempotent(db, enc, monkeypatch):
 
 def test_upload_form_on_card(db, enc, monkeypatch):
     c = _client()
-    page = c.get("/settings").text
+    page = c.get("/settings/accounts/new").text
     assert "Upload IBKR Activity Statement (XML)" in page
     assert 'enctype="multipart/form-data"' in page
     assert "/settings/brokers/ibkr/upload" in page

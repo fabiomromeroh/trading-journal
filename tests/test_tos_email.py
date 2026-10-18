@@ -115,7 +115,7 @@ def test_api_auth_idempotency(db, web):  # noqa: F811
     assert anon.post("/api/ingest/tos-email", json=email("<n>", "x"), headers=h).status_code == 401
     assert len(list(db.scalars(select(Trade)))) == 1
     # discarding the email removes its still-unconfirmed fill; re-posting it stays a no-op
-    html = web.get("/settings").text
+    html = web.get("/settings?account=tos-email").text
     assert "Recent emails" in html and f"/settings/tos-email/{stored.id}/discard" in html
     assert web.post(f"/settings/tos-email/{stored.id}/discard", follow_redirects=False).status_code == 303
     db.expire_all()
@@ -126,12 +126,12 @@ def test_api_auth_idempotency(db, web):  # noqa: F811
 
 
 def test_settings_section_renders(db, web):  # noqa: F811
-    html = web.get("/settings").text
+    html = web.get("/settings?account=tos-email").text
     assert "thinkorswim email sync" in html and "Create ingest token" in html and "Working orders filling" in html
     web.post("/settings/tos-email/token")
     db.expire_all()
     token = email_sync.get_token(db)
-    html = web.get("/settings").text
+    html = web.get("/settings?account=tos-email").text
     assert "Regenerate token" in html and "Trading Journal/Fills" in html and "Skip the Inbox" in html
     assert "http://testserver/api/ingest/tos-email" in html and html.count(token) == 1     # only in the script
     assert "moveToArchive" in html and "in:inbox" not in html and "No fill emails received yet" in html

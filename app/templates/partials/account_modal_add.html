@@ -1,0 +1,31 @@
+<div class="acct-modal-body">
+  <div class="conn-head mb-3">
+    <h3 class="text-white font-medium" id="acct-modal-title">Add account</h3>
+    <button type="button" class="btn btn-s text-xs" onclick="this.closest('dialog').close()">Close</button>
+  </div>
+  <form method="post" action="/settings/accounts" class="set-grid mb-4">
+    <label class="set-field">Name
+      <input name="name" class="inp" required maxlength="120" aria-label="Account name" autocomplete="off">
+    </label>
+    <label class="set-field">Broker
+      <select name="broker" class="inp" aria-label="Broker">
+        <option value="other">Other / CSV</option>
+        <option value="schwab">Schwab</option>
+        <option value="trading212">Trading 212</option>
+        <option value="ibkr">Interactive Brokers</option>
+      </select>
+    </label>
+    <label class="set-field">Currency
+      <select name="currency" class="inp" aria-label="Currency">{% for c in ['USD','EUR','GBP'] %}<option>{{ c }}</option>{% endfor %}</select>
+    </label>
+    <label class="set-field">Time zone
+      <input name="timezone" value="America/New_York" class="inp" aria-label="Time zone">
+    </label>
+    <label class="set-field">Market
+      <select name="market" class="inp" aria-label="Market">{% for m in ['US','UK','DE','EU'] %}<option>{{ m }}</option>{% endfor %}</select>
+    </label>
+    <div class="set-field"><span class="card-h">Create</span><button class="btn btn-p text-xs">Add account</button></div>
+  </form>
+  <p class="text-xs text-slate-500 mb-3">This creates a journal account and does not call a broker. Connect Schwab, Trading 212, or Interactive Brokers below, or import a CSV. Interactive Brokers is not contacted until you press Save, Test, or Sync.</p>
+  {% include "partials/account_connect_forms.html" %}
+</div>
