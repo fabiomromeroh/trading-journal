@@ -31,6 +31,7 @@ class RequireLogin(BaseHTTPMiddleware):
                     request.session.clear()  # password changed elsewhere: sign this session out
             finally:
                 db.close()
+        keepawake.state.on_request()  # /healthz included: not a visit, but it wakes the daily-window check
         if not path.startswith(PUBLIC_PREFIXES) and path not in PUBLIC_EXACT and not request.session.get("auth"):
             if request.headers.get("HX-Request"):
                 return JSONResponse({"detail": "login required"}, status_code=401,
@@ -74,9 +75,9 @@ def _repair_t212_gbx_fx() -> None:
 async def lifespan(app: FastAPI):
     ka = keepawake.state
     task = None
-    if ka.enabled and ka.url:
+    if ka.should_run:
         task = asyncio.create_task(ka.run())
-        logging.getLogger(__name__).info("keep-awake: %d min after each visit, ping every %d s", ka.minutes, ka.interval)
+        logging.getLogger(__name__).info("keep-awake: %s", ka.startup_summary())
     import threading
     from app import stops
     threading.Thread(target=stops.startup_backfill, name="stops-backfill", daemon=True).start()

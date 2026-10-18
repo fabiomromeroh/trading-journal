@@ -43,13 +43,20 @@ def _alias_ctx(db):
 
 def keepawake_ctx() -> dict:
     from datetime import datetime
-    from zoneinfo import ZoneInfo
     from app.keepawake import state as ka
-    tz = ZoneInfo("Europe/Dublin")
+    tz = ka.tz
     fmt = lambda ts: datetime.fromtimestamp(ts, tz).strftime("%H:%M") if ts else None  # noqa: E731
-    return {"enabled": ka.enabled, "pinging": bool(ka.url), "active": ka.active(), "minutes": ka.minutes,
-            "interval_min": round(ka.interval / 60, 1), "until": fmt(ka.keep_until) if ka.active() else None,
-            "last_ping": fmt(ka.last_ping), "last_status": ka.last_ping_status, "pings": ka.pings,
+    fmt_dt = lambda dt: dt.strftime("%Y-%m-%d %H:%M") if dt else None  # noqa: E731
+    nxt, end = ka.next_bounds()
+    return {"enabled": ka.enabled, "window_enabled": ka.window_enabled, "pinging": bool(ka.url),
+            "active": ka.active(), "window_active": ka.in_window(), "minutes": ka.minutes,
+            "interval_min": round(ka.interval / 60, 1), "window_interval_min": round(ka.window_interval / 60, 1),
+            "window_label": ka.window_label, "tz_name": ka.tz_name,
+            "until": fmt(ka.keep_until) if ka.active() else None,
+            "next_start": fmt_dt(nxt), "next_end": fmt_dt(end),
+            "last_ping": fmt(ka.last_ping), "last_status": ka.last_ping_status,
+            "last_scanner_ping": fmt(ka.last_scanner_ping), "last_scanner_status": ka.last_scanner_status,
+            "scanner_enabled": bool(ka.scanner_url), "pings": ka.pings, "scanner_pings": ka.scanner_pings,
             "up_since": fmt(ka.started)}
 
 
