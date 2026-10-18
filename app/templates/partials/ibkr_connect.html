@@ -34,11 +34,12 @@
   {% endif %}
   <form method="post" action="/settings/brokers/ibkr/upload" enctype="multipart/form-data" class="flex flex-wrap items-end gap-2">
     <label class="text-xs text-slate-400">Upload IBKR Activity Statement (XML)
-      <input type="file" name="file" accept=".xml,application/xml,text/xml" class="inp text-xs mt-1" required>
+      <input type="file" name="files" accept=".xml,application/xml,text/xml" class="inp text-xs mt-1" multiple>
     </label>
     <button class="btn btn-s text-xs">Upload XML</button>
   </form>
-  <p class="text-xs text-slate-500">XML is parsed locally (same mapping and dedupe as Flex sync). 25 MB max. A re-upload of the same statement adds nothing.</p>
+  <p class="text-xs text-slate-500">You can select several XML files; they are processed one by one in the background. Same mapping and dedupe as Flex sync. 100 MB per file, 10 files max. A re-upload of the same statement adds nothing.</p>
+  {% include "partials/ibkr_upload_progress.html" %}
   <form method="post" action="/settings/brokers/ibkr/reprocess" class="flex flex-wrap gap-2"
         onsubmit="return confirm('Re-read stored IBKR JSON/XML (no call to Interactive Brokers). Existing fills stay; duplicates are skipped.')">
     <button class="btn btn-s text-xs">Reprocess stored history</button>

@@ -82,7 +82,8 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=stops.startup_backfill, name="stops-backfill", daemon=True).start()
     threading.Thread(target=_repair_t212_gbx_fx, name="t212-gbx-fx", daemon=True).start()
     def _ibkr_reprocess():
-        from app.sources.ibkr_flex import maybe_reprocess_on_startup
+        from app.sources.ibkr_flex import maybe_reprocess_on_startup, recover_stale_upload_on_startup
+        recover_stale_upload_on_startup()
         maybe_reprocess_on_startup()
     threading.Thread(target=_ibkr_reprocess, name="ibkr-reprocess", daemon=True).start()
     from app import companies

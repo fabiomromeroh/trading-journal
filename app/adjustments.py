@@ -922,6 +922,32 @@ def record_payload(db: Session, account_id: int, source: str, payload, *, run_id
     return row
 
 
+def record_payload_gzipped(db: Session, account_id: int, source: str, body: bytes, *,
+                           nbytes: int, filename: str | None = None,
+                           run_id: int | None = None,
+                           content_type: str = "application/xml") -> SyncPayload | None:
+    """Store an already-gzipped body (streamed file→gzip). ``nbytes`` is the uncompressed size."""
+    if not body:
+        return None
+    stamp = utcnow().strftime("%Y%m%d-%H%M%S")
+    ext = "xml" if "xml" in (content_type or "") else "bin"
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", (filename or f"{source}-{account_id}-{stamp}.{ext}"))[:110]
+    if not safe.lower().endswith(f".{ext}"):
+        safe = f"{safe}.{ext}"[:120]
+    row = SyncPayload(
+        account_id=account_id, sync_run_id=run_id, source=source[:30], filename=safe,
+        content_type=content_type, gzipped=True, nbytes=int(nbytes), body=body,
+    )
+    db.add(row)
+    db.flush()
+    ids = list(db.scalars(select(SyncPayload.id).where(SyncPayload.account_id == account_id)
+                          .order_by(SyncPayload.id.desc())))
+    extra = ids[KEEP_PAYLOADS:]
+    if extra:
+        db.execute(delete(SyncPayload).where(SyncPayload.id.in_(extra)))
+    return row
+
+
 def payload_index(db: Session, limit: int = 20) -> list:
     return list(db.execute(select(
         SyncPayload.id, SyncPayload.account_id, SyncPayload.source, SyncPayload.created_at,

@@ -1,0 +1,29 @@
+{% set upload = upload if upload is defined else ibkr.upload %}
+{% if upload and upload.status %}
+<div id="ibkr-upload-progress"
+     {% if upload.status in ('queued', 'running') %}hx-get="/settings/brokers/ibkr/upload/status" hx-trigger="every 3s" hx-swap="outerHTML"{% endif %}
+     class="text-xs rounded-lg px-3 py-2 {{ 'bg-indigo-500/15 text-indigo-200' if upload.status in ('queued', 'running') else 'bg-emerald-500/15 text-emerald-200' if upload.status == 'done' else 'bg-rose-500/15 text-rose-200' }}">
+  <div class="font-medium">
+    {% if upload.status == 'queued' %}Upload queued
+    {% elif upload.status == 'running' %}Processing upload
+    {% elif upload.status == 'done' %}Upload finished
+    {% else %}Upload failed{% endif %}
+    {% if upload.files %} · {{ upload.files|length }} file(s){% endif %}
+  </div>
+  {% if upload.error %}<div class="mt-1 text-rose-200">{{ upload.error }}</div>{% endif %}
+  {% if upload.files %}
+  <ul class="mt-1 space-y-0.5">
+    {% for f in upload.files %}
+    <li>
+      <span class="text-slate-200">{{ f.name }}</span>
+      {% if f.size %} · {{ (f.size / 1048576) | round(1) }} MB{% endif %}
+      · {% if f.status == 'queued' %}queued
+        {% elif f.status == 'running' %}running
+        {% elif f.status == 'done' %}{{ f.fetched or 0 }} read, {{ f.inserted or 0 }} new{% if f.error %} · {{ f.error }}{% endif %}{% if f.note %} · {{ f.note }}{% endif %}
+        {% else %}{{ f.error or 'error' }}{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</div>
+{% endif %}

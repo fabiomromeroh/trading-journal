@@ -13,16 +13,20 @@ per account. Never invents fills. Token is Fernet-encrypted in app_state
 """
 from __future__ import annotations
 
+import gzip
 import json
 import logging
 import os
 import re
+import shutil
+import tempfile
 import threading
 import time as _time
 import xml.etree.ElementTree as ET
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse, urlunparse
 from zoneinfo import ZoneInfo
 
@@ -73,13 +77,23 @@ SPLIT_NONE = "none"
 _POLL_AGAIN = {"1019", "1001"}    # GetStatement: statement not ready yet (bounded polls only)
 NY = ZoneInfo("America/New_York")
 DEFAULT_HISTORY_START = date(2022, 1, 1)
-MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+MAX_UPLOAD_BYTES = 100 * 1024 * 1024
+MAX_UPLOAD_FILES = 10
+UPLOAD_CHUNK = 1024 * 1024
+RAW_STORE_UNCOMPRESSED = 20 * 1024 * 1024
+RAW_STORE_GZIP_MAX = 8 * 1024 * 1024
+INGEST_BATCH = 500
+UPLOAD_STATE = "ibkr:upload"      # background XML import progress (no secrets)
 REPROCESS_STATE = "ibkr:reprocess"
 REPROCESS_VERSION = "5"
 CONID_SYMBOL_STATE = "ibkr:conid_symbols"  # {conid: {symbol, asof, prefer}}; latest IBKR symbol wins
 COOLDOWN = 15 * 60                # pause all IBKR calls after a 1018 / 429 / 403 answer
 _GATE = {"last": 0.0, "until": 0.0}
 _GATE_LOCK = threading.Lock()
+_UPLOAD_LOCK = threading.Lock()
+_UPLOAD_ACTIVE = False
+# Tests set True to run the worker in-process; False + patched start_upload_worker to assert 303 first.
+UPLOAD_SYNC: bool | None = None
 
 
 def cooldown_left() -> float:
@@ -459,6 +473,81 @@ def parse_history_start(raw: str) -> date:
     if day.year < 1990 or day > _now_ny().date():
         raise ValueError("History start must be between 1990 and today.")
     return day
+
+
+def load_upload(db: Session) -> dict:
+    try:
+        data = json.loads(get_state(db, UPLOAD_STATE) or "{}")
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def public_upload(data: dict | None) -> dict:
+    """Progress for the card: no temp paths, no token, no full account numbers."""
+    raw = data if isinstance(data, dict) else {}
+    files = []
+    for row in raw.get("files") or []:
+        if not isinstance(row, dict):
+            continue
+        files.append({
+            "name": _safe_filename(row.get("name")),
+            "size": int(row.get("size") or 0),
+            "status": row.get("status") or "",
+            "fetched": int(row.get("fetched") or 0),
+            "inserted": int(row.get("inserted") or 0),
+            "error": row.get("error"),
+            "note": row.get("note"),
+        })
+    return {
+        "status": raw.get("status") or "",
+        "files": files,
+        "current": int(raw.get("current") or 0),
+        "started": raw.get("started"),
+        "finished": raw.get("finished"),
+        "error": raw.get("error"),
+        "queued_at": raw.get("queued_at"),
+    }
+
+
+def save_upload(db: Session, data: dict) -> None:
+    set_state(db, UPLOAD_STATE, json.dumps(data, default=str))
+
+
+def recover_stale_upload(db: Session) -> dict:
+    """A 'running'/'queued' row after process death cannot finish. Mark error; caller uploads again."""
+    data = load_upload(db)
+    if (data.get("status") or "") not in {"running", "queued"}:
+        return data
+    data["status"] = "error"
+    data["error"] = "interrupted by restart, upload again"
+    data["finished"] = utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    for row in data.get("files") or []:
+        if isinstance(row, dict) and (row.get("status") or "") in {"queued", "running"}:
+            row["status"] = "error"
+            row["error"] = "interrupted by restart, upload again"
+    save_upload(db, data)
+    db.commit()
+    _cleanup_upload_dir(data.get("dir"))
+    return data
+
+
+def _cleanup_upload_dir(path) -> None:
+    raw = str(path or "").strip()
+    if not raw:
+        return
+    try:
+        p = Path(raw)
+        if p.is_dir() and p.name.startswith("ibkr-up-"):
+            shutil.rmtree(p, ignore_errors=True)
+    except OSError:
+        pass
+
+
+def _upload_inline() -> bool:
+    if UPLOAD_SYNC is not None:
+        return bool(UPLOAD_SYNC)
+    return bool(os.environ.get("PYTEST_CURRENT_TEST"))
 
 
 def load_account_map(db: Session) -> dict:
@@ -1069,6 +1158,262 @@ def parse_statement(xml_text: str) -> ParsedFlex:
     """First FlexStatement (callers that only need one account). Rows are scoped to that statement."""
     stmts = parse_statements(xml_text)
     return stmts[0] if stmts else ParsedFlex()
+
+
+def _xml_parse_error(exc: ET.ParseError) -> FlexError:
+    line = None
+    pos = getattr(exc, "position", None)
+    if isinstance(pos, tuple) and pos:
+        line = pos[0]
+    if line is None:
+        m = re.search(r"line\s+(\d+)", str(exc), re.I)
+        if m:
+            line = int(m.group(1))
+    if line:
+        return FlexError("api", f"IBKR Flex statement was not valid XML (parse error at line {line}).")
+    return FlexError("api", "IBKR Flex statement was not valid XML.")
+
+
+def _reject_unsafe_xml_file(path: Path) -> None:
+    with open(path, "rb") as f:
+        head = f.read(65536)
+    text = head.decode("utf-8", errors="replace")
+    if _UNSAFE_XML.search(text):
+        raise FlexError("api", "IBKR Flex statement contained a DOCTYPE or ENTITY declaration.")
+
+
+def looks_like_flex_bytes(data: bytes | str) -> bool:
+    if isinstance(data, bytes):
+        s = data.decode("utf-8", errors="replace")
+    else:
+        s = data or ""
+    return looks_like_statement(s)
+
+
+_SECTION_ROW = {
+    "Trades": "Trade",
+    "CashTransactions": "CashTransaction",
+    "OpenPositions": "OpenPosition",
+    "CorporateActions": "CorporateAction",
+    "Transfers": "Transfer",
+    "OptionEAE": "OptionEAE",
+    "CashReport": "CashReport",
+}
+_ROW_ATTR = {
+    "Trade": "trades",
+    "CashTransaction": "cash",
+    "OpenPosition": "positions",
+    "CorporateAction": "corporate",
+    "Transfer": "transfers",
+    "OptionEAE": "option_eae",
+}
+_EQUITY_TAGS = {"EquitySummaryByReportDateInBase", "EquitySummaryInBase"}
+_CASH_REPORT_ROWS = {"CashReportCurrency", "CashReport"}
+
+
+def _drop_elem(parent: ET.Element | None, elem: ET.Element) -> None:
+    elem.clear()
+    if parent is None:
+        return
+    try:
+        parent.remove(elem)
+    except ValueError:
+        pass
+
+
+def _take_equity(out: ParsedFlex, row: dict, best: list) -> None:
+    if not row:
+        return
+    day = parse_ibkr_date(row.get("reportDate") or row.get("fromDate") or "") or date.min
+    total = _num(row.get("total") or row.get("totalLong") or row.get("equity"))
+    if total is None:
+        return
+    cash = _num(row.get("cash"))
+    stock = _num(row.get("stock") or row.get("securities"))
+    cand = {"reportDate": day.isoformat() if day != date.min else None, "cash": cash,
+            "invested": stock, "total": total, "currency": (row.get("currency") or "").upper() or None}
+    out.equity_rows.append(cand)
+    if not best or day >= best[0]:
+        best[:] = [day, cand]
+        out.equity = cand
+
+
+def _finish_parsed(out: ParsedFlex, stmt_fields: dict, info: dict) -> ParsedFlex:
+    cash_end = _latest_cash_report(out.cash_report)
+    if cash_end is not None and out.equity is not None and out.equity.get("cash") is None:
+        out.equity["cash"] = cash_end
+    elif cash_end is not None and out.equity is None:
+        out.equity = {"reportDate": None, "cash": cash_end, "invested": None, "total": None, "currency": None}
+    out.currency = _base_currency(stmt_fields, info, out.equity)
+    return out
+
+
+def iter_parsed_statements(path: str | os.PathLike):
+    """Yield one ParsedFlex per FlexStatement using iterparse; row elements are cleared after use."""
+    p = Path(path)
+    _reject_unsafe_xml_file(p)
+    try:
+        yield from _iterparse_statements(p)
+    except ET.ParseError as exc:
+        raise _xml_parse_error(exc) from exc
+
+
+def parse_statements_from_path(path: str | os.PathLike) -> list[ParsedFlex]:
+    """Same rows as parse_statements(text) for a file on disk. Does not load the file as str."""
+    return list(iter_parsed_statements(path))
+
+
+def _iterparse_statements(path: Path):
+    """Streaming parse. Known sections only; extra sections are dropped when they close."""
+    el_stack: list[ET.Element] = []
+    tag_stack: list[str] = []
+    cur: ParsedFlex | None = None
+    stmt_fields: dict = {}
+    info: dict = {}
+    equity_best: list = []
+    section_stack: list[str] = []
+    option_eae_count_at_section = 0
+    cash_report_count_at_section = 0
+
+    def in_section() -> str | None:
+        return section_stack[-1] if section_stack else None
+
+    context = ET.iterparse(os.fspath(path), events=("start", "end"))
+    for event, elem in context:
+        tag = _local(elem.tag)
+        if isinstance(elem.tag, str) and "}" in elem.tag:
+            elem.tag = tag
+        if event == "start":
+            el_stack.append(elem)
+            tag_stack.append(tag)
+            if tag == "FlexStatement":
+                cur = ParsedFlex()
+                stmt_fields = { _local(k): str(v) for k, v in elem.attrib.items() if v is not None and str(v) != "" }
+                cur.account_id = stmt_fields.get("accountId") or None
+                cur.from_date = stmt_fields.get("fromDate")
+                cur.to_date = stmt_fields.get("toDate")
+                info = {}
+                equity_best = []
+                section_stack = []
+            elif cur is not None and tag in _SECTION_ROW:
+                parent = tag_stack[-2] if len(tag_stack) >= 2 else ""
+                if parent == "FlexStatement" or not section_stack:
+                    section_stack.append(tag)
+                    if tag == "OptionEAE":
+                        option_eae_count_at_section = len(cur.option_eae)
+                    if tag == "CashReport":
+                        cash_report_count_at_section = len(cur.cash_report)
+            continue
+
+        # end
+        el_stack.pop()
+        tag_stack.pop()
+        parent = el_stack[-1] if el_stack else None
+        parent_tag = tag_stack[-1] if tag_stack else ""
+
+        if cur is None:
+            _drop_elem(parent, elem)
+            continue
+
+        if tag == "AccountInformation":
+            info = fields_of(elem)
+            if info.get("accountId"):
+                cur.account_id = info.get("accountId")
+            _drop_elem(parent, elem)
+            continue
+
+        if tag == "FlexStatement":
+            yield _finish_parsed(cur, stmt_fields, info)
+            cur = None
+            section_stack = []
+            _drop_elem(parent, elem)
+            continue
+
+        sec = in_section()
+        row_tag = _SECTION_ROW.get(sec or "")
+
+        if sec and tag == sec and parent_tag == "FlexStatement":
+            if tag == "OptionEAE" and len(cur.option_eae) == option_eae_count_at_section:
+                row = fields_of(elem)
+                if row and (row.get("transactionType") or row.get("symbol") or row.get("conid")):
+                    cur.option_eae.append(row)
+            if tag == "CashReport" and len(cur.cash_report) == cash_report_count_at_section:
+                row = fields_of(elem)
+                if row:
+                    cur.cash_report.append(row)
+            if section_stack and section_stack[-1] == tag:
+                section_stack.pop()
+            _drop_elem(parent, elem)
+            continue
+
+        if sec and tag == row_tag:
+            row = fields_of(elem)
+            dest = _ROW_ATTR.get(tag)
+            if row and dest:
+                getattr(cur, dest).append(row)
+            _drop_elem(parent, elem)
+            continue
+
+        if sec == "CashReport" and tag in _CASH_REPORT_ROWS:
+            row = fields_of(elem)
+            if row:
+                cur.cash_report.append(row)
+            _drop_elem(parent, elem)
+            continue
+
+        if parent_tag == "FlexStatement" and tag in _ROW_ATTR:
+            row = fields_of(elem)
+            if row:
+                getattr(cur, _ROW_ATTR[tag]).append(row)
+            _drop_elem(parent, elem)
+            continue
+
+        if tag in _EQUITY_TAGS:
+            _take_equity(cur, fields_of(elem), equity_best)
+            _drop_elem(parent, elem)
+            continue
+
+        if parent_tag == "FlexStatement":
+            _drop_elem(parent, elem)
+
+    if cur is not None:
+        yield _finish_parsed(cur, stmt_fields, info)
+
+
+def maybe_gzip_xml_file(path: str | os.PathLike) -> tuple[bytes | None, int, str | None]:
+    """Stream path → gzip on disk. Skip storing when raw > 20 MB and gzip > 8 MB."""
+    p = Path(path)
+    size = p.stat().st_size
+    fd, tmp = tempfile.mkstemp(prefix="ibkr-gz-")
+    os.close(fd)
+    try:
+        with open(p, "rb") as src, gzip.open(tmp, "wb", compresslevel=6) as dst:
+            while True:
+                chunk = src.read(UPLOAD_CHUNK)
+                if not chunk:
+                    break
+                dst.write(chunk)
+        gz_size = os.path.getsize(tmp)
+        if size > RAW_STORE_UNCOMPRESSED and gz_size > RAW_STORE_GZIP_MAX:
+            return None, size, "raw XML not stored (gzipped size over 8 MB)"
+        with open(tmp, "rb") as f:
+            return f.read(), size, None
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
+def parsed_as_comparable(p: ParsedFlex) -> dict:
+    """Stable dict for parser-equivalence tests."""
+    return {
+        "account_id": p.account_id, "currency": p.currency,
+        "from_date": p.from_date, "to_date": p.to_date,
+        "trades": p.trades, "cash": p.cash, "positions": p.positions,
+        "corporate": p.corporate, "equity": p.equity, "equity_rows": p.equity_rows,
+        "cash_report": p.cash_report, "transfers": p.transfers, "option_eae": p.option_eae,
+    }
 
 
 # ------------------------------------------------------------------ trades
@@ -2417,6 +2762,7 @@ class IbkrFlexSource(DataSource):
         prev = load_history(db)
         status = prev.get("status") or ""
         nxt = _parse_iso(prev.get("next_fd"))
+        covered_from = _parse_iso(prev.get("covered_from") or prev.get("start"))
         resuming = status in {"paused", "error", "running"} and nxt is not None
         retry: list[tuple[date, date]] = []
         kept_failed: list[dict] = []
@@ -2429,10 +2775,24 @@ class IbkrFlexSource(DataSource):
                 if w not in seen_retry:
                     seen_retry.add(w)
                     retry.append(w)
+        completed_full = (
+            (not resuming) and full_flag and prev.get("status") == "done"
+            and prev.get("mode") == "full" and covered_from is not None
+        )
         if resuming:
-            sequential = [] if nxt > today else iter_windows(nxt, today)
+            cap = today
+            if covered_from is not None and nxt is not None and nxt < covered_from:
+                cap = min(today, covered_from - timedelta(days=1))
+            sequential = [] if nxt > cap else iter_windows(nxt, cap)
             done = int(prev.get("done_windows") or 0)
             mode = prev.get("mode") or ("full" if full_flag else "new")
+        elif completed_full:
+            if start < covered_from:
+                sequential = iter_windows(start, covered_from - timedelta(days=1))
+            else:
+                sequential = []
+            done = int(prev.get("done_windows") or 0)
+            mode = "full"
         elif full_flag:
             sequential = iter_windows(start, today)
             done = 0
@@ -2471,6 +2831,7 @@ class IbkrFlexSource(DataSource):
                 break
         hist = {
             "start": start.isoformat(),
+            "covered_from": (covered_from or start).isoformat(),
             "next_fd": seq_next.isoformat(),
             "seq_fd": seq_next.isoformat(),
             "done_windows": done,
@@ -2481,12 +2842,31 @@ class IbkrFlexSource(DataSource):
             "last_synced": prev.get("last_synced"),
             "mode": mode,
             "end": today.isoformat(),
-            "notes": _history_notes(prev) if (resuming or retry) else [],
+            "notes": _history_notes(prev) if (resuming or retry or completed_full) else [],
             "failed_windows": kept_failed,
             "gaps": _gap_windows(prev),
             "retry_n": retry_n,
         }
         return windows, hist, mode
+
+    def _seal_history(self, hist: dict, today: date) -> bool:
+        """After filling a hole before already-covered dates, restore the cursor. Never deletes data."""
+        if (hist.get("status") or "") in {"error", "paused"}:
+            return False
+        nxt = _parse_iso(hist.get("next_fd"))
+        cf = _parse_iso(hist.get("covered_from"))
+        last = _parse_iso(hist.get("last_synced"))
+        start = _parse_iso(hist.get("start"))
+        if cf and nxt and nxt >= cf and last is not None:
+            restore = last + timedelta(days=1)
+            if restore > nxt:
+                hist["next_fd"] = restore.isoformat()
+                hist["seq_fd"] = restore.isoformat()
+                hist["status"] = "done" if restore > today else "running"
+                if start and start < cf:
+                    hist["covered_from"] = start.isoformat()
+                return True
+        return False
 
     def _is_retry_window(self, hist: dict, fd: date) -> bool:
         seq = _parse_iso(hist.get("seq_fd"))
@@ -2551,9 +2931,12 @@ class IbkrFlexSource(DataSource):
 
     def _import_statements(self, db: Session, statements: list[ParsedFlex], ctx: SyncContext,
                            default_ccy: str, res: SourceResult, *, final: bool,
-                           xml_text: str | None = None, window: tuple[date, date] | None = None):
-        from app.adjustments import detect_and_apply, record_payload
+                           xml_text: str | None = None, window: tuple[date, date] | None = None,
+                           xml_gzip: bytes | None = None, xml_nbytes: int | None = None,
+                           store_json: bool = True, commit_each: bool = False):
+        from app.adjustments import detect_and_apply, record_payload, record_payload_gzipped
         from app.balance import save_ibkr_summary
+        from app.services import IngestStats
         want = self._wanted_ibkr_id(db, ctx)
         touched: list[int] = []
         skipped: Counter = Counter()
@@ -2601,12 +2984,27 @@ class IbkrFlexSource(DataSource):
                 "cash_report": parsed.cash_report, "transfers": parsed.transfers,
                 "option_eae": parsed.option_eae,
             }
-            record_payload(db, acct.id, SOURCE_KEY, payload, run_id=ctx.run_id,
-                           filename=f"ibkr-{acct.id}-{win_name or 'stmt'}.json")
-            if xml_text:
+            if store_json:
+                record_payload(db, acct.id, SOURCE_KEY, payload, run_id=ctx.run_id,
+                               filename=f"ibkr-{acct.id}-{win_name or 'stmt'}.json")
+            if xml_gzip:
+                record_payload_gzipped(
+                    db, acct.id, SOURCE_KEY, xml_gzip, nbytes=int(xml_nbytes or 0),
+                    run_id=ctx.run_id, filename=f"ibkr-{acct.id}-{win_name or 'stmt'}.xml")
+            elif xml_text:
                 record_payload(db, acct.id, SOURCE_KEY, xml_text, run_id=ctx.run_id, kind="xml",
                                filename=f"ibkr-{acct.id}-{win_name or 'stmt'}.xml")
-            stats = ingest_records(db, acct.id, SOURCE_KEY, recs)
+            stats = IngestStats()
+            if len(recs) <= INGEST_BATCH:
+                stats = ingest_records(db, acct.id, SOURCE_KEY, recs)
+            else:
+                for off in range(0, len(recs), INGEST_BATCH):
+                    part = ingest_records(db, acct.id, SOURCE_KEY, recs[off:off + INGEST_BATCH])
+                    stats.inserted += part.inserted
+                    stats.merged += part.merged
+                    stats.duplicates += part.duplicates
+                    if commit_each:
+                        db.commit()
             res.fetched += len(recs)
             res.inserted += stats.inserted
             res.merged += stats.merged
@@ -2652,6 +3050,8 @@ class IbkrFlexSource(DataSource):
                     eq["cash"] = ending
                 save_ibkr_summary(db, acct.id, eq, parsed.currency or acct.currency)
             self._save_equity_history(db, acct.id, parsed.equity_rows)
+            if commit_each:
+                db.commit()
         if touched:
             rebuild_trades(db, touched)
             if final:
@@ -2780,6 +3180,8 @@ class IbkrFlexSource(DataSource):
             db.rollback()
             msg = self._fail_window(db, ctx, load_history(db) or hist, exc, token)
             raise RuntimeError(msg) from exc
+        if self._seal_history(hist, today):
+            save_history(db, hist)
         sk = _skip_summary(all_skipped, all_detail)
         accounts_n = len(res.accounts)
         res.message = (f"Interactive Brokers: {res.fetched} fills read, {res.inserted} new"
@@ -3098,7 +3500,7 @@ class IbkrFlexSource(DataSource):
         if xml_text is None or not str(xml_text).strip():
             raise FlexError("api", "The uploaded file was empty.")
         if len(xml_text.encode("utf-8", errors="replace")) > MAX_UPLOAD_BYTES:
-            raise FlexError("api", "File too large (25 MB max).")
+            raise FlexError("api", "File too large (100 MB max).")
         stmts = parse_statements(xml_text)
         if not stmts:
             raise FlexError("api", "No FlexStatement in the uploaded XML.")
@@ -3111,6 +3513,77 @@ class IbkrFlexSource(DataSource):
         sk = _skip_summary(skipped, detail)
         res.message = (f"Uploaded IBKR statement: {res.fetched} fills read, {res.inserted} new"
                        + (f"; skipped {sk}" if sk else ""))
+        if notes:
+            res.message += "; " + "; ".join(dict.fromkeys(notes))
+        if corps:
+            res.message += "; " + "; ".join(dict.fromkeys(corps))[:400]
+        _save_last(db, ok=True, error=None, error_kind=None,
+                   synced_at=utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+                   fetched=res.fetched, inserted=res.inserted, skipped=dict(skipped),
+                   skipped_detail=detail, adjustments=list(dict.fromkeys(corps))[:30],
+                   upload=True, filename=(filename or "")[:80])
+        db.commit()
+        return res
+
+    def import_xml_path(self, db: Session, path: str | os.PathLike, *, filename: str | None = None,
+                        run_id: int | None = None) -> SourceResult:
+        """Parse a Flex XML file from disk (iterparse). Never holds the whole file as str/bytes."""
+        p = Path(path)
+        size = p.stat().st_size if p.is_file() else 0
+        if size <= 0:
+            raise FlexError("api", "The uploaded file was empty.")
+        if size > MAX_UPLOAD_BYTES:
+            raise FlexError("api", "File too large (100 MB max).")
+        xml_gzip, xml_nbytes, xml_note = maybe_gzip_xml_file(p)
+        store_json = size <= RAW_STORE_UNCOMPRESSED
+        res = SourceResult()
+        ctx = SyncContext(run_id=run_id)
+        creds = load_credentials(db) or {}
+        default_ccy = (creds.get("currency") or "USD").upper()
+        pending: ParsedFlex | None = None
+        n = 0
+        skipped: Counter = Counter()
+        detail: dict[str, list[str]] = {}
+        notes: list[str] = []
+        corps: list[str] = []
+        for parsed in iter_parsed_statements(p):
+            if pending is not None:
+                t, sk, det, nt, cp = self._import_statements(
+                    db, [pending], ctx, default_ccy, res, final=False,
+                    xml_gzip=xml_gzip, xml_nbytes=xml_nbytes, store_json=store_json,
+                    commit_each=True)
+                skipped.update(sk)
+                for reason, tickers in det.items():
+                    lst = detail.setdefault(reason, [])
+                    for x in tickers:
+                        if x not in lst and len(lst) < 100:
+                            lst.append(x)
+                notes.extend(nt)
+                corps.extend(cp)
+                db.commit()
+            pending = parsed
+            n += 1
+        if pending is None:
+            raise FlexError("api", "No FlexStatement in the uploaded XML.")
+        t, sk, det, nt, cp = self._import_statements(
+            db, [pending], ctx, default_ccy, res, final=True,
+            xml_gzip=xml_gzip, xml_nbytes=xml_nbytes, store_json=store_json,
+            commit_each=True)
+        skipped.update(sk)
+        for reason, tickers in det.items():
+            lst = detail.setdefault(reason, [])
+            for x in tickers:
+                if x not in lst and len(lst) < 100:
+                    lst.append(x)
+        notes.extend(nt)
+        corps.extend(cp)
+        if xml_note:
+            notes.append(xml_note)
+        sks = _skip_summary(skipped, detail)
+        res.message = (f"Uploaded IBKR statement: {res.fetched} fills read, {res.inserted} new"
+                       + (f"; skipped {sks}" if sks else ""))
+        if res.fetched and res.inserted == 0:
+            res.message += "; nothing new"
         if notes:
             res.message += "; " + "; ".join(dict.fromkeys(notes))
         if corps:
@@ -3259,6 +3732,7 @@ def maybe_reprocess_on_startup() -> None:
     from app import db as dbmod
     db = dbmod.SessionLocal()
     try:
+        recover_stale_upload(db)
         if get_state(db, REPROCESS_STATE) == REPROCESS_VERSION:
             return
         res = reprocess_stored_payloads(db)
@@ -3268,3 +3742,177 @@ def maybe_reprocess_on_startup() -> None:
         log.warning("IBKR stored-payload reprocess failed", exc_info=True)
     finally:
         db.close()
+
+
+def recover_stale_upload_on_startup() -> None:
+    """Mark a half-finished upload as interrupted. Safe to call on every boot."""
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    from app import db as dbmod
+    db = dbmod.SessionLocal()
+    try:
+        recover_stale_upload(db)
+    except Exception:  # noqa: BLE001 — must not take the site down
+        db.rollback()
+        log.warning("IBKR upload-state recover failed", exc_info=True)
+    finally:
+        db.close()
+
+
+def _safe_filename(name: str | None) -> str:
+    base = Path(name or "statement.xml").name
+    base = re.sub(r"[^A-Za-z0-9._-]+", "-", base).strip(".-") or "statement.xml"
+    return base[:80]
+
+
+def stream_upload_to_temp(file_obj, dest: Path, cap: int = MAX_UPLOAD_BYTES,
+                          chunk: int = UPLOAD_CHUNK) -> int:
+    """Copy an UploadFile (or file-like) to dest in chunks. Raises FlexError if over cap."""
+    size = 0
+    try:
+        with dest.open("wb") as out:
+            while True:
+                data = file_obj.read(chunk)
+                if not data:
+                    break
+                size += len(data)
+                if size > cap:
+                    raise FlexError("api", "File too large (100 MB max).")
+                out.write(data)
+    except FlexError:
+        try:
+            dest.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    return size
+
+
+def upload_in_progress(db: Session) -> bool:
+    if _UPLOAD_ACTIVE:
+        return True
+    return (load_upload(db).get("status") or "") in {"queued", "running"}
+
+
+def queue_uploaded_files(db: Session, files: list[dict]) -> dict:
+    """Persist queued progress. ``files`` items: name, size, path, status, error."""
+    now = utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    data = {
+        "status": "queued",
+        "files": files,
+        "current": 0,
+        "started": None,
+        "finished": None,
+        "error": None,
+        "queued_at": now,
+        "dir": files[0].get("dir") if files else None,
+    }
+    save_upload(db, data)
+    db.commit()
+    return data
+
+
+def start_upload_worker() -> None:
+    """Kick the background importer. Tests set UPLOAD_SYNC or patch this."""
+    if _upload_inline():
+        run_upload_job()
+        return
+    threading.Thread(target=run_upload_job, name="ibkr-upload", daemon=True).start()
+
+
+def run_upload_job() -> None:
+    """Process queued files one at a time. Single-flight via _UPLOAD_LOCK."""
+    global _UPLOAD_ACTIVE
+    if not _UPLOAD_LOCK.acquire(blocking=False):
+        return
+    _UPLOAD_ACTIVE = True
+    from app import db as dbmod
+    db = dbmod.SessionLocal()
+    try:
+        data = load_upload(db)
+        if (data.get("status") or "") not in {"queued", "running"}:
+            return
+        files = list(data.get("files") or [])
+        data["status"] = "running"
+        data["started"] = data.get("started") or utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        data["error"] = None
+        save_upload(db, data)
+        db.commit()
+        src = IbkrFlexSource(sleep=lambda _n: None, split_fetch=lambda *_a, **_k: [])
+        any_ok = False
+        for i, row in enumerate(files):
+            if (row.get("status") or "") != "queued":
+                continue
+            data["current"] = i
+            row["status"] = "running"
+            data["files"] = files
+            save_upload(db, data)
+            db.commit()
+            path = row.get("path")
+            try:
+                if not path or not Path(path).is_file():
+                    raise FlexError("api", "Upload file was missing on disk.")
+                res = src.import_xml_path(db, path, filename=row.get("name"))
+                row["status"] = "done"
+                row["fetched"] = res.fetched
+                row["inserted"] = res.inserted
+                if res.fetched and res.inserted == 0:
+                    row["error"] = "nothing new"
+                else:
+                    row["error"] = None
+                if res.message and "raw XML not stored" in res.message:
+                    row["note"] = "raw XML not stored (gzipped size over 8 MB)"
+                any_ok = True
+            except FlexError as exc:
+                db.rollback()
+                row["status"] = "error"
+                row["error"] = str(exc)
+                row["fetched"] = row.get("fetched") or 0
+                row["inserted"] = row.get("inserted") or 0
+            except Exception as exc:  # noqa: BLE001 — surface a clean error; never include secrets
+                db.rollback()
+                log.exception("IBKR XML upload failed for %s", _safe_filename(row.get("name")))
+                row["status"] = "error"
+                row["error"] = "parse error"
+                row["fetched"] = 0
+                row["inserted"] = 0
+            finally:
+                try:
+                    if path:
+                        Path(path).unlink(missing_ok=True)
+                except OSError:
+                    pass
+            data["files"] = files
+            save_upload(db, data)
+            db.commit()
+        statuses = {r.get("status") for r in files}
+        if statuses <= {"done"} or (any_ok and "error" not in statuses):
+            data["status"] = "done"
+            data["error"] = None
+        elif any_ok:
+            data["status"] = "done"
+            data["error"] = "some files failed"
+        else:
+            data["status"] = "error"
+            data["error"] = next((r.get("error") for r in files if r.get("error")), "upload failed")
+        data["finished"] = utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        save_upload(db, data)
+        db.commit()
+        _cleanup_upload_dir(data.get("dir"))
+    except Exception:  # noqa: BLE001
+        db.rollback()
+        log.exception("IBKR XML upload job failed")
+        try:
+            data = load_upload(db)
+            data["status"] = "error"
+            data["error"] = data.get("error") or "upload failed"
+            data["finished"] = utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+            save_upload(db, data)
+            db.commit()
+            _cleanup_upload_dir(data.get("dir"))
+        except Exception:  # noqa: BLE001
+            db.rollback()
+    finally:
+        db.close()
+        _UPLOAD_ACTIVE = False
+        _UPLOAD_LOCK.release()

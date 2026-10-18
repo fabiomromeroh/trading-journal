@@ -1,6 +1,9 @@
 """Settings > Brokers: connect / test / sync / disconnect Trading 212 and IBKR Flex; instrument mappings."""
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
@@ -213,23 +216,105 @@ def ibkr_resync(request: Request, db: Session = Depends(get_db)):
     return templates.TemplateResponse(request, "partials/sync_status.html", {"request": request, "run": run})
 
 
+def _collect_uploads(files: list[UploadFile] | None, file: UploadFile | None) -> list[UploadFile]:
+    got: list[UploadFile] = []
+    if files:
+        got.extend(files if isinstance(files, (list, tuple)) else [files])
+    if file is not None:
+        got.append(file)
+    out: list[UploadFile] = []
+    seen: set[int] = set()
+    for uf in got:
+        if uf is None or id(uf) in seen:
+            continue
+        seen.add(id(uf))
+        if not (uf.filename or "").strip() and getattr(uf, "size", None) == 0:
+            continue
+        out.append(uf)
+    return out
+
+
 @router.post("/settings/brokers/ibkr/upload")
-async def ibkr_upload(request: Request, file: UploadFile = File(...), db: Session = Depends(get_db)):
-    """Activity Statement XML. Same parser/dedupe as Flex sync. Never sent to IBKR."""
-    name = (file.filename or "").lower()
-    ctype = (file.content_type or "").lower()
-    data = await file.read()
-    if len(data) > ibkr.MAX_UPLOAD_BYTES:
-        return _flash(request, "File too large (25 MB max).")
-    if not (name.endswith(".xml") or "xml" in ctype):
-        return _flash(request, "Upload an IBKR Activity Statement as XML.")
-    text = data.decode("utf-8", errors="replace")
-    src = ibkr.IbkrFlexSource(sleep=lambda _n: None, split_fetch=lambda *_a, **_k: [])
-    try:
-        res = src.import_xml(db, text, filename=file.filename)
-    except ibkr.FlexError as exc:
-        return _flash(request, str(exc))
-    return _flash(request, res.message or "Uploaded IBKR statement.")
+def ibkr_upload(request: Request, files: list[UploadFile] | None = File(None),
+                file: UploadFile | None = File(None), db: Session = Depends(get_db)):
+    """Stream Flex/Activity XML to disk and process in the background. Never sent to IBKR."""
+    uploads = _collect_uploads(files, file)
+    if not uploads:
+        return _flash(request, "Choose one or more IBKR Activity Statement XML files.")
+    if ibkr.upload_in_progress(db):
+        return _flash(request, "An IBKR upload is already processing. Wait until it finishes, then upload again.")
+    tmpdir = Path(tempfile.mkdtemp(prefix="ibkr-up-"))
+    meta: list[dict] = []
+    queued = 0
+    for i, uf in enumerate(uploads):
+        name = ibkr._safe_filename(uf.filename)
+        row = {"name": name, "size": 0, "status": "queued", "fetched": 0, "inserted": 0,
+               "error": None, "path": None, "dir": str(tmpdir)}
+        if i >= ibkr.MAX_UPLOAD_FILES:
+            row["status"] = "error"
+            row["error"] = "too many files (10 max)"
+            meta.append(row)
+            continue
+        dest = tmpdir / f"{i:02d}-{name}"
+        try:
+            src = getattr(uf, "file", uf)
+            size = ibkr.stream_upload_to_temp(src, dest)
+            row["size"] = size
+            row["path"] = str(dest)
+            if size <= 0:
+                row["status"] = "error"
+                row["error"] = "empty file"
+                dest.unlink(missing_ok=True)
+            else:
+                with dest.open("rb") as fh:
+                    head = fh.read(65536)
+                if ibkr._UNSAFE_XML.search(head.decode("utf-8", errors="replace")):
+                    row["status"] = "error"
+                    row["error"] = "not XML"
+                    dest.unlink(missing_ok=True)
+                    row["path"] = None
+                elif not ibkr.looks_like_flex_bytes(head):
+                    row["status"] = "error"
+                    row["error"] = "not XML"
+                    dest.unlink(missing_ok=True)
+                    row["path"] = None
+                else:
+                    queued += 1
+        except ibkr.FlexError as exc:
+            row["status"] = "error"
+            row["error"] = "too large" if "too large" in str(exc).lower() else str(exc)
+            row["path"] = None
+        except Exception:  # noqa: BLE001
+            row["status"] = "error"
+            row["error"] = "not XML"
+            row["path"] = None
+        meta.append(row)
+    if queued == 0:
+        ibkr.queue_uploaded_files(db, meta)
+        data = ibkr.load_upload(db)
+        data["status"] = "error"
+        data["error"] = next((r.get("error") for r in meta if r.get("error")), "not XML")
+        data["finished"] = data.get("queued_at")
+        ibkr.save_upload(db, data)
+        db.commit()
+        ibkr._cleanup_upload_dir(str(tmpdir))
+        err = data["error"]
+        if err == "too large":
+            return _flash(request, "File too large (100 MB max).")
+        if err == "too many files (10 max)":
+            return _flash(request, "Too many files (10 max).")
+        return _flash(request, "No valid IBKR XML files. Need a FlexQueryResponse or FlexStatement.")
+    ibkr.queue_uploaded_files(db, meta)
+    ibkr.start_upload_worker()
+    n = queued
+    return _flash(request, f"Upload received: {n} file(s), processing in background")
+
+
+@router.get("/settings/brokers/ibkr/upload/status")
+def ibkr_upload_status(request: Request, db: Session = Depends(get_db)):
+    return templates.TemplateResponse(request, "partials/ibkr_upload_progress.html", {
+        "request": request, "upload": ibkr.public_upload(ibkr.load_upload(db)),
+    })
 
 
 @router.post("/settings/brokers/ibkr/reprocess")
@@ -258,6 +343,7 @@ def settings_ctx(db: Session) -> dict:
                      "progress": ibkr.progress_line(ibkr.load_history(db)),
                      "flex_end": ibkr.last_complete_biz_day().isoformat(),
                      "mapped": mapped,
+                     "upload": ibkr.public_upload(ibkr.load_upload(db)),
                      "balance_checks": _ibkr_balance_checks(db, mapped),
                      "enc_key": bool(get_settings().token_encryption_key)}}
 

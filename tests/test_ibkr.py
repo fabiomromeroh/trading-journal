@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import tracemalloc
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 from pathlib import Path
@@ -720,6 +721,8 @@ def test_card_shows_progress_and_how_to(db, enc, monkeypatch):
     assert "yyyyMMdd" in page and "HHmmss" in page
     assert "history start" in page.lower()
     assert "History start" in page and 'name="history_start"' in page
+    assert 'name="files"' in page and "multiple" in page
+    assert "processed one by one in the background" in page
     r = c.post("/settings/brokers/ibkr/connect",
                data={"token": TOKEN, "query_id": QUERY_ID, "currency": "USD"}, follow_redirects=True)
     assert "Interactive Brokers connected" in r.text and TOKEN not in r.text
@@ -1056,6 +1059,9 @@ def test_upload_rejects_doctype_and_non_xml(db, enc, monkeypatch):
                follow_redirects=True)
     assert "XML" in r.text
     assert "DOCTYPE" not in r.text or "not" in r.text.lower()
+    prog = ibkr.load_upload(db)
+    assert prog.get("status") == "error"
+    assert any((f.get("error") or "").lower() == "not xml" for f in prog.get("files") or [])
 
 
 def test_conid_maps_beri_beril(db, enc, monkeypatch):
@@ -1894,6 +1900,281 @@ def test_card_message_1001_split_and_data_available(db, enc, monkeypatch):
     assert "IBKR has data up to the previous business day" in page
     assert "1001" in page
     assert "Statement could not be generated" in page
+
+
+# ---------------------------------------------------------------- ibkr7: streaming upload, iterparse, history start
+def _tiny_stmt(trade_id: str, account="U1") -> bytes:
+    return _stmt(f'''
+      <Trades>
+        <Trade accountId="{account}" currency="USD" assetCategory="STK" symbol="AAA" conid="1"
+               tradeID="{trade_id}" dateTime="20260902;143100" quantity="1" tradePrice="10"
+               ibCommission="0" buySell="BUY" openCloseIndicator="O" levelOfDetail="EXECUTION"/>
+      </Trades>''', account=account).encode()
+
+
+def test_iterparse_matches_dom_on_all_fixtures(tmp_path):
+    for path in sorted(FIX.glob("*.xml")):
+        text = path.read_text()
+        dest = tmp_path / path.name
+        dest.write_text(text)
+        try:
+            dom = [ibkr.parsed_as_comparable(p) for p in ibkr.parse_statements(text)]
+        except ibkr.FlexError:
+            with pytest.raises(ibkr.FlexError):
+                ibkr.parse_statements_from_path(dest)
+            continue
+        streamed = [ibkr.parsed_as_comparable(p) for p in ibkr.parse_statements_from_path(dest)]
+        assert streamed == dom, path.name
+
+
+def test_iterparse_peak_memory_on_large_synthetic(tmp_path):
+    """Generate a large Flex XML on the fly; iterparse peak stays well under the file size."""
+    n_stmts, n_trades = 3, 40_000
+    path = tmp_path / "large.xml"
+    with path.open("w", encoding="utf-8") as f:
+        f.write('<?xml version="1.0" encoding="UTF-8"?>\n<FlexQueryResponse>\n')
+        f.write(f'<FlexStatements count="{n_stmts}">\n')
+        for s in range(n_stmts):
+            acct = f"U{s + 1}000001"
+            f.write(f'<FlexStatement accountId="{acct}" fromDate="20220101" toDate="20261016">\n')
+            f.write(f'<AccountInformation accountId="{acct}" currency="USD"/>\n<Trades>\n')
+            line = (
+                '<Trade accountId="{acct}" currency="USD" assetCategory="STK" symbol="AAA" '
+                'tradeID="{tid}" dateTime="20240101;100000" quantity="1" tradePrice="10" '
+                'ibCommission="0" buySell="BUY" openCloseIndicator="O" levelOfDetail="EXECUTION"/>\n'
+            )
+            for i in range(n_trades):
+                f.write(line.format(acct=acct, tid=f"{s}-{i}"))
+            f.write("</Trades></FlexStatement>\n")
+        f.write("</FlexStatements></FlexQueryResponse>\n")
+    size = path.stat().st_size
+    assert size > 8 * 1024 * 1024
+    tracemalloc.start()
+    n = 0
+    stmts = 0
+    for parsed in ibkr.iter_parsed_statements(path):
+        stmts += 1
+        n += len(parsed.trades)
+        del parsed
+    peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+    assert stmts == n_stmts and n == n_stmts * n_trades
+    assert peak < 150 * 1024 * 1024
+    # 120k trades / 27 MB file: peak is one statement of row dicts, not the whole tree.
+    assert peak < 80 * 1024 * 1024
+    assert peak / size < 2.0
+
+
+def test_multi_file_upload_returns_303_and_processes_sequentially(db, enc, monkeypatch):
+    _no_fx(monkeypatch)
+    _no_ibkr_network(monkeypatch)
+    order: list[str] = []
+    real = ibkr.IbkrFlexSource.import_xml_path
+
+    def spy(self, sess, path, *, filename=None, run_id=None):
+        order.append(filename or Path(path).name)
+        return real(self, sess, path, filename=filename, run_id=run_id)
+
+    monkeypatch.setattr(ibkr.IbkrFlexSource, "import_xml_path", spy)
+    kicked: list[str] = []
+    monkeypatch.setattr(ibkr, "UPLOAD_SYNC", False)
+    monkeypatch.setattr(ibkr, "start_upload_worker", lambda: kicked.append("go"))
+    c = _client()
+    r = c.post("/settings/brokers/ibkr/upload", files=[
+        ("files", ("a.xml", _tiny_stmt("A1"), "application/xml")),
+        ("files", ("b.xml", _tiny_stmt("B1"), "application/xml")),
+    ], follow_redirects=False)
+    assert r.status_code == 303
+    assert kicked == ["go"]
+    prog = ibkr.load_upload(db)
+    assert prog["status"] == "queued" and len(prog["files"]) == 2
+    assert order == []
+    ibkr.run_upload_job()
+    assert order[0].startswith("a") and order[1].startswith("b")
+    prog = ibkr.load_upload(db)
+    assert prog["status"] == "done"
+    pub = ibkr.public_upload(prog)
+    assert "path" not in json.dumps(pub)
+    assert TOKEN not in json.dumps(pub)
+    page = c.get("/settings").text
+    assert "Upload received: 2 file(s), processing in background" in page or "Upload finished" in page
+    assert "ibkr-upload-progress" in page
+    assert TOKEN not in page
+
+
+def test_upload_progress_and_errors(db, enc, monkeypatch):
+    _no_fx(monkeypatch)
+    _no_ibkr_network(monkeypatch)
+    monkeypatch.setattr(ibkr, "MAX_UPLOAD_BYTES", 1500)
+    c = _client()
+    r = c.post("/settings/brokers/ibkr/upload", files=[
+        ("files", ("ok.xml", _tiny_stmt("OK1"), "application/xml")),
+        ("files", ("bad.txt", b"hello world", "text/plain")),
+        ("files", ("big.xml", b"<FlexQueryResponse>" + b"x" * 2000 + b"</FlexQueryResponse>", "application/xml")),
+        ("files", ("broken.xml", b"<FlexQueryResponse><FlexStatement accountId=\"U1\"><Trades>",
+                   "application/xml")),
+    ], follow_redirects=True)
+    assert r.status_code == 200
+    prog = ibkr.load_upload(db)
+    errors = {f["name"]: (f.get("status"), f.get("error") or "") for f in prog["files"]}
+    assert errors["bad.txt"][0] == "error" and "not xml" in errors["bad.txt"][1].lower()
+    assert errors["big.xml"][0] == "error" and "too large" in errors["big.xml"][1].lower()
+    broken = errors["broken.xml"]
+    assert broken[0] == "error"
+    assert "parse error" in broken[1].lower() or "line" in broken[1].lower() or "xml" in broken[1].lower()
+    page = c.get("/settings").text
+    assert "not XML" in page or "not xml" in page.lower()
+    assert TOKEN not in page
+    body = c.get("/settings/brokers/ibkr/upload/status").text
+    assert "every 3s" not in body or prog.get("status") not in {"queued", "running"}
+    assert "hx-get=\"/settings/brokers/ibkr/upload/status\"" in c.get("/settings").text or prog.get("status") not in {"queued", "running"}
+
+
+def test_upload_old_file_field_name_still_works(db, enc, monkeypatch):
+    _no_fx(monkeypatch)
+    _no_ibkr_network(monkeypatch)
+    c = _client()
+    r = c.post("/settings/brokers/ibkr/upload",
+               files={"file": ("stmt.xml", _tiny_stmt("LEGACY"), "application/xml")},
+               follow_redirects=False)
+    assert r.status_code == 303
+    prog = ibkr.load_upload(db)
+    assert prog["status"] == "done"
+    assert db.query(Execution).count() >= 1
+
+
+def test_upload_busy_rejected(db, enc, monkeypatch):
+    ibkr.save_upload(db, {"status": "running", "files": [{"name": "a.xml", "status": "running"}]})
+    db.commit()
+    c = _client()
+    r = c.post("/settings/brokers/ibkr/upload",
+               files={"files": ("b.xml", _tiny_stmt("X"), "application/xml")},
+               follow_redirects=True)
+    assert "already processing" in r.text.lower()
+
+
+def test_restart_marks_running_upload_interrupted(db, enc):
+    ibkr.save_upload(db, {
+        "status": "running", "current": 0,
+        "files": [{"name": "a.xml", "status": "running", "size": 10}],
+    })
+    db.commit()
+    out = ibkr.recover_stale_upload(db)
+    assert out["status"] == "error"
+    assert "interrupted by restart" in (out.get("error") or "")
+    assert "upload again" in (out.get("error") or "")
+    assert out["files"][0]["status"] == "error"
+
+
+def test_reupload_dedupes(db, enc, monkeypatch):
+    _no_fx(monkeypatch)
+    _no_ibkr_network(monkeypatch)
+    xml = load("statement.xml").encode()
+    c = _client()
+    c.post("/settings/brokers/ibkr/upload", files={"file": ("stmt.xml", xml, "application/xml")},
+           follow_redirects=True)
+    n = db.query(Execution).count()
+    assert n > 0
+    c.post("/settings/brokers/ibkr/upload", files={"file": ("stmt.xml", xml, "application/xml")},
+           follow_redirects=True)
+    assert db.query(Execution).count() == n
+    prog = ibkr.load_upload(db)
+    row = prog["files"][0]
+    assert row["inserted"] == 0
+    assert row.get("error") == "nothing new" or row["status"] == "done"
+
+
+def test_history_start_earlier_does_not_reset_or_call_ibkr(db, enc, monkeypatch):
+    _freeze_now(monkeypatch, datetime(2026, 10, 17, 12, 0, tzinfo=NY))
+    _no_fx(monkeypatch)
+    ibkr.save_credentials(db, TOKEN, QUERY_ID, "USD")
+    src = ibkr.IbkrFlexSource(sleep=nop_sleep, split_fetch=lambda *a: [])
+    src.import_xml(db, load("statement.xml"), filename="seed.xml")
+    n = db.query(Execution).count()
+    hist = {
+        "status": "done", "start": "2022-01-01", "covered_from": "2022-01-01",
+        "end": "2026-10-16", "last_synced": "2026-10-16",
+        "next_fd": "2026-10-17", "seq_fd": "2026-10-17",
+        "done_windows": 9, "total_windows": 9, "mode": "full",
+        "notes": ["2022 had no statement (IBKR 1003)"],
+        "gaps": [{"fd": "2022-01-01", "td": "2022-12-31", "code": "1003"}],
+        "failed_windows": [],
+    }
+    ibkr.save_history(db, hist)
+    ibkr.save_history_start(db, date(2022, 1, 1))
+    db.commit()
+    called = []
+    monkeypatch.setattr(ibkr, "test_connection", lambda *a, **k: called.append("x"))
+    c = _client()
+    r = c.post("/settings/brokers/ibkr/history-start", data={"history_start": "2021-06-24"},
+               follow_redirects=True)
+    assert called == []
+    assert "2021-06-24" in r.text
+    assert ibkr.history_start_date(db) == date(2021, 6, 24)
+    after = ibkr.load_history(db)
+    assert after["status"] == "done" and after["done_windows"] == 9
+    assert after["last_synced"] == "2026-10-16"
+    assert any(g.get("fd") == "2022-01-01" for g in after.get("gaps") or [])
+    assert "2022 had no statement (IBKR 1003)" in (after.get("notes") or [])
+    assert db.query(Execution).count() == n
+    fake = ScriptedFlex(TINY)
+    from app.services import set_state
+    set_state(db, ibkr.FULL_STATE, "1")
+    db.commit()
+    src = ibkr.IbkrFlexSource(transport=fake.transport(), sleep=nop_sleep, split_fetch=lambda *a: [])
+    src.sync(db, SyncContext())
+    assert fake.sent == [("20210624", "20211231")]
+    hist2 = ibkr.load_history(db)
+    assert hist2["status"] == "done"
+    assert hist2["last_synced"] == "2026-10-16"
+    assert any(g.get("fd") == "2022-01-01" for g in hist2.get("gaps") or [])
+    assert "2022 had no statement" in " ".join(hist2.get("notes") or [])
+    assert db.query(Execution).count() >= n
+
+
+def test_history_start_later_does_not_delete(db, enc, monkeypatch):
+    _freeze_now(monkeypatch, datetime(2026, 10, 17, 12, 0, tzinfo=NY))
+    _no_fx(monkeypatch)
+    ibkr.save_credentials(db, TOKEN, QUERY_ID, "USD")
+    src = ibkr.IbkrFlexSource(sleep=nop_sleep, split_fetch=lambda *a: [])
+    src.import_xml(db, load("statement.xml"), filename="seed.xml")
+    n = db.query(Execution).count()
+    ibkr.save_history(db, {
+        "status": "done", "start": "2022-01-01", "covered_from": "2022-01-01",
+        "end": "2026-10-16", "last_synced": "2026-10-16",
+        "next_fd": "2026-10-17", "seq_fd": "2026-10-17",
+        "done_windows": 9, "total_windows": 9, "mode": "full",
+    })
+    db.commit()
+    c = _client()
+    c.post("/settings/brokers/ibkr/history-start", data={"history_start": "2024-01-01"},
+           follow_redirects=True)
+    assert ibkr.history_start_date(db) == date(2024, 1, 1)
+    assert db.query(Execution).count() == n
+    fake = ScriptedFlex(TINY)
+    from app.services import set_state
+    set_state(db, ibkr.FULL_STATE, "1")
+    db.commit()
+    src = ibkr.IbkrFlexSource(transport=fake.transport(), sleep=nop_sleep, split_fetch=lambda *a: [])
+    src.sync(db, SyncContext())
+    assert fake.sent == []
+    assert db.query(Execution).count() == n
+    hist = ibkr.load_history(db)
+    assert hist["status"] == "done" and hist["last_synced"] == "2026-10-16"
+
+
+def test_upload_gzip_skip_note_for_large_raw(db, enc, monkeypatch, tmp_path):
+    _no_fx(monkeypatch)
+    monkeypatch.setattr(ibkr, "RAW_STORE_UNCOMPRESSED", 50)
+    monkeypatch.setattr(ibkr, "RAW_STORE_GZIP_MAX", 1)
+    path = tmp_path / "skip.xml"
+    path.write_bytes(_tiny_stmt("GZ1") + b"<!--" + b"x" * 200 + b"-->")
+    src = ibkr.IbkrFlexSource(sleep=nop_sleep, split_fetch=lambda *a: [])
+    res = src.import_xml_path(db, path, filename="skip.xml")
+    assert "raw XML not stored" in (res.message or "")
+    xml_rows = [p for p in db.scalars(select(SyncPayload)) if p.content_type == "application/xml"]
+    assert xml_rows == []
+    assert db.query(Execution).count() >= 1
 
 
 def test_iter_months_cover_a_quarter():
