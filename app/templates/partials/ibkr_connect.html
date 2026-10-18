@@ -1,95 +1,95 @@
+{% from "partials/account_row.html" import row as acct_row %}
 {% set last = ibkr.last %}
-<div class="mt-3 text-sm space-y-2" id="ibkr-box">
-  <form method="post" action="/settings/brokers/ibkr/history-start" class="flex flex-wrap gap-2">
-    <label class="text-xs text-slate-400">History start
-      <input type="date" name="history_start" value="{{ ibkr.history_start or '2022-01-01' }}" class="inp text-xs" aria-label="History start date">
-    </label>
-    <button class="btn btn-s text-xs">Save start date</button>
-  </form>
-  <p class="text-xs text-slate-500">Full history walks year-sized windows from this date through the previous US business day. Sync new continues from the last synced date. One token and one query cover every account.</p>
-  {% if ibkr.flex_end %}
-  <p class="text-xs text-slate-500" id="ibkr-available">Data available through {{ ibkr.flex_end }} (IBKR has data up to the previous business day).</p>
-  {% endif %}
-  {% if ibkr.progress %}
-  <div class="text-xs text-slate-300" id="ibkr-progress">{{ ibkr.progress }}</div>
-  {% endif %}
-  {% if ibkr.mapped %}
-  <div class="text-xs text-slate-400">Journal accounts:
-    {% for a in ibkr.mapped %}<b class="text-slate-200">{{ a.name }}</b> ({{ a.currency }}){{ ', ' if not loop.last }}{% endfor %}
+{% set dot = ibkr.dot or conn_dots.ibkr or 'never' %}
+<section class="conn-group wide" id="ibkr-box" data-connection="ibkr">
+  <div class="conn-head">
+    <span class="status-dot" data-status="{{ dot }}" title="{{ {'ok': 'ok', 'error': 'error', 'paused': 'paused-cooldown'}.get(dot, 'never synced') }}"></span>
+    <h3 class="text-white font-medium">Interactive Brokers</h3>
+    <span class="text-xs text-slate-300">{{ ibkr.currency or 'USD' }}</span>
+    {% if ibkr.connected %}<span class="pill bg-emerald-500/15 text-emerald-300">connected</span>{% else %}<span class="pill bg-slate-700 text-slate-300">not connected</span>{% endif %}
+    <span class="text-xs text-slate-500">{% if last.synced_at %}{{ last.synced_at }}{% else %}never synced{% endif %}</span>
+    {% if ibkr.connected %}
+    <span class="text-xs text-slate-400">Flex token <b class="text-slate-200">saved</b>{% if ibkr.query_id %} · query <b class="text-slate-200">{{ ibkr.query_id }}</b>{% endif %}</span>
+    {% endif %}
+    {% if (ibkr.cooldown_s or 0) > 0 %}
+    <span class="text-xs text-amber-300">Paused · cooldown {{ (ibkr.cooldown_s // 60) + 1 }} min</span>
+    {% elif ibkr.history_status == 'paused' %}
+    <span class="text-xs text-amber-300">Paused · cooldown</span>
+    {% endif %}
   </div>
-  {% endif %}
-  {% if ibkr.balance_checks %}
-  <div class="text-xs text-slate-400 space-y-1">
-    {% for c in ibkr.balance_checks %}
-    <div>{{ c.name }}: journal NAV
-      {% if c.journal_nav is not none %}<b class="text-slate-200">{{ '%.2f'|format(c.journal_nav) }}</b>{% else %}—{% endif %}
-      vs IBKR
-      {% if c.ibkr_nav is not none %}<b class="text-slate-200">{{ '%.2f'|format(c.ibkr_nav) }}</b>{% else %}—{% endif %}
-      {% if c.diff is not none %} (diff <b class="{{ 'text-emerald-300' if c.diff|abs < 1 else 'text-amber-300' }}">{{ '%+.2f'|format(c.diff) }}</b>){% endif %}
-      {% if c.ibkr_cash is not none %} · IBKR cash {{ '%.2f'|format(c.ibkr_cash) }}{% endif %}
-      {{ c.currency }}
-    </div>
-    {% endfor %}
+  {% if last.error %}<p class="text-xs text-rose-300 whitespace-pre-line mt-2">{{ last.error }}</p>{% endif %}
+  {% if ibkr.connected %}
+  <div class="acct-actions mt-2">
+    <button type="button" hx-post="/settings/brokers/ibkr/sync" hx-target="#ibkr-sync" class="btn btn-p text-xs">Sync new</button>
+    <button type="button" hx-post="/settings/brokers/ibkr/resync" hx-target="#ibkr-sync" hx-confirm="Full history fetches year-sized windows from the history start date through the previous US business day. Failed windows (1001/1003) are retried; a 1001 year is retried as quarters, a 1001 quarter as months. Existing fills are kept." class="btn btn-s text-xs">Full history</button>
+    <button type="submit" form="ibkr-test" class="btn btn-s text-xs">Test connection</button>
+    <button type="submit" form="ibkr-disconnect" class="btn btn-d text-xs" onclick="return confirm('Delete the stored Flex token? Imported trades stay.')">Disconnect</button>
   </div>
+  <form id="ibkr-test" method="post" action="/settings/brokers/ibkr/test" class="hidden"></form>
+  <form id="ibkr-disconnect" method="post" action="/settings/brokers/ibkr/disconnect" class="hidden"></form>
+  <div id="ibkr-sync"></div>
   {% endif %}
-  <form method="post" action="/settings/brokers/ibkr/upload" enctype="multipart/form-data" class="flex flex-wrap items-end gap-2">
-    <label class="text-xs text-slate-400">Upload IBKR Activity Statement (XML)
-      <input type="file" name="files" accept=".xml,application/xml,text/xml" class="inp text-xs mt-1" multiple>
+  <form method="post" action="/settings/brokers/ibkr/upload" enctype="multipart/form-data" class="acct-actions mt-2">
+    <label class="text-xs text-slate-400 set-field">Upload IBKR Activity Statement (XML)
+      <input type="file" name="files" accept=".xml,application/xml,text/xml" class="inp text-xs" multiple>
     </label>
     <button class="btn btn-s text-xs">Upload XML</button>
   </form>
-  <p class="text-xs text-slate-500">You can select several XML files; they are processed one by one in the background. Same mapping and dedupe as Flex sync. 100 MB per file, 10 files max. A re-upload of the same statement adds nothing.</p>
-  {% include "partials/ibkr_upload_progress.html" %}
-  <form method="post" action="/settings/brokers/ibkr/reprocess" class="flex flex-wrap gap-2"
+  <p class="text-xs text-slate-500 mt-1">You can select several XML files; they are processed one by one in the background. Same mapping and dedupe as Flex sync. 100 MB per file, 10 files max. A re-upload of the same statement adds nothing.</p>
+  <form method="post" action="/settings/brokers/ibkr/reprocess" class="mt-2"
         onsubmit="return confirm('Re-read stored IBKR JSON/XML (no call to Interactive Brokers). Existing fills stay; duplicates are skipped.')">
     <button class="btn btn-s text-xs">Reprocess stored history</button>
   </form>
-  {% if ibkr.connected %}
-    <div class="text-xs text-slate-400">
-      Flex token <b class="text-slate-200">saved</b>
-      {% if ibkr.query_id %}· query <b class="text-slate-200">{{ ibkr.query_id }}</b>{% endif %}
-      · {{ ibkr.currency or 'USD' }}
-      {% if last.synced_at %}· last sync <b class="text-slate-200">{{ last.synced_at }}</b> · {{ last.fetched or 0 }} fills read, {{ last.inserted or 0 }} new{% if last.skipped %} · skipped {% for k, n in last.skipped.items() %}{{ n }} {{ k }}{{ ', ' if not loop.last }}{% endfor %}{% endif %}{% else %}· never synced yet.{% endif %}
-    </div>
-    {% if last.skipped_detail %}
-    <details class="text-xs">
-      <summary class="cursor-pointer text-slate-400">Skipped rows, by reason and ticker</summary>
-      <ul class="mt-1 space-y-1 text-slate-400">
-      {% for reason, tickers in last.skipped_detail.items() %}
-        <li><span class="text-slate-200">{{ last.skipped.get(reason, tickers|length) }} {{ reason }}</span>
-          — {{ tickers|join(', ') }}</li>
-      {% endfor %}
-      </ul>
-    </details>
-    {% endif %}
-    {% if last.error %}<div class="text-xs text-rose-300 whitespace-pre-line">{{ last.error }}</div>{% endif %}
-    {% if last.adjustments %}<div class="text-xs text-amber-300">Corporate / holdings:<ul class="list-disc ml-5">{% for r in last.adjustments %}<li>{{ r }}</li>{% endfor %}</ul></div>{% endif %}
-    <form method="post" action="/settings/brokers/ibkr/connect" class="space-y-2" autocomplete="off">
-      <input name="token" type="password" class="inp w-full text-xs" placeholder="New Flex token (leave blank to keep saved)" autocomplete="new-password">
-      <input name="query_id" class="inp w-full text-xs" value="{{ ibkr.query_id or '' }}" placeholder="Flex Query ID" autocomplete="off">
-      <input name="currency" class="inp w-full text-xs" value="{{ ibkr.currency or 'USD' }}" placeholder="Account currency" maxlength="3" autocomplete="off">
-      <div class="flex flex-wrap gap-2">
+  <div id="ibkr-accounts">
+    {% for row in acct_groups.ibkr %}{{ acct_row(row, sync=false) }}{% endfor %}
+  </div>
+  <details class="edit-connection" id="edit-connection-ibkr">
+    <summary>Edit connection</summary>
+    <div class="mt-2 space-y-2">
+      {% if not ibkr.connected and not ibkr.enc_key %}<p class="text-xs text-amber-300">Set TOKEN_ENCRYPTION_KEY on the server before connecting (the Flex token is stored encrypted).</p>{% endif %}
+      <form method="post" action="/settings/brokers/ibkr/history-start" class="acct-actions">
+        <label class="text-xs text-slate-400 set-field">History start
+          <input type="date" name="history_start" value="{{ ibkr.history_start or '2022-01-01' }}" class="inp text-xs" aria-label="History start date">
+        </label>
+        <button class="btn btn-s text-xs">Save start date</button>
+      </form>
+      <p class="text-xs text-slate-500">Full history walks year-sized windows from this date through the previous US business day. Sync new continues from the last synced date. One token and one query cover every account.</p>
+      <details class="text-xs text-slate-400">
+        <summary>How to create the Flex query and token</summary>
+        <p class="mt-1 leading-relaxed">{{ ibkr.how_to }}</p>
+      </details>
+      {% if ibkr.connected %}
+      <form method="post" action="/settings/brokers/ibkr/connect" class="space-y-2" autocomplete="off">
+        <input name="token" type="password" class="inp w-full text-xs" placeholder="New Flex token (leave blank to keep saved)" autocomplete="new-password">
+        <input name="query_id" class="inp w-full text-xs" value="{{ ibkr.query_id or '' }}" placeholder="Flex Query ID" autocomplete="off">
+        <input name="currency" class="inp w-full text-xs" value="{{ ibkr.currency or 'USD' }}" placeholder="Account currency" maxlength="3" autocomplete="off">
         <button class="btn btn-s text-xs">Save</button>
-        <button type="button" hx-post="/settings/brokers/ibkr/sync" hx-target="#ibkr-sync" class="btn btn-p text-xs">Sync new</button>
-        <button type="button" hx-post="/settings/brokers/ibkr/resync" hx-target="#ibkr-sync" hx-confirm="Full history fetches year-sized windows from the history start date through the previous US business day. Failed windows (1001/1003) are retried; a 1001 year is retried as quarters, a 1001 quarter as months. Existing fills are kept." class="btn btn-s text-xs">Full history</button>
-        <button type="submit" form="ibkr-test" class="btn btn-s text-xs">Test connection</button>
-        <button type="submit" form="ibkr-disconnect" class="btn btn-d text-xs" onclick="return confirm('Delete the stored Flex token? Imported trades stay.')">Disconnect</button>
-      </div>
-    </form>
-    <form id="ibkr-test" method="post" action="/settings/brokers/ibkr/test" class="hidden"></form>
-    <form id="ibkr-disconnect" method="post" action="/settings/brokers/ibkr/disconnect" class="hidden"></form>
-    <div id="ibkr-sync"></div>
-  {% else %}
-    {% if not ibkr.enc_key %}<div class="text-xs text-amber-300">Set TOKEN_ENCRYPTION_KEY on the server before connecting (the Flex token is stored encrypted).</div>{% endif %}
-    <details class="text-xs text-slate-400">
-      <summary class="cursor-pointer">How to create the Flex query and token</summary>
-      <p class="mt-1 leading-relaxed">{{ ibkr.how_to }}</p>
-    </details>
-    <form method="post" action="/settings/brokers/ibkr/connect" class="space-y-2" autocomplete="off">
-      <input name="token" type="password" class="inp w-full text-xs" placeholder="Flex token" autocomplete="new-password" spellcheck="false">
-      <input name="query_id" class="inp w-full text-xs" placeholder="Flex Query ID" autocomplete="off" spellcheck="false">
-      <input name="currency" class="inp w-full text-xs" value="USD" placeholder="Account currency (default USD)" maxlength="3" autocomplete="off">
-      <button class="btn btn-p text-xs">Save Interactive Brokers (tests the token first)</button>
-    </form>
-  {% endif %}
-</div>
+      </form>
+      {% else %}
+      <form method="post" action="/settings/brokers/ibkr/connect" class="space-y-2" autocomplete="off">
+        <input name="token" type="password" class="inp w-full text-xs" placeholder="Flex token" autocomplete="new-password" spellcheck="false">
+        <input name="query_id" class="inp w-full text-xs" placeholder="Flex Query ID" autocomplete="off" spellcheck="false">
+        <input name="currency" class="inp w-full text-xs" value="USD" placeholder="Account currency (default USD)" maxlength="3" autocomplete="off">
+        <button class="btn btn-p text-xs">Save Interactive Brokers (tests the token first)</button>
+      </form>
+      {% endif %}
+      {% if ibkr.balance_checks %}
+      <details class="text-xs">
+        <summary class="text-slate-400">Balances</summary>
+        <div class="text-slate-400 space-y-1 mt-1">
+          {% for c in ibkr.balance_checks %}
+          <div>{{ c.name }}: journal NAV
+            {% if c.journal_nav is not none %}<b class="text-slate-200">{{ '%.2f'|format(c.journal_nav) }}</b>{% else %}—{% endif %}
+            vs IBKR
+            {% if c.ibkr_nav is not none %}<b class="text-slate-200">{{ '%.2f'|format(c.ibkr_nav) }}</b>{% else %}—{% endif %}
+            {% if c.diff is not none %} (diff <b class="{{ 'text-emerald-300' if c.diff|abs < 1 else 'text-amber-300' }}">{{ '%+.2f'|format(c.diff) }}</b>){% endif %}
+            {% if c.ibkr_cash is not none %} · IBKR cash {{ '%.2f'|format(c.ibkr_cash) }}{% endif %}
+            {{ c.currency }}
+          </div>
+          {% endfor %}
+        </div>
+      </details>
+      {% endif %}
+    </div>
+  </details>
+</section>

@@ -2,7 +2,7 @@
 {% set no_boost = true %}
 {% block title %}Settings · Trading Journal{% endblock %}
 {% block head %}
-<link rel="stylesheet" href="/static/settings.css?v=2">
+<link rel="stylesheet" href="/static/settings.css?v=3">
 {% endblock %}
 {% block content %}
 <div id="settings-page">
@@ -20,123 +20,82 @@
 
 <section id="accounts" class="stab stab-default">
 {% include "partials/brokers_settings.html" %}
-
-<div class="card p-5 mb-4">
-  <div class="card-h mb-1">Accounts</div>
-  <p class="text-[11px] text-slate-500 mb-3" id="account-sync-help"><b>Sync new</b> reads fills after that account's stored cursor. <b>Full history</b> re-scans that account once (SnapTrade or Schwab cursor reset, a Trading 212 full re-scan, or IBKR year-sized windows from the history start date on the IBKR card). Existing fills are kept. The sidebar does the same for the account selected there; All runs every connected account except Interactive Brokers, which is paced and syncs from its own card or an IBKR account.</p
-  {% if acct_rows %}
-  <div class="set-cards cols-2">
-    {% for row in acct_rows %}{% set a = row.a %}
-    <article class="rounded-lg border border-slate-700/70 p-4 min-w-0">
-      <div class="flex flex-wrap items-center gap-2 mb-3 text-sm">
-        <span class="text-white font-medium">{{ a.broker }}</span>
-        {% if a.is_demo %}<span class="pill bg-amber-500/20 text-amber-300">sample</span>{% endif %}
-        <span class="text-slate-400">{{ a.account_number_masked or '—' }}</span>
-        <span class="text-slate-500 text-xs sm:ml-auto">{{ row.executions }} fills · {{ row.trades }} trades</span>
-      </div>
-      <form method="post" action="/settings/accounts/{{ a.id }}" class="set-inline">
-        <label class="set-field"><span class="card-h">Name</span><input name="name" value="{{ a.name }}" class="inp" aria-label="Account name"></label>
-        <button class="btn btn-s text-xs">Rename</button>
-      </form>
-      <p class="text-slate-400 text-xs mt-3">{% if row.orphans %}<span class="text-amber-300">{{ row.orphans|length }}</span> fills closed positions opened before your imported history{% for o in row.orphans[:4] %} · {{ o.symbol }} {{ o.quantity|qty }}{% endfor %}{% if row.orphans|length > 4 %} …{% endif %}. Import older history to match them.{% else %}Unmatched closes: —{% endif %}</p>
-      {% if not a.is_demo %}
-      <div class="flex flex-wrap gap-2 mt-3">
-        <button type="button" class="btn btn-p text-xs" hx-post="/sync" hx-target="#acct-sync-{{ a.id }}" hx-swap="innerHTML"
-                hx-vals='{"account":"{{ a.id }}","mode":"new"}'>Sync new</button>
-        <button type="button" class="btn btn-s text-xs" hx-post="/sync" hx-target="#acct-sync-{{ a.id }}" hx-swap="innerHTML"
-                hx-vals='{"account":"{{ a.id }}","mode":"full"}'
-                hx-confirm="Re-read the full history for this account? Existing fills are kept.">Full history</button>
-      </div>
-      <div id="acct-sync-{{ a.id }}"></div>
-      <form method="post" action="/settings/accounts/{{ a.id }}/delete" class="set-inline mt-3" onsubmit="return confirm('Delete this account and ALL its fills and trades?')">
-        <label class="set-field"><span class="card-h">Delete</span><input name="confirm" class="inp" placeholder="type name" aria-label="Type the account name to confirm delete"></label>
-        <button class="text-xs text-rose-300">Delete</button>
-      </form>
-      {% endif %}
-    </article>
-    {% endfor %}
-  </div>
-  {% else %}
-  <p class="text-slate-500 text-sm">No accounts yet — they're created on first import.</p>
-  {% endif %}
-  <p class="text-xs text-slate-500 mt-3">Currency, time zone and market are on <a class="underline" href="#display">Display &amp; currency</a>. Auto stop is on <a class="underline" href="#rules">Trading rules</a>.</p>
-</div>
 </section>
 
 <section id="sync" class="stab">
-<div class="grid grid-cols-1 xl:grid-cols-2 gap-4 mb-4 min-w-0">
-  <div class="card p-5 min-w-0">
-    <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
-      <div class="card-h">Automated data sources</div>
-      <div class="flex flex-wrap gap-2">
-        <button hx-post="/sync" hx-target="#sync-panel" hx-vals='{"mode":"new"}' class="btn btn-p text-xs">Sync new</button>
-        <button hx-post="/sync" hx-target="#sync-panel" hx-vals='{"mode":"full"}' hx-confirm="Re-read the full history for every connected account? Existing fills are kept." class="btn btn-s text-xs">Full history</button>
-      </div>
+<div class="card p-4 mb-4 min-w-0" id="sync-history">
+  <div class="conn-head mb-2">
+    <h2 class="card-h">Sync history &amp; results</h2>
+    <div class="acct-actions">
+      <button hx-post="/sync" hx-target="#sync-panel" hx-vals='{"mode":"new"}' class="btn btn-p text-xs">Sync new</button>
+      <button hx-post="/sync" hx-target="#sync-panel" hx-vals='{"mode":"full"}' hx-confirm="Re-read the full history for every connected account? Existing fills are kept." class="btn btn-s text-xs">Full history</button>
     </div>
-    <p class="text-[11px] text-slate-500 mb-3">These two run every connected account. <b>Sync new</b> continues from each stored cursor. <b>Full history</b> re-scans once. For one account, use the card under Accounts or the sidebar switcher.</p>
-    <div id="sync-panel" class="mb-3">{% if active_run %}{% with run = active_run %}{% include "partials/sync_status.html" %}{% endwith %}{% endif %}</div>
-    {% for src, st in sources %}
-    <div class="rounded-lg border border-slate-700/70 p-4 mb-3 min-w-0">
-      <div class="flex flex-wrap items-center gap-2">
-        <span class="h-2.5 w-2.5 rounded-full {{ 'bg-emerald-400' if st.ready else 'bg-amber-400' if st.configured else 'bg-slate-600' }}"></span>
-        <span class="text-white font-medium">{{ src.name }}</span>
-        <span class="pill {{ 'bg-emerald-500/15 text-emerald-300' if st.ready else 'bg-slate-700 text-slate-300' }}">{{ 'enabled' if st.configured else 'disabled' }}</span>
-      </div>
-      <div class="text-sm text-slate-400 mt-1">{{ src.description }}</div>
-      <div class="text-sm mt-2 {{ 'text-rose-300' if st.level == 'error' else 'text-amber-300' if st.level == 'warning' else 'text-slate-300' }}">{{ st.message }}
-        {% if src.key != 'snaptrade' and st.expires_in_seconds is not none and st.expires_in_seconds > 0 %} · login valid for <b>{{ (st.expires_in_seconds|int // 3600) }}h</b> (Schwab refresh tokens last 7 days){% endif %}</div>
-      {% if src.key == 'snaptrade' and st.configured %}
-      <div class="mt-3 text-sm space-y-1">
-        {% if snaptrade and snaptrade.connections %}
-          {% for c in snaptrade.connections %}
-          <div class="flex flex-wrap items-center gap-2">
-            <span class="pill {{ 'bg-rose-500/15 text-rose-300' if c.disabled else 'bg-emerald-500/15 text-emerald-300' }}">{{ 'login expired' if c.disabled else 'connected' }}</span>
-            <span class="text-slate-200">{{ c.broker or 'Broker' }}</span>
-            {% if c.connected_at_dt %}<span class="text-slate-400">· logged in {{ c.connected_at_dt|local_dt }}</span>{% endif %}
-            {% if not c.disabled and c.relogin_due %}<span class="text-slate-400">· next Schwab re-login due ≈ <b class="text-slate-200">{{ c.relogin_due|local_dt }}</b> (estimate: 7 days after login)</span>{% endif %}
-          </div>
-          {% endfor %}
-          {% for a in snaptrade.accounts %}
-          <div class="text-slate-400">Account <span class="text-slate-200">{{ a.name }}</span> · SnapTrade transactions through <span class="text-slate-200">{{ a.tx_synced_through or '—' }}</span>{% if a.first_tx %} (history from {{ a.first_tx }}){% endif %}</div>
-          {% endfor %}
-        {% endif %}
-        <div class="text-slate-400">Last successful sync: <span class="text-slate-200">{{ snaptrade.last_success|local_dt if snaptrade and snaptrade.last_success else 'never' }}</span>{% if snaptrade and snaptrade.checked_at %} · status checked {{ snaptrade.checked_at|local_dt }}{% endif %}</div>
-        {% if snaptrade and snaptrade.error %}<div class="text-amber-300">Last status check failed: {{ snaptrade.error }}</div>{% endif %}
-        <div class="text-xs text-slate-500">Sync is manual: click <b>Sync new</b>. SnapTrade refreshes Schwab transactions once a day (one day behind); today's fills come from your executed orders and are marked <i>provisional (fees pending)</i> until the transaction arrives tomorrow. Times are date-only; importing a thinkorswim Account Statement adds exact fill times to the same fills.</div>
-      </div>
-      <div class="flex flex-wrap gap-2 mt-3">
-        {% if snaptrade and snaptrade.connections %}
-          {% for c in snaptrade.connections %}
-          <form method="post" action="/settings/snaptrade/reconnect?id={{ c.id }}"><button class="btn {{ 'btn-p' if c.disabled else 'btn-s' }} text-xs">Reconnect {{ c.broker or 'Schwab' }}</button></form>
-          {% endfor %}
-        {% else %}
-          <form method="post" action="/settings/snaptrade/connect"><button class="btn btn-p text-xs">Connect Schwab</button></form>
-        {% endif %}
-        <form method="post" action="/settings/snaptrade/resync" onsubmit="return confirm('Pull the full SnapTrade history again? Existing fills are skipped, nothing is deleted.')"><button class="btn btn-s text-xs">Full re-sync</button></form>
-      </div>
-      <div class="text-xs text-slate-500 mt-1">Reconnect opens SnapTrade's portal (link valid 5 minutes) to log in to Schwab again for the existing connection.</div>
-      {% endif %}
-      {% if src.key == 'schwab_api' and st.configured %}
-      <div class="flex flex-wrap gap-2 mt-3">
-        <a href="/auth/schwab/connect" class="btn btn-p text-xs">{{ 'Reconnect' if st.expires_in_seconds is not none else 'Connect' }} Schwab</a>
-        {% if st.expires_in_seconds is not none %}<form method="post" action="/auth/schwab/disconnect"><button class="btn btn-d text-xs">Disconnect</button></form>{% endif %}
-      </div>
-      <form method="post" action="/auth/schwab/paste" class="mt-3 set-inline">
-        <label class="set-field"><span class="card-h">Redirect URL</span>
-          <input name="redirect_url" class="inp text-xs" placeholder="Using https://127.0.0.1:8182? Paste the full redirected URL here" aria-label="Schwab redirect URL"></label>
-        <button class="btn btn-s text-xs">Submit</button>
-      </form>
-      <div class="text-xs text-slate-500 mt-1">Callback URL: <code>{{ s.schwab_callback_url }}</code></div>
-      {% endif %}
-    </div>
+  </div>
+  <p class="text-[11px] text-slate-500 mb-3">These two skip Interactive Brokers. Sync new continues from each stored cursor. Full history re-scans once. IBKR stays on its own connection.</p>
+  <div id="sync-panel" class="mb-3">{% if active_run %}{% with run = active_run %}{% include "partials/sync_status.html" %}{% endwith %}{% endif %}</div>
+  <h3 class="text-xs uppercase tracking-wide text-slate-500 mb-1">Latest result</h3>
+  <ul class="latest-list mb-3" id="sync-latest">
+    {% for row in acct_rows if not row.a.is_demo %}
+    <li>
+      <span class="status-dot" data-status="{{ row.dot or 'never' }}" title="{{ {'ok': 'ok', 'error': 'error', 'paused': 'paused-cooldown'}.get(row.dot or 'never', 'never synced') }}"></span>
+      <b class="text-slate-200">{{ row.a.name }}</b>
+      <span class="text-xs text-slate-400">{{ row.a.broker }}</span>
+      <span class="text-xs text-slate-300">{{ row.a.currency }}</span>
+      <span class="text-xs text-slate-500">{% if row.last_sync %}{% if row.last_sync is string %}{{ row.last_sync }}{% else %}{{ row.last_sync|local_dt }}{% endif %}{% else %}never synced{% endif %}</span>
+      {% if row.result %}<span class="text-xs text-slate-400">{{ row.result }}</span>{% endif %}
+    </li>
     {% endfor %}
-    <div class="text-xs text-slate-500">CSV import is always available on the <a href="/import" class="underline">Import</a> page. Automated sources plug into <code>app/sources/</code>; “Sync new” runs every enabled source, then rebuilds trades. There is no scheduled sync.</div>
-  </div>
-
-  <div class="card p-5 min-w-0">
-    <div class="card-h mb-3">Sync history</div>
-    <div id="sync-runs" class="set-scroll" hx-get="/sync/runs" hx-trigger="sync-finished from:body">{% include "partials/sync_runs.html" %}</div>
-  </div>
+    <li data-source="tos_email">
+      {% set td = 'error' if tos_email.status.errors else ('never' if not tos_email.status.emails else 'ok') %}
+      <span class="status-dot" data-status="{{ td }}"></span>
+      <b class="text-slate-200">thinkorswim email feed</b>
+      <span class="text-xs text-slate-500">{% if tos_email.status.emails %}{{ tos_email.status.fills }} fills{% else %}never synced{% endif %}</span>
+    </li>
+  </ul>
+  {% if ibkr.flex_end %}
+  <p class="text-xs text-slate-500 mb-2" id="ibkr-available">Data available through {{ ibkr.flex_end }} (IBKR has data up to the previous business day).</p>
+  {% endif %}
+  {% if ibkr.progress %}
+  <div class="text-xs text-slate-300 mb-2" id="ibkr-progress">{{ ibkr.progress }}</div>
+  {% endif %}
+  {% include "partials/ibkr_upload_progress.html" %}
+  {% if t212.last.skipped_detail %}
+  <details class="text-xs mb-2">
+    <summary class="cursor-pointer text-slate-400">Skipped rows, by reason and ticker</summary>
+    <p class="text-slate-500 mt-1">Trading 212</p>
+    <ul class="mt-1 space-y-1 text-slate-400">
+    {% for reason, tickers in t212.last.skipped_detail.items() %}
+      <li><span class="text-slate-200">{{ t212.last.skipped.get(reason, tickers|length) }} {{ reason }}</span>
+        — {{ tickers|join(', ') }}
+        {% if t212.last.skip_fields and t212.last.skip_fields.get(reason) %}
+        <div class="text-slate-500">fields: {{ t212.last.skip_fields[reason]|join(', ') }}</div>
+        {% endif %}
+      </li>
+    {% endfor %}
+    </ul>
+  </details>
+  {% endif %}
+  {% if ibkr.last.skipped_detail %}
+  <details class="text-xs mb-2">
+    <summary class="cursor-pointer text-slate-400">Skipped rows, by reason and ticker</summary>
+    <p class="text-slate-500 mt-1">Interactive Brokers</p>
+    <ul class="mt-1 space-y-1 text-slate-400">
+    {% for reason, tickers in ibkr.last.skipped_detail.items() %}
+      <li><span class="text-slate-200">{{ ibkr.last.skipped.get(reason, tickers|length) }} {{ reason }}</span>
+        — {{ tickers|join(', ') }}</li>
+    {% endfor %}
+    </ul>
+  </details>
+  {% endif %}
+  {% if t212.last.reconcile or t212.last.adjustments or ibkr.last.adjustments %}
+  <details class="text-xs mb-2">
+    <summary class="text-slate-400">Sync notes</summary>
+    {% if t212.last.reconcile %}<div class="text-amber-300 mt-1">Positions still differ from Trading 212:<ul class="list-disc ml-5">{% for r in t212.last.reconcile %}<li>{{ r }}</li>{% endfor %}</ul></div>{% endif %}
+    {% if t212.last.adjustments %}<div class="text-slate-400 mt-1">Reconciliation adjustments (estimated, editable on the trade):<ul class="list-disc ml-5">{% for r in t212.last.adjustments %}<li>{{ r }}</li>{% endfor %}</ul></div>{% endif %}
+    {% if ibkr.last.adjustments %}<div class="text-amber-300 mt-1">Corporate / holdings:<ul class="list-disc ml-5">{% for r in ibkr.last.adjustments %}<li>{{ r }}</li>{% endfor %}</ul></div>{% endif %}
+  </details>
+  {% endif %}
+  <div id="sync-runs" class="set-scroll mt-3" hx-get="/sync/runs" hx-trigger="sync-finished from:body">{% include "partials/sync_runs.html" %}</div>
 </div>
 
 {% include "partials/tos_email_settings.html" %}

@@ -331,6 +331,7 @@ def settings_ctx(db: Session) -> dict:
     ib = ibkr.load_credentials(db)
     ib_insts = list(db.scalars(select(Instrument).where(Instrument.source_key == "ibkr_flex").order_by(Instrument.symbol)))
     mapped = list(db.scalars(select(Account).where(Account.source_key == "ibkr_flex").order_by(Account.name)))
+    hist = ibkr.load_history(db)
     return {"t212": {"connected": creds is not None, "masked": t212.mask(creds["key"]) if creds else None,
                      "practice": bool(creds and creds.get("env") == "demo"), "last": t212.last_status(db),
                      "instruments": insts, "instrument_issues": audit_instruments(db, fix=False),
@@ -340,7 +341,9 @@ def settings_ctx(db: Session) -> dict:
                      "currency": (ib or {}).get("currency") or "USD", "last": ibkr.last_status(db),
                      "instruments": ib_insts, "how_to": ibkr.HOW_TO,
                      "history_start": ibkr.history_start_date(db).isoformat(),
-                     "progress": ibkr.progress_line(ibkr.load_history(db)),
+                     "progress": ibkr.progress_line(hist),
+                     "history_status": (hist or {}).get("status") or "",
+                     "cooldown_s": int(ibkr.cooldown_left()),
                      "flex_end": ibkr.last_complete_biz_day().isoformat(),
                      "mapped": mapped,
                      "upload": ibkr.public_upload(ibkr.load_upload(db)),

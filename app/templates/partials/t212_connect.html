@@ -1,72 +1,80 @@
+{% from "partials/account_row.html" import row as acct_row %}
 {% set last = t212.last %}
-<div class="mt-3 text-sm space-y-2" id="t212-box">
+{% set dot = t212.dot or conn_dots.t212 or 'never' %}
+<section class="conn-group" id="t212-box" data-connection="t212">
+  <div class="conn-head">
+    <span class="status-dot" data-status="{{ dot }}" title="{{ {'ok': 'ok', 'error': 'error', 'paused': 'paused-cooldown'}.get(dot, 'never synced') }}"></span>
+    <h3 class="text-white font-medium">Trading 212</h3>
+    <span class="text-xs text-slate-300">{{ last.currency or 'EUR' }}</span>
+    {% if t212.connected %}
+    <span class="pill bg-emerald-500/15 text-emerald-300">connected</span>
+    <span class="text-xs text-slate-400">Key <b class="text-slate-200">{{ t212.masked }}</b>{% if t212.practice %} · practice{% endif %}</span>
+    <span class="text-xs text-slate-500">{% if last.synced_at %}{{ last.synced_at }}{% else %}never synced{% endif %}</span>
+    {% else %}
+    <span class="pill bg-slate-700 text-slate-300">not connected</span>
+    <span class="text-xs text-slate-500">never synced</span>
+    {% endif %}
+  </div>
+  {% if last.error %}<p class="text-xs text-rose-300 whitespace-pre-line mt-2">{{ last.error }}</p>{% endif %}
+  {% if last.warning %}<p class="text-xs text-amber-300 mt-1">{{ last.warning }}</p>{% endif %}
   {% if t212.connected %}
-    <div class="text-xs text-slate-400">
-      Key <b class="text-slate-200">{{ t212.masked }}</b>{% if t212.practice %} · practice{% endif %}
-      {% if last.synced_at %}· last sync <b class="text-slate-200">{{ last.synced_at }}</b> · {{ last.fetched or 0 }} fills read, {{ last.inserted or 0 }} new{% if last.skipped %} · skipped {% for k, n in last.skipped.items() %}{{ n }} {{ k }}{{ ', ' if not loop.last }}{% endfor %} (not trades){% endif %}{% else %}· never synced yet.{% endif %}
-    </div>
-    {% if last.skipped_detail %}
-    <details class="text-xs">
-      <summary class="cursor-pointer text-slate-400">Skipped rows, by reason and ticker</summary>
-      <ul class="mt-1 space-y-1 text-slate-400">
-      {% for reason, tickers in last.skipped_detail.items() %}
-        <li><span class="text-slate-200">{{ last.skipped.get(reason, tickers|length) }} {{ reason }}</span>
-          — {{ tickers|join(', ') }}
-          {% if last.skip_fields and last.skip_fields.get(reason) %}
-          <div class="text-slate-500">fields: {{ last.skip_fields[reason]|join(', ') }}</div>
-          {% endif %}
-        </li>
-      {% endfor %}
-      </ul>
-    </details>
-    {% endif %}
-    {% if last.error %}<div class="text-xs text-rose-300 whitespace-pre-line">{{ last.error }}</div>{% endif %}
-    {% if last.warning %}<div class="text-xs text-amber-300">{{ last.warning }}</div>{% endif %}
-    {% if last.reconcile %}<div class="text-xs text-amber-300">Positions still differ from Trading 212:<ul class="list-disc ml-5">{% for r in last.reconcile %}<li>{{ r }}</li>{% endfor %}</ul></div>{% endif %}
-    {% if last.adjustments %}<div class="text-xs text-slate-400">Reconciliation adjustments (estimated, editable on the trade):<ul class="list-disc ml-5">{% for r in last.adjustments %}<li>{{ r }}</li>{% endfor %}</ul></div>{% endif %}
-    {% if t212.instrument_issues %}
-    <details class="text-xs" open>
-      <summary class="cursor-pointer text-amber-300">Instruments to check ({{ t212.instrument_issues|length }})</summary>
-      <ul class="mt-1 space-y-1 text-slate-400">
-      {% for i in t212.instrument_issues %}
-        <li><span class="text-slate-200">{{ i.symbol }}</span>{% if i.exchange %} · {{ i.exchange }}{% endif %}{% if i.price_symbol %} · {{ i.price_symbol }}{% endif %}
-          {% if i.fixed %} — fixed: {{ i.fixed|join(', ') }}{% endif %}
-          {% if i.notes %} — {{ i.notes|join('; ') }}{% endif %}</li>
-      {% endfor %}
-      </ul>
-    </details>
-    {% endif %}
-    <div class="flex flex-wrap gap-2">
-      <button hx-post="/settings/brokers/t212/sync" hx-target="#t212-sync" class="btn btn-p text-xs">Sync Trading 212</button>
-      <button hx-post="/settings/brokers/t212/resync" hx-target="#t212-sync" hx-confirm="Re-scan the full Trading 212 history? Existing fills are kept." class="btn btn-s text-xs">Re-scan full history</button>
-      <form method="post" action="/settings/brokers/t212/test"><button class="btn btn-s text-xs">Test connection</button></form>
-      <form method="post" action="/settings/brokers/t212/disconnect" onsubmit="return confirm('Delete the stored API key? Imported trades stay.')"><button class="btn btn-d text-xs">Disconnect</button></form>
-    </div>
-    <div id="t212-sync"></div>
-    {% if t212.instruments %}
-    <details id="instruments" class="text-xs"><summary class="cursor-pointer text-slate-400">Instruments &amp; price symbols ({{ t212.instruments|length }})</summary>
-      <div class="text-slate-500 my-1">Yahoo price symbol per instrument (e.g. VUSA.L, SAP.DE). Leave both fields empty and press Save to restore the automatic mapping. Mapping is derived from the Trading 212 ticker; check any marked “no price symbol”.</div>
-      {% for i in t212.instruments %}
-      <form method="post" action="/settings/brokers/instruments/{{ i.id }}" class="set-grid py-2 border-b border-slate-800/80">
-        <label class="set-field"><span class="card-h">Symbol</span>
-          <input name="symbol" value="{{ i.symbol if i.user_override else '' }}" placeholder="{{ i.symbol }}" class="inp text-xs" aria-label="Symbol"></label>
-        <div class="set-field"><span class="card-h">ISIN · market · ccy</span>
-          <span class="text-slate-400 break-all" title="{{ i.name }}">{{ i.isin or '—' }} · {{ i.exchange or '?' }} · {{ i.currency or '' }}</span></div>
-        <label class="set-field"><span class="card-h">Price symbol</span>
-          <input name="price_symbol" value="{{ i.price_symbol or '' }}" placeholder="{{ 'no price symbol' if not i.price_symbol }}" class="inp text-xs {{ 'border-amber-500/60' if not i.price_symbol }}" aria-label="Price symbol"></label>
-        <div class="set-field"><span class="card-h">Save</span><button class="text-indigo-300 text-left">Save</button></div>
-      </form>
-      {% endfor %}
-      </details>
-    {% endif %}
-  {% else %}
-    {% if not t212.enc_key %}<div class="text-xs text-amber-300">Set TOKEN_ENCRYPTION_KEY on the server before connecting (keys are stored encrypted).</div>{% endif %}
-    <form method="post" action="/settings/brokers/t212/connect" class="space-y-2" autocomplete="off">
-      <div class="text-xs text-slate-400">{{ t212.scope_help }}</div>
-      <input name="key" class="inp w-full text-xs" placeholder="API key" autocomplete="off" spellcheck="false">
-      <input name="secret" type="password" class="inp w-full text-xs" placeholder="API secret (shown once by Trading 212)" autocomplete="new-password">
-      <label class="flex items-center gap-2 text-xs text-slate-400"><input type="checkbox" name="practice" value="1"> Practice (demo) account key</label>
-      <button class="btn btn-p text-xs">Connect Trading 212 (tests the key first)</button>
-    </form>
+  <div class="acct-actions mt-2">
+    <button hx-post="/settings/brokers/t212/sync" hx-target="#t212-sync" class="btn btn-p text-xs">Sync Trading 212</button>
+    <button hx-post="/settings/brokers/t212/resync" hx-target="#t212-sync" hx-confirm="Re-scan the full Trading 212 history? Existing fills are kept." class="btn btn-s text-xs">Re-scan full history</button>
+    <form method="post" action="/settings/brokers/t212/test"><button class="btn btn-s text-xs">Test connection</button></form>
+    <form method="post" action="/settings/brokers/t212/disconnect" onsubmit="return confirm('Delete the stored API key? Imported trades stay.')"><button class="btn btn-d text-xs">Disconnect</button></form>
+  </div>
+  <div id="t212-sync"></div>
   {% endif %}
-</div>
+  <div id="t212-accounts">
+    {% for row in acct_groups.t212 %}{{ acct_row(row) }}{% endfor %}
+  </div>
+  {% if t212.instrument_issues %}
+  <details class="text-xs mt-2">
+    <summary class="text-amber-300">Instruments to check ({{ t212.instrument_issues|length }})</summary>
+    <ul class="mt-1 space-y-1 text-slate-400">
+    {% for i in t212.instrument_issues %}
+      <li><span class="text-slate-200">{{ i.symbol }}</span>{% if i.exchange %} · {{ i.exchange }}{% endif %}{% if i.price_symbol %} · {{ i.price_symbol }}{% endif %}
+        {% if i.fixed %} — fixed: {{ i.fixed|join(', ') }}{% endif %}
+        {% if i.notes %} — {{ i.notes|join('; ') }}{% endif %}</li>
+    {% endfor %}
+    </ul>
+  </details>
+  {% endif %}
+  <details class="edit-connection" id="edit-connection-t212">
+    <summary>Edit connection</summary>
+    <div class="mt-2 space-y-2">
+      <details class="text-xs text-slate-400">
+        <summary>API key instructions</summary>
+        <p class="mt-1">{{ t212.scope_help }}</p>
+      </details>
+      {% if t212.connected %}
+      {% if t212.instruments %}
+      <details id="instruments" class="text-xs">
+        <summary class="text-slate-400">Instruments &amp; price symbols ({{ t212.instruments|length }})</summary>
+        <p class="text-slate-500 my-1">Yahoo price symbol per instrument (e.g. VUSA.L, SAP.DE). Leave both fields empty and press Save to restore the automatic mapping. Mapping is derived from the Trading 212 ticker; check any marked “no price symbol”.</p>
+        {% for i in t212.instruments %}
+        <form method="post" action="/settings/brokers/instruments/{{ i.id }}" class="set-grid py-2 border-b border-slate-800/80">
+          <label class="set-field"><span class="card-h">Symbol</span>
+            <input name="symbol" value="{{ i.symbol if i.user_override else '' }}" placeholder="{{ i.symbol }}" class="inp text-xs" aria-label="Symbol"></label>
+          <div class="set-field"><span class="card-h">ISIN · market · ccy</span>
+            <span class="text-slate-400 break-all" title="{{ i.name }}">{{ i.isin or '—' }} · {{ i.exchange or '?' }} · {{ i.currency or '' }}</span></div>
+          <label class="set-field"><span class="card-h">Price symbol</span>
+            <input name="price_symbol" value="{{ i.price_symbol or '' }}" placeholder="{{ 'no price symbol' if not i.price_symbol }}" class="inp text-xs {{ 'border-amber-500/60' if not i.price_symbol }}" aria-label="Price symbol"></label>
+          <div class="set-field"><span class="card-h">Save</span><button class="text-indigo-300 text-left">Save</button></div>
+        </form>
+        {% endfor %}
+      </details>
+      {% endif %}
+      {% else %}
+      {% if not t212.enc_key %}<p class="text-xs text-amber-300">Set TOKEN_ENCRYPTION_KEY on the server before connecting (keys are stored encrypted).</p>{% endif %}
+      <form method="post" action="/settings/brokers/t212/connect" class="space-y-2" autocomplete="off">
+        <input name="key" class="inp w-full text-xs" placeholder="API key" autocomplete="off" spellcheck="false">
+        <input name="secret" type="password" class="inp w-full text-xs" placeholder="API secret (shown once by Trading 212)" autocomplete="new-password">
+        <label class="flex items-center gap-2 text-xs text-slate-400"><input type="checkbox" name="practice" value="1"> Practice (demo) account key</label>
+        <button class="btn btn-p text-xs">Connect Trading 212 (tests the key first)</button>
+      </form>
+      {% endif %}
+    </div>
+  </details>
+</section>

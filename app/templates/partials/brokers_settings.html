@@ -1,20 +1,100 @@
-<div class="card p-5 mb-4" id="brokers">
-  <div class="flex flex-wrap items-center justify-between gap-2 mb-3"><div class="card-h">Brokers</div>
-    <span class="text-xs text-slate-500">One journal for every account · switch account and currency in the header</span></div>
-  <div class="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3 min-w-0">
-    {% for b in broker_cards %}
-    <div class="rounded-lg border border-slate-700/70 p-4 min-w-0" data-broker="{{ b.key }}">
-      <div class="flex items-center gap-2">
-        <span class="h-2.5 w-2.5 rounded-full {{ 'bg-emerald-400' if b.state == 'connected' else 'bg-amber-400' if b.state == 'needs_login' else 'bg-slate-600' }}"></span>
-        <span class="text-white font-medium">{{ b.name }}</span>
-        <span class="pill {{ 'bg-emerald-500/15 text-emerald-300' if b.state == 'connected' else 'bg-amber-500/15 text-amber-300' if b.state == 'needs_login' else 'bg-slate-700 text-slate-300' }}">{{ {'connected': 'connected', 'needs_login': 'needs login', 'not_connected': 'not connected', 'unavailable': 'coming soon'}[b.state] }}</span>
-        <span class="ml-auto text-[11px] text-slate-500">{{ b.currency }}</span>
+{% from "partials/account_row.html" import row as acct_row %}
+<div id="brokers">
+  <h2 class="card-h mb-1" id="accounts-list">Accounts</h2>
+  <p class="text-[11px] text-slate-500 mb-3" id="account-sync-help"><b>Sync new</b> reads fills after that account's stored cursor. <b>Full history</b> is a full re-scan of that account once (SnapTrade or Schwab cursor reset, a Trading 212 full re-scan, or IBKR year-sized windows from the history start date). Existing fills are kept. All runs every connected account except Interactive Brokers, which is paced and syncs from its own card or an IBKR account.</p>
+  <div class="conn-grid">
+    <section class="conn-group" id="schwab-box" data-connection="schwab">
+      {% set sdot = conn_dots.schwab or 'never' %}
+      <div class="conn-head">
+        <span class="status-dot" data-status="{{ sdot }}" title="{{ {'ok': 'ok', 'error': 'error', 'paused': 'paused-cooldown'}.get(sdot, 'never synced') }}"></span>
+        <h3 class="text-white font-medium">Schwab</h3>
+        <span class="text-xs text-slate-300">USD</span>
+        {% if snaptrade and snaptrade.connections %}
+          {% for c in snaptrade.connections %}
+          <span class="pill {{ 'bg-rose-500/15 text-rose-300' if c.disabled else 'bg-emerald-500/15 text-emerald-300' }}">{{ 'login expired' if c.disabled else 'connected' }}</span>
+          <span class="text-xs text-slate-300">{{ c.broker or 'Broker' }}</span>
+          {% endfor %}
+        {% endif %}
       </div>
-      <div class="text-xs text-slate-500 mt-1">{{ b.how }}</div>
-      <div class="text-sm text-slate-300 mt-2">{{ b.detail }}</div>
-      {% if b.last_sync %}<div class="text-xs text-slate-500 mt-1">Last sync: {{ b.last_sync }}</div>{% endif %}
-      {% if b.form %}{% include "partials/" ~ b.form %}{% endif %}
-    </div>
-    {% endfor %}
+      <div class="acct-actions mt-2">
+        {% for src, st in sources if src.key == 'snaptrade' and st.configured %}
+          {% if snaptrade and snaptrade.connections %}
+            {% for c in snaptrade.connections %}
+            <form method="post" action="/settings/snaptrade/reconnect?id={{ c.id }}"><button class="btn {{ 'btn-p' if c.disabled else 'btn-s' }} text-xs">Reconnect {{ c.broker or 'Schwab' }}</button></form>
+            {% endfor %}
+          {% else %}
+            <form method="post" action="/settings/snaptrade/connect"><button class="btn btn-p text-xs">Connect Schwab</button></form>
+          {% endif %}
+          <form method="post" action="/settings/snaptrade/resync" onsubmit="return confirm('Pull the full SnapTrade history again? Existing fills are skipped, nothing is deleted.')"><button class="btn btn-s text-xs">Full re-sync</button></form>
+        {% endfor %}
+        {% for src, st in sources if src.key == 'schwab_api' and st.configured %}
+          <a href="/auth/schwab/connect" class="btn btn-p text-xs">{{ 'Reconnect' if st.expires_in_seconds is not none else 'Connect' }} Schwab</a>
+          {% if st.expires_in_seconds is not none %}<form method="post" action="/auth/schwab/disconnect"><button class="btn btn-d text-xs">Disconnect</button></form>{% endif %}
+        {% endfor %}
+      </div>
+      <div id="schwab-accounts">
+        {% for row in acct_groups.schwab %}{{ acct_row(row) }}{% endfor %}
+        {% set t = tos_email %}
+        {% set td = 'error' if t.status.errors else ('never' if not t.status.emails else 'ok') %}
+        <article class="acct-row" data-source="tos_email">
+          <span class="status-dot" data-status="{{ td }}" title="{{ {'ok': 'ok', 'error': 'error'}.get(td, 'never synced') }}"></span>
+          <span class="text-white font-medium">thinkorswim email feed</span>
+          <span class="text-xs text-slate-400">thinkorswim</span>
+          <span class="text-xs text-slate-500">{% if t.status.last %}{{ t.status.last|local_dt }}{% else %}never synced{% endif %}</span>
+          <a class="btn btn-s text-xs" href="#tos-email">Edit connection</a>
+        </article>
+      </div>
+      <details class="edit-connection" id="edit-connection-schwab">
+        <summary>Edit connection</summary>
+        <div class="mt-2 space-y-2 text-sm">
+          {% for src, st in sources if src.key in ('snaptrade', 'schwab_api') %}
+          <p class="text-xs {{ 'text-rose-300' if st.level == 'error' else 'text-amber-300' if st.level == 'warning' else 'text-slate-400' }}">{{ src.name }}: {{ st.message }}{% if src.key != 'snaptrade' and st.expires_in_seconds is not none and st.expires_in_seconds > 0 %} · login valid for <b>{{ (st.expires_in_seconds|int // 3600) }}h</b> (Schwab refresh tokens last 7 days){% endif %}</p>
+          {% if src.key == 'snaptrade' and st.configured %}
+          <div class="text-xs text-slate-400 space-y-1">
+            {% if snaptrade and snaptrade.connections %}
+              {% for c in snaptrade.connections %}
+              <div>
+                {% if c.connected_at_dt %}Logged in {{ c.connected_at_dt|local_dt }}{% endif %}
+                {% if not c.disabled and c.relogin_due %} · next Schwab re-login due ≈ <b class="text-slate-200">{{ c.relogin_due|local_dt }}</b> (estimate: 7 days after login){% endif %}
+              </div>
+              {% endfor %}
+              {% for a in snaptrade.accounts %}
+              <div>Account <span class="text-slate-200">{{ a.name }}</span> · SnapTrade transactions through <span class="text-slate-200">{{ a.tx_synced_through or '—' }}</span>{% if a.first_tx %} (history from {{ a.first_tx }}){% endif %}</div>
+              {% endfor %}
+            {% endif %}
+            <div>Last successful sync: <span class="text-slate-200">{{ snaptrade.last_success|local_dt if snaptrade and snaptrade.last_success else 'never' }}</span>{% if snaptrade and snaptrade.checked_at %} · status checked {{ snaptrade.checked_at|local_dt }}{% endif %}</div>
+            {% if snaptrade and snaptrade.error %}<div class="text-amber-300">Last status check failed: {{ snaptrade.error }}</div>{% endif %}
+          </div>
+          <details class="text-xs text-slate-500">
+            <summary>SnapTrade notes</summary>
+            <p class="mt-1">{{ src.description }} Sync is manual: click <b>Sync new</b>. SnapTrade refreshes Schwab transactions once a day (one day behind); today's fills come from your executed orders and are marked <i>provisional (fees pending)</i> until the transaction arrives tomorrow. Times are date-only; importing a thinkorswim Account Statement adds exact fill times to the same fills. Reconnect opens SnapTrade's portal (link valid 5 minutes) to log in to Schwab again for the existing connection.</p>
+          </details>
+          {% endif %}
+          {% if src.key == 'schwab_api' and st.configured %}
+          <form method="post" action="/auth/schwab/paste" class="set-inline">
+            <label class="set-field"><span class="card-h">Redirect URL</span>
+              <input name="redirect_url" class="inp text-xs" placeholder="Using https://127.0.0.1:8182? Paste the full redirected URL here" aria-label="Schwab redirect URL"></label>
+            <button class="btn btn-s text-xs">Submit</button>
+          </form>
+          <p class="text-xs text-slate-500">Callback URL: <code>{{ s.schwab_callback_url }}</code></p>
+          {% endif %}
+          {% endfor %}
+          <p class="text-xs text-slate-500">CSV import stays on the <a href="/import" class="underline">Import</a> page. There is no scheduled sync.</p>
+        </div>
+      </details>
+    </section>
+
+    {% include "partials/t212_connect.html" %}
+    {% include "partials/ibkr_connect.html" %}
+
+    {% if acct_groups.other %}
+    <section class="conn-group wide" data-connection="other">
+      <div class="conn-head">
+        <h3 class="text-white font-medium">Other accounts</h3>
+      </div>
+      {% for row in acct_groups.other %}{{ acct_row(row) }}{% endfor %}
+    </section>
+    {% endif %}
   </div>
+  <p class="text-xs text-slate-500 mt-3">Currency, time zone and market are on <a class="underline" href="#display">Display &amp; currency</a>. Auto stop is on <a class="underline" href="#rules">Trading rules</a>.</p>
 </div>

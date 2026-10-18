@@ -60,6 +60,86 @@ def _journal_ctx(db):
             "questions": options.get_questions(db)}
 
 
+_IBKR_KEYS = {"ibkr", "ibkr_flex", "interactivebrokers", "interactive brokers"}
+_T212_KEYS = {"t212", "trading212", "trading 212"}
+_SCHWAB_KEYS = {"schwab", "thinkorswim", "tos", "snaptrade", "schwab_api", "tos_email", "tos_statement", "schwab_csv"}
+
+
+def _acct_bucket(account) -> str:
+    sk = (account.source_key or "").strip().lower()
+    br = (account.broker or "").strip().lower()
+    if sk in _IBKR_KEYS or br in _IBKR_KEYS:
+        return "ibkr"
+    if sk in _T212_KEYS or br in _T212_KEYS:
+        return "t212"
+    if sk in _SCHWAB_KEYS or br in _SCHWAB_KEYS:
+        return "schwab"
+    return "other"
+
+
+def _clip_result(text) -> str:
+    s = ("" if text is None else str(text)).strip()
+    return s if len(s) <= 180 else s[:180] + "…"
+
+
+def _decorate_accounts(acct_rows, ibkr, t212, snap, sources):
+    """Status dots from data Settings already loaded. No extra queries and no broker calls."""
+    ib_last = (ibkr or {}).get("last") or {}
+    if (ibkr or {}).get("cooldown_s") or (ibkr or {}).get("history_status") == "paused":
+        ib_dot = "paused"
+    elif ib_last.get("error") or (ibkr or {}).get("history_status") == "error":
+        ib_dot = "error"
+    elif not (ibkr or {}).get("connected") or not ib_last.get("synced_at"):
+        ib_dot = "never"
+    else:
+        ib_dot = "ok"
+    ib_result = _clip_result(ib_last.get("error")) if ib_last.get("error") else (
+        f"{ib_last.get('fetched') or 0} read, {ib_last.get('inserted') or 0} new" if ib_last.get("synced_at") else "")
+
+    t_last = (t212 or {}).get("last") or {}
+    if not (t212 or {}).get("connected"):
+        t_dot = "never"
+    elif t_last.get("error"):
+        t_dot = "error"
+    elif not t_last.get("synced_at"):
+        t_dot = "never"
+    else:
+        t_dot = "ok"
+    t_result = _clip_result(t_last.get("error")) if t_last.get("error") else (
+        f"{t_last.get('fetched') or 0} read, {t_last.get('inserted') or 0} new" if t_last.get("synced_at") else "")
+
+    snap_st = next((st for src, st in sources if getattr(src, "key", None) == "snaptrade"), None)
+    api_st = next((st for src, st in sources if getattr(src, "key", None) == "schwab_api"), None)
+    disabled = bool(snap and any(c.get("disabled") for c in (snap.get("connections") or [])))
+    if disabled or (snap_st and snap_st.configured and snap_st.level == "error") or (
+            api_st and api_st.configured and api_st.level == "error"):
+        s_dot = "error"
+    elif (snap_st and snap_st.ready) or (api_st and api_st.ready):
+        s_dot = "ok"
+    else:
+        s_dot = "never"
+    s_when = snap.get("last_success") if snap else None
+    s_result = _clip_result(snap.get("error")) if snap and snap.get("error") else ("login expired" if disabled else "")
+
+    if ibkr is not None:
+        ibkr["dot"] = ib_dot
+    if t212 is not None:
+        t212["dot"] = t_dot
+    groups = {"ibkr": [], "t212": [], "schwab": [], "other": []}
+    for row in acct_rows:
+        bucket = _acct_bucket(row["a"])
+        if bucket == "ibkr":
+            row.update(group=bucket, dot=ib_dot, last_sync=ib_last.get("synced_at"), result=ib_result)
+        elif bucket == "t212":
+            row.update(group=bucket, dot=t_dot, last_sync=t_last.get("synced_at"), result=t_result)
+        elif bucket == "schwab":
+            row.update(group=bucket, dot=s_dot, last_sync=s_when, result=s_result)
+        else:
+            row.update(group=bucket, dot="never", last_sync=None, result="")
+        groups[bucket].append(row)
+    return groups, {"ibkr": ib_dot, "t212": t_dot, "schwab": s_dot}
+
+
 def _settings_ctx(request, db, **kw):
     for src in all_sources():
         if src.key == "snaptrade" and src.is_configured():
@@ -85,9 +165,13 @@ def _settings_ctx(request, db, **kw):
     from app.routes.backup import settings_ctx as _backup_ctx
     from app import brokers, companies
     from app.routes.brokers import settings_ctx as _brokers_ctx
-    return base_context(request, db, nav="settings", broker_cards=brokers.cards(db), **_brokers_ctx(db), sources=sources, runs=runs, payloads=payloads, attention=attention, acct_rows=acct_rows,
+    bctx = _brokers_ctx(db)
+    snap = _snaptrade_ctx(db)
+    acct_groups, conn_dots = _decorate_accounts(acct_rows, bctx.get("ibkr"), bctx.get("t212"), snap, sources)
+    return base_context(request, db, nav="settings", broker_cards=brokers.cards(db), **bctx, sources=sources, runs=runs, payloads=payloads, attention=attention, acct_rows=acct_rows,
+                        acct_groups=acct_groups, conn_dots=conn_dots,
                         company_stats=companies.stats(db),
-                        active_run=running_sync(db), s=s, snaptrade=_snaptrade_ctx(db), **_alias_ctx(db),
+                        active_run=running_sync(db), s=s, snaptrade=snap, **_alias_ctx(db),
                         tos_email=_tos_email_ctx(request, db), **_security_ctx(db), keepawake=keepawake_ctx(), backups=_backup_ctx(request, db), journal_cfg=_journal_ctx(db), **kw)
 
 

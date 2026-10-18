@@ -1,0 +1,37 @@
+{% macro row(row, sync=true) %}
+{% set a = row.a %}
+{% set dot = row.dot or 'never' %}
+<article class="acct-row" data-account="{{ a.id }}" data-broker="{{ a.broker }}">
+  <span class="status-dot" data-status="{{ dot }}" title="{{ {'ok': 'ok', 'error': 'error', 'paused': 'paused-cooldown'}.get(dot, 'never synced') }}"></span>
+  <form method="post" action="/settings/accounts/{{ a.id }}" class="acct-name">
+    <label class="set-field"><span class="card-h">Name</span>
+      <input name="name" value="{{ a.name }}" class="inp" aria-label="Account name"></label>
+    <button class="btn btn-s text-xs">Rename</button>
+  </form>
+  <span class="text-xs text-slate-400">{{ a.broker }}</span>
+  <span class="text-xs text-slate-200">{{ a.currency }}</span>
+  {% if a.account_number_masked %}<span class="text-xs text-slate-500">{{ a.account_number_masked }}</span>{% endif %}
+  {% if a.is_demo %}<span class="pill bg-amber-500/20 text-amber-300">sample</span>{% endif %}
+  <span class="text-xs text-slate-500">{% if row.last_sync %}{% if row.last_sync is string %}{{ row.last_sync }}{% else %}{{ row.last_sync|local_dt }}{% endif %}{% else %}never synced{% endif %}</span>
+  <span class="text-xs text-slate-500">{{ row.executions }} fills · {{ row.trades }} trades</span>
+  {% if row.orphans %}
+  <p class="acct-break text-xs text-amber-300">{{ row.orphans|length }} fills closed positions opened before imported history{% for o in row.orphans[:4] %} · {{ o.symbol }} {{ o.quantity|qty }}{% endfor %}{% if row.orphans|length > 4 %} …{% endif %}</p>
+  {% endif %}
+  {% if sync and not a.is_demo %}
+  <div class="acct-actions acct-break">
+    <button type="button" class="btn btn-p text-xs" hx-post="/sync" hx-target="#acct-sync-{{ a.id }}" hx-swap="innerHTML"
+            hx-vals='{"account":"{{ a.id }}","mode":"new"}'>Sync new</button>
+    <button type="button" class="btn btn-s text-xs" hx-post="/sync" hx-target="#acct-sync-{{ a.id }}" hx-swap="innerHTML"
+            hx-vals='{"account":"{{ a.id }}","mode":"full"}'
+            hx-confirm="Re-read the full history for this account? Existing fills are kept.">Full history</button>
+  </div>
+  <div id="acct-sync-{{ a.id }}" class="acct-break"></div>
+  {% endif %}
+  {% if not a.is_demo %}
+  <form method="post" action="/settings/accounts/{{ a.id }}/delete" class="set-inline acct-break" onsubmit="return confirm('Delete this account and ALL its fills and trades?')">
+    <label class="set-field"><span class="card-h">Delete</span><input name="confirm" class="inp" placeholder="type name" aria-label="Type the account name to confirm delete"></label>
+    <button class="btn btn-d text-xs">Delete</button>
+  </form>
+  {% endif %}
+</article>
+{% endmacro %}

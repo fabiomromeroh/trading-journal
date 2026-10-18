@@ -89,3 +89,126 @@
   #settings-page .stab,
   #settings-page .stab [id] { scroll-margin-top: 8.5rem; }
 }
+
+/* Accounts and sync: stack on a phone, two cards on a wide screen. */
+.conn-grid {
+  display: grid;
+  gap: .75rem;
+  grid-template-columns: minmax(0, 1fr);
+}
+.conn-group {
+  border: 1px solid rgba(51, 65, 85, .7);
+  border-radius: .75rem;
+  padding: .75rem;
+  min-width: 0;
+  max-width: 100%;
+  background: rgba(15, 23, 42, .35);
+}
+.conn-head,
+.acct-actions,
+.attn-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .35rem .6rem;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+}
+.acct-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .35rem .6rem;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  padding: .55rem 0;
+  border-top: 1px solid rgba(30, 41, 59, .85);
+}
+.acct-break { flex-basis: 100%; min-width: 0; max-width: 100%; }
+.acct-name {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .4rem;
+  align-items: flex-end;
+  min-width: 0;
+  flex: 1 1 14rem;
+  max-width: 100%;
+}
+.acct-name .set-field { flex: 1 1 8rem; min-width: 0; }
+.status-dot {
+  width: .7rem;
+  height: .7rem;
+  border-radius: 999px;
+  display: inline-block;
+  flex: 0 0 auto;
+}
+.status-dot[data-status="ok"] { background: #34d399; }
+.status-dot[data-status="error"] { background: #fb7185; }
+.status-dot[data-status="never"] { background: #64748b; }
+.status-dot[data-status="paused"] { background: #fbbf24; }
+.run-list,
+.latest-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  min-width: 0;
+  max-width: 100%;
+}
+.run-list li,
+.latest-list li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .25rem .6rem;
+  align-items: baseline;
+  min-width: 0;
+  max-width: 100%;
+  padding: .4rem 0;
+  border-bottom: 1px solid rgba(30, 41, 59, .7);
+}
+.attn-counts span {
+  border: 1px solid rgba(51, 65, 85, .8);
+  border-radius: 999px;
+  padding: .2rem .55rem;
+  font-size: .75rem;
+  color: #cbd5e1;
+}
+#settings-page .btn,
+#settings-page button,
+#settings-page .set-tab {
+  min-height: 40px;
+}
+#settings-page .set-tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+#settings-page summary {
+  cursor: pointer;
+  min-height: 40px;
+  padding: .45rem 0;
+}
+#accounts .inp,
+#sync .inp,
+#accounts select,
+#sync select,
+#accounts textarea,
+#sync textarea {
+  min-height: 40px;
+}
+#settings-page input[type="file"] { max-width: 100%; }
+#settings-page .conn-group,
+#settings-page .acct-row,
+#settings-page .run-list,
+#settings-page .latest-list,
+#settings-page .edit-connection { overflow-wrap: anywhere; }
+@media (min-width: 960px) {
+  .conn-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .conn-group.wide { grid-column: 1 / -1; }
+}
+@media (max-width: 420px) {
+  #settings-page .card { padding: .75rem; }
+}
