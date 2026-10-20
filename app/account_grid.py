@@ -190,6 +190,37 @@ def load_panel(request, db: Session, key: str) -> dict | None:
     }
 
 
+def load_edit(request, db: Session, key: str) -> dict | None:
+    """Slim context for the Edit modal: the account row and broker credential status only.
+    Skips attention_view, account_statement, sync runs and fill/trade counts."""
+    from app.config import get_settings
+    from app.routes.brokers import connection_ctx
+    from app.routes.email_sync import settings_ctx as tos_ctx
+    from app.routes.settings import _acct_bucket, _decorate_accounts
+    key = (key or "").strip()
+    s = get_settings()
+    if key == "tos-email":
+        tos = tos_ctx(request, db)
+        panel = {"kind": "tos", "key": "tos-email", "bucket": "tos", "account": None, "tos_email": tos}
+        return {"panel": panel, "tos_email": tos, "s": s, "ibkr": {}, "t212": {}, "snaptrade": None, "sources": []}
+    if not key.isdigit():
+        return None
+    account = db.get(Account, int(key))
+    if account is None:
+        return None
+    bucket = _acct_bucket(account)
+    conn = connection_ctx(db, t212_instruments=(bucket == "t212"))
+    ibkr, t212 = conn["ibkr"], conn["t212"]
+    sources = _sources(db) if bucket in ("schwab", "other") else []
+    snap = _snap(db) if bucket in ("schwab", "other") else None
+    row = {"a": account, "executions": 0, "trades": 0, "orphans": []}
+    _decorate_accounts([row], ibkr, t212, snap, sources)
+    panel = {"kind": "account", "key": str(account.id), "bucket": bucket, "account": account,
+             "row": present_row(row), "ibkr": ibkr, "t212": t212}
+    return {"panel": panel, "ibkr": ibkr, "t212": t212, "snaptrade": snap, "sources": sources,
+            "tos_email": {}, "s": s}
+
+
 def modal_brokers(request, db: Session) -> dict:
     """Shared connection forms for the add modal. Database only."""
     from app.config import get_settings

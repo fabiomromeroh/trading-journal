@@ -219,7 +219,7 @@ def test_needs_attention_counts_by_account_and_kind(db):
     db.commit()
     c = _client(db)
     grid = c.get("/settings").text
-    assert "Needs attention 1" in grid
+    assert 'title="Needs attention: 1"' in grid
     assert "Schwab main" in grid and "T212 book" in grid
     a_html = c.get(f"/settings/accounts/{a.id}/detail").text
     b_html = c.get(f"/settings/accounts/{b.id}/detail").text
@@ -233,3 +233,26 @@ def test_needs_attention_counts_by_account_and_kind(db):
     assert "Schwab main" not in b_html and 'data-kind="SPLIT"' not in b_block
     assert 'name="when" value="2024-01-31"' in a_html
     assert ">Save</button>" in a_html
+
+
+def test_edit_modal_is_slim_and_opens_with_placeholder(db, monkeypatch):
+    a = Account(name="IB slim", broker="ibkr", source_key="ibkr_flex", currency="USD")
+    db.add(a)
+    db.commit()
+    import app.adjustments as adj
+    import app.flex_facts as ff
+    import app.routes.brokers as br
+
+    def boom(*a, **k):
+        raise AssertionError("Edit modal must not load the full panel")
+    monkeypatch.setattr(adj, "attention_view", boom)
+    monkeypatch.setattr(ff, "account_statement", boom)
+    monkeypatch.setattr(br, "settings_ctx", boom)
+    c = _client(db)
+    html = c.get(f"/settings/accounts/{a.id}/edit").text
+    assert "Edit account" in html and 'value="IB slim"' in html
+    assert c.get("/settings/accounts/tos-email/edit").status_code == 200
+    assert c.get("/settings/accounts/999999/edit").status_code == 404
+    monkeypatch.undo()
+    page = c.get("/settings").text
+    assert "htmx:beforeRequest" in page and "Loading…" in page

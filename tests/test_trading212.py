@@ -428,7 +428,7 @@ def test_settings_connect_test_disconnect(db, enc, monkeypatch):
     assert r.status_code == 200 and "Trading 212 connected:" in r.text
     assert t212.load_credentials(db)["key"] == KEY
     assert KEY not in r.text and SECRET not in r.text  # raw key never rendered
-    page = c.get("/settings").text
+    page = c.get(f"/settings/accounts/{db.scalars(select(Account).where(Account.source_key == 't212')).first().id}/detail").text
     assert t212.mask(KEY) in page
     r = c.post("/settings/brokers/t212/test", follow_redirects=True)
     assert "connection OK" in r.text

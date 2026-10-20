@@ -4,28 +4,16 @@
     <h2 class="card-h mb-0" id="accounts-list">Accounts</h2>
     <button type="button" class="btn btn-p text-xs" hx-get="/settings/accounts/new" hx-target="#acct-modal" hx-swap="innerHTML">Add account</button>
   </div>
-  <p class="text-[11px] text-slate-500 mb-3" id="account-sync-help"><b>Sync new</b> reads fills after that account's stored cursor. <b>Full history</b> is a full re-scan of that account once (SnapTrade or Schwab cursor reset, a Trading 212 full re-scan, or IBKR year-sized windows from the history start date). Existing fills are kept. Sync all runs every connected account except Interactive Brokers, which is paced and syncs from its own account. Opening an account does not sync and does not call the broker.</p>
-
-  {% if snaptrade and snaptrade.connections %}
-  <div class="acct-chip-row mb-2" id="schwab-status">
-    {% for c in snaptrade.connections %}
-    <span class="pill {{ 'bg-rose-500/15 text-rose-300' if c.disabled else 'bg-emerald-500/15 text-emerald-300' }}">{{ 'login expired' if c.disabled else 'connected' }}</span>
-    <span class="text-xs text-slate-300">{{ c.broker or 'Schwab' }}</span>
-    <form method="post" action="/settings/snaptrade/reconnect?id={{ c.id }}"><button class="btn {{ 'btn-p' if c.disabled else 'btn-s' }} text-xs">Reconnect {{ c.broker or 'Schwab' }}</button></form>
+  {% set expired = (snaptrade.connections|selectattr('disabled')|list) if snaptrade and snaptrade.connections else [] %}
+  {% set ib_cool = ibkr.connected and ((ibkr.cooldown_s or 0) > 0 or ibkr.history_status == 'paused') %}
+  {% if expired or ib_cool %}
+  <div class="acct-chip-row mb-2 text-xs text-amber-300" id="acct-warning" role="status">
+    {% for c in expired %}
+    <span>{{ c.broker or 'Schwab' }} login expired</span>
+    <form method="post" action="/settings/snaptrade/reconnect?id={{ c.id }}"><button class="btn btn-p text-xs">Reconnect {{ c.broker or 'Schwab' }}</button></form>
     {% endfor %}
+    {% if ib_cool %}<span>Interactive Brokers paused · cooldown{% if (ibkr.cooldown_s or 0) > 0 %} {{ (ibkr.cooldown_s // 60) + 1 }} min{% endif %}</span>{% endif %}
   </div>
-  {% endif %}
-  {% if ibkr.connected %}
-  <p class="text-xs text-slate-400 mb-2" id="ibkr-chip">Interactive Brokers · Flex token <b class="text-slate-200">saved</b>{% if ibkr.query_id %} · query <b class="text-slate-200">{{ ibkr.query_id }}</b>{% endif %}{% if (ibkr.cooldown_s or 0) > 0 %} · <span class="text-amber-300">Paused · cooldown {{ (ibkr.cooldown_s // 60) + 1 }} min</span>{% elif ibkr.history_status == 'paused' %} · <span class="text-amber-300">Paused · cooldown</span>{% endif %}</p>
-  {% endif %}
-  {% if t212.connected %}
-  <p class="text-xs text-slate-400 mb-2" id="t212-chip">Trading 212 · key <b class="text-slate-200">{{ t212.masked }}</b>{% if t212.practice %} · practice{% endif %}</p>
-  {% endif %}
-  {% if ibkr.connected and ibkr.flex_end %}
-  <p class="text-xs text-slate-500 mb-2" id="ibkr-available">Data available through {{ ibkr.flex_end }} (IBKR has data up to the previous business day).</p>
-  {% endif %}
-  {% if ibkr.progress %}
-  <div class="text-xs text-slate-300 mb-2" id="ibkr-progress">{{ ibkr.progress }}</div>
   {% endif %}
   {% include "partials/ibkr_upload_progress.html" %}
   {% include "partials/ibkr_rebuild_progress.html" %}
@@ -61,7 +49,7 @@
             <span class="text-white">{{ a.name }}</span>
             {% if row.masked %}<span class="text-slate-500"> {{ row.masked }}</span>{% endif %}
             {% if a.is_demo %}<span class="pill bg-amber-500/20 text-amber-300">sample</span>{% endif %}
-            {% if row.attention %}<span class="pill bg-amber-500/15 text-amber-300">Needs attention {{ row.attention }}</span>{% endif %}
+            {% if row.attention %}<span class="attn-dot" title="Needs attention: {{ row.attention }}" aria-label="Needs attention: {{ row.attention }}"></span>{% endif %}
           </td>
           <td>{{ a.currency }}</td>
           <td><span class="status-dot" data-status="{{ row.dot or 'never' }}" title="{{ row.status_label }}"></span> {{ row.status_label }}</td>
@@ -106,7 +94,7 @@
         <span class="text-xs text-slate-400">{{ row.status_label }}</span>
         <span class="text-xs text-slate-500">{% if row.last_sync %}{% if row.last_sync is string %}{{ row.last_sync }}{% else %}{{ row.last_sync|local_dt }}{% endif %}{% else %}never synced{% endif %}</span>
         {% if a.is_demo %}<span class="pill bg-amber-500/20 text-amber-300">sample</span>{% endif %}
-        {% if row.attention %}<span class="pill bg-amber-500/15 text-amber-300">Needs attention {{ row.attention }}</span>{% endif %}
+        {% if row.attention %}<span class="attn-dot" title="Needs attention: {{ row.attention }}" aria-label="Needs attention: {{ row.attention }}"></span>{% endif %}
       </a>
       <div class="acct-actions">
         <button type="button" class="btn btn-s text-xs" hx-get="/settings/accounts/{{ a.id }}/edit" hx-target="#acct-modal" hx-swap="innerHTML">Edit</button>
@@ -143,6 +131,20 @@
   var d = document.getElementById('acct-modal');
   if (!d || d.dataset.bound) return;
   d.dataset.bound = '1';
+  // Open at once with a placeholder; the slow part is the server, not the click.
+  document.body.addEventListener('htmx:beforeRequest', function (e) {
+    var el = e.detail && e.detail.elt;
+    if (!e.detail || e.detail.target !== d || !el) return;
+    if (el.tagName === 'BUTTON') { el.disabled = true; el.setAttribute('aria-busy', 'true'); }
+    d.innerHTML = '<div class="acct-modal-body"><p class="text-sm text-slate-300" id="acct-modal-loading">Loading…</p></div>';
+    if (!d.open) d.showModal();
+  });
+  document.body.addEventListener('htmx:afterRequest', function (e) {
+    var el = e.detail && e.detail.elt;
+    if (!e.detail || e.detail.target !== d || !el) return;
+    if (el.tagName === 'BUTTON') { el.disabled = false; el.removeAttribute('aria-busy'); }
+    if (!e.detail.successful) d.innerHTML = '<div class="acct-modal-body"><p class="text-sm text-rose-300">Could not load. Close and try again.</p></div>';
+  });
   document.body.addEventListener('htmx:afterSwap', function (e) {
     if (e.detail && e.detail.target === d && !d.open) d.showModal();
   });

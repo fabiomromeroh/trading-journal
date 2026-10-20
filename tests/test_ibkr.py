@@ -746,7 +746,7 @@ def test_card_shows_progress_and_how_to(db, enc, monkeypatch):
         "status": "running", "last_synced": "2023-12-31", "mode": "full",
     })
     db.commit()
-    page = c.get("/settings").text
+    page = next(c.get(f"/settings/accounts/{x.id}/detail").text for x in db.scalars(select(Account).where(Account.source_key == ibkr.SOURCE_KEY)))
     assert 'id="ibkr-progress"' in page
     assert "window 3 of 5 done, next 2024-01-01" in page
     run = SyncRun(trigger="manual", status="running", message="window 3 of 5 done, next 2024-01-01…")
@@ -1895,7 +1895,7 @@ def test_card_message_1001_split_and_data_available(db, enc, monkeypatch):
         "failed_windows": [{"fd": "2025-12-31", "td": "2026-10-17", "code": "1001", "kind": "temporary"}],
     })
     db.commit()
-    page = c.get("/settings").text
+    page = next(c.get(f"/settings/accounts/{x.id}/detail").text for x in db.scalars(select(Account).where(Account.source_key == ibkr.SOURCE_KEY)))
     assert TOKEN not in page
     assert "IBKR could not generate 2025-12-31–2026-10-16 (1001)" in page
     n = len(ibkr.iter_quarters(date(2025, 12, 31), date(2026, 10, 16)))
