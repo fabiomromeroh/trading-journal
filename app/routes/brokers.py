@@ -324,6 +324,22 @@ def ibkr_reprocess(request: Request, db: Session = Depends(get_db)):
     return _flash(request, res.message or "Reprocessed stored IBKR history.")
 
 
+@router.post("/settings/brokers/ibkr/rebuild")
+def ibkr_rebuild_post(request: Request, account_id: int = Form(...), confirm: str = Form(""),
+                      scope: str = Form("account"), db: Session = Depends(get_db)):
+    """Rebuild from stored statements. Does not call Interactive Brokers."""
+    from app.ibkr_rebuild import request_rebuild
+    return _flash(request, request_rebuild(db, account_id, scope, confirm))
+
+
+@router.get("/settings/brokers/ibkr/rebuild/status")
+def ibkr_rebuild_status(request: Request, db: Session = Depends(get_db)):
+    from app.ibkr_rebuild import public_state
+    return templates.TemplateResponse(request, "partials/ibkr_rebuild_progress.html", {
+        "request": request, "rebuild": public_state(db),
+    })
+
+
 def settings_ctx(db: Session) -> dict:
     from app.corporate import audit_instruments
     creds = t212.load_credentials(db)
@@ -347,6 +363,7 @@ def settings_ctx(db: Session) -> dict:
                      "flex_end": ibkr.last_complete_biz_day().isoformat(),
                      "mapped": mapped,
                      "upload": ibkr.public_upload(ibkr.load_upload(db)),
+                     "rebuild": __import__("app.ibkr_rebuild", fromlist=["public_state"]).public_state(db),
                      "balance_checks": _ibkr_balance_checks(db, mapped),
                      "enc_key": bool(get_settings().token_encryption_key)}}
 

@@ -544,6 +544,18 @@ def account_edit_modal(key: str, request: Request, db: Session = Depends(get_db)
     return templates.TemplateResponse(request, "partials/account_modal_edit.html", ctx)
 
 
+@router.get("/settings/accounts/{account_id}/ibkr-rebuild")
+def ibkr_rebuild_modal(account_id: int, request: Request, scope: str = "account",
+                       db: Session = Depends(get_db)):
+    from fastapi import HTTPException
+    a = db.get(Account, account_id)
+    if a is None or a.source_key != "ibkr_flex":
+        raise HTTPException(404, "Unknown IBKR account")
+    which = "all" if (scope or "").lower() == "all" else "account"
+    return templates.TemplateResponse(request, "partials/ibkr_rebuild_modal.html", {
+        "request": request, "account": a, "scope": which})
+
+
 @router.get("/settings/accounts/{account_id}/delete")
 def delete_account_modal(account_id: int, request: Request, db: Session = Depends(get_db)):
     from fastapi import HTTPException
