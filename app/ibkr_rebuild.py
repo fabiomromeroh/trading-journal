@@ -201,7 +201,7 @@ def run_job(db: Session | None = None) -> None:
         try:
             from app.backup import build, encode
             path = _backup_path()
-            path.write_bytes(encode(build(db, include_cache=True)))
+            path.write_bytes(encode(build(db, include_cache=False)))
             data["backup"] = path.name
         except Exception:  # noqa: BLE001
             log.warning("IBKR rebuild backup failed", exc_info=True)

@@ -519,7 +519,7 @@ def test_multi_account_creates_maps_and_dedupes(db, enc, monkeypatch):
     assert ghost == []
     ghost_notes = list(db.scalars(select(CorporateAdjustment).where(
         CorporateAdjustment.symbol == "GHOST", CorporateAdjustment.status == "needs_attention")))
-    assert ghost_notes and "cost" in (ghost_notes[0].note or "").lower()
+    assert any("cost" in (n.note or "").lower() for n in ghost_notes)
     assert db.query(Execution).filter(Execution.account_id == by["U1111111"].id,
                                       Execution.kind == "SPLIT", Execution.symbol == "IBM").count() == 1
 

@@ -899,6 +899,14 @@ def detect_and_apply(db: Session, account_id: int, *, fetch=None, positions: dic
         groups, members = _canonical_groups(execs, {} if ibkr else aliases)
         bought = _buy_totals(execs, {} if ibkr else aliases)
         keys = set(groups) | set(positions)
+        # Also revisit symbols that carry a quantity flag but no longer have any fills
+        # (e.g. a transfer that was voided), so a stale flag is cleared.
+        for flagged in db.scalars(select(CorporateAdjustment.symbol).where(
+                CorporateAdjustment.account_id == account_id,
+                CorporateAdjustment.status == "needs_attention",
+                CorporateAdjustment.external_key.like("%:qty"))):
+            if flagged:
+                keys.add(flagged.upper())
         for sym in keys:
             if not sym or sym == "?" or " " in sym:
                 continue

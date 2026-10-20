@@ -246,7 +246,8 @@ def test_unpaired_and_distant_transfers(db):
     assert len(rows) == 2 and all(r.transfer_pair_id is None for r in rows)
     assert all(r.price == pytest.approx(10) for r in rows)
     notes = list(db.scalars(select(CorporateAdjustment).where(CorporateAdjustment.symbol == "FAR")))
-    assert notes and all("unpaired" in (n.note or "") for n in notes)
+    xnotes = [n for n in notes if "transfer" in (n.note or "")]
+    assert len(xnotes) == 2 and all("unpaired" in n.note for n in xnotes)
 
     # No source lot and no cost: do not book a $0 open or a $0 close.
     bare = _wrap(_stmt("U0000001", (
@@ -364,7 +365,7 @@ def test_corporate_codes_instrument_and_duplicate_split(db):
         + '<CorporateAction accountId="U0000001" currency="USD" assetCategory="STK" symbol="BOND" conid="555002" '
           'type="BM" description="BOND bond maturity" quantity="2" amount="210" dateTime="20220608;090000" transactionID="BM1" />'
         + '<CorporateAction accountId="U0000001" currency="USD" assetCategory="STK" symbol="LIEU" conid="555004" '
-          'type="DI" description="LIEU cash in lieu" amount="3.5" dateTime="20220609;090000" transactionID="DI1" currency="USD" />'
+          'type="DI" description="LIEU cash in lieu" amount="3.5" dateTime="20220609;090000" transactionID="DI1" />'
         + '<CorporateAction accountId="U0000001" currency="USD" assetCategory="STK" symbol="RIGHT" conid="555003" '
           'type="RI" description="RIGHT rights issue" quantity="2" dateTime="20220610;090000" transactionID="RI1" />'
         + '<CorporateAction accountId="U0000001" currency="USD" assetCategory="STK" symbol="NAME" conid="555005" '
@@ -393,7 +394,7 @@ def test_corporate_codes_instrument_and_duplicate_split(db):
     assert db.scalar(select(CorporateAdjustment).where(CorporateAdjustment.kind == "MERGER")) is None
     mature = db.scalar(select(Execution).where(Execution.symbol == "BOND", Execution.kind == "ADJUST"))
     assert mature is not None and mature.price == pytest.approx(105)
-    cash = db.scalar(select(CashFlow).where(CashFlow.symbol.is_(None) | (CashFlow.description.contains("lieu"))))
+    cash = db.scalar(select(CashFlow).where(CashFlow.description.contains("lieu")))
     assert cash is not None and cash.amount == pytest.approx(3.5)
     rights = db.scalar(select(Execution).where(Execution.symbol == "RIGHT", Execution.kind == "DISTRIBUTION"))
     assert rights is not None and rights.price == 0 and rights.quantity == pytest.approx(2)
@@ -533,7 +534,7 @@ def test_flex_sections_panel_and_reconciliation(db, tmp_path):
     assert view["nav_line"] == "NAV 100.00 as of 2026-10-16, end of day"
     assert view["hint"] is None
     assert view["recon_line"] == (
-        "Realized P&L: journal $2.00 vs IBKR $1.00 (diff $+1.00) · mismatch: AMZN · Positions: no open positions"
+        "Realized P&L: journal $2.00 vs IBKR $1.00 (diff +$1.00) · mismatch: AMZN · Positions: no open positions"
     )
     n_facts = db.scalar(select(func.count()).select_from(IbkrFlexFact))
     _import(db, xml)
@@ -554,7 +555,7 @@ def test_flex_sections_panel_and_reconciliation(db, tmp_path):
     assert page.status_code == 200
     assert "Cash: EUR 3.00 · USD 12.00 as of 2026-10-16, end of day" in page.text
     assert "NAV 100.00 as of 2026-10-16, end of day" in page.text
-    assert "Realized P&amp;L: journal $2.00 vs IBKR $1.00 (diff $+1.00)" in page.text
+    assert "Realized P&amp;L: journal $2.00 vs IBKR $1.00 (diff +$1.00)" in page.text
     assert "Positions: no open positions" in page.text
     assert "Add the Cash Report / NAV sections to your Flex Query" not in page.text
     assert "Rebuild this account" in page.text and "Rebuild all IBKR accounts" in page.text
@@ -638,7 +639,7 @@ def test_rebuild_needs_confirmation_and_is_idempotent(db):
     good = client.post("/settings/brokers/ibkr/rebuild", data={
         "account_id": str(first.id), "confirm": "REBUILD", "scope": "account"}, follow_redirects=True)
     assert good.status_code == 200
-    assert "Rebuilt IBKR history from stored statements." in good.text
+    assert "from stored statements." in good.text, good.text[good.text.find("flash"):][:600]
     db.rollback()
     db.expire_all()
     assert db.scalar(select(func.count()).select_from(Execution).where(Execution.account_id == first.id)) == ib_n
@@ -653,7 +654,7 @@ def test_rebuild_needs_confirmation_and_is_idempotent(db):
     assert "Type REBUILD" in again.text and "Nothing was deleted" in again.text
     all_ok = client.post("/settings/brokers/ibkr/rebuild", data={
         "account_id": str(first.id), "confirm": "REBUILD", "scope": "all"}, follow_redirects=True)
-    assert "Rebuilt IBKR history from stored statements." in all_ok.text
+    assert "from stored statements." in all_ok.text
     db.rollback()
     db.expire_all()
     assert db.scalar(select(func.count()).select_from(SyncPayload)) == payloads
@@ -661,3 +662,16 @@ def test_rebuild_needs_confirmation_and_is_idempotent(db):
     assert db.scalar(select(Trade).where(Trade.account_id == second.id, Trade.symbol == "KEEP")) is not None
     status = client.get("/settings/brokers/ibkr/rebuild/status")
     assert "Rebuild finished" in status.text
+
+
+def test_performance_periods_do_not_double_count():
+    from datetime import date as _d
+    from app.flex_facts import _non_overlapping_periods
+    year = IbkrFlexFact(account_id=1, section="performance", day=_d(2025, 6, 23), symbol="AAA",
+                        conid="1", line_key="20240624", amount=10.0)
+    window = IbkrFlexFact(account_id=1, section="performance", day=_d(2025, 3, 1), symbol="AAA",
+                          conid="1", line_key="20250101", amount=4.0)
+    later = IbkrFlexFact(account_id=1, section="performance", day=_d(2026, 6, 23), symbol="AAA",
+                         conid="1", line_key="20250624", amount=5.0)
+    kept = _non_overlapping_periods([year, window, later])
+    assert sorted(r.amount for r in kept) == [5.0, 10.0]

@@ -356,6 +356,32 @@ def _journal_realized(db: Session, account_id: int) -> tuple[float, dict[str, fl
     return total, by_symbol
 
 
+def _non_overlapping_periods(rows: list[IbkrFlexFact]) -> list[IbkrFlexFact]:
+    """Performance rows come one set per statement period. Overlapping statements (an API window
+    plus a yearly XML, say) would double count, so per instrument keep the newest period first and
+    drop any older row whose period overlaps one already kept."""
+    import re as _re
+    groups: dict[str, list[tuple[date, date, IbkrFlexFact]]] = defaultdict(list)
+    for row in rows:
+        start = None
+        m = _re.match(r"^(\d{4})-?(\d{2})-?(\d{2})$", (row.line_key or "").strip())
+        if m:
+            try:
+                start = date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+            except ValueError:
+                start = None
+        groups[(row.conid or "") + "|" + (row.symbol or "").upper()].append((start or row.day, row.day, row))
+    out: list[IbkrFlexFact] = []
+    for items in groups.values():
+        kept: list[tuple[date, date]] = []
+        for start, end, row in sorted(items, key=lambda t: (t[1], t[1] - t[0]), reverse=True):
+            if any(start <= k_end and k_start <= end for k_start, k_end in kept):
+                continue
+            kept.append((start, end))
+            out.append(row)
+    return out
+
+
 def account_statement(db: Session, account_id: int) -> dict:
     """Cash, NAV, and reconciliation for the account panel. A handful of queries, no broker call."""
     acct = db.get(Account, account_id)
@@ -411,6 +437,7 @@ def account_statement(db: Session, account_id: int) -> dict:
     ibkr_rows = list(db.scalars(select(IbkrFlexFact).where(
         IbkrFlexFact.account_id == account_id, IbkrFlexFact.section == "performance",
         IbkrFlexFact.amount.is_not(None))))
+    ibkr_rows = _non_overlapping_periods(ibkr_rows)
     ibkr_total = None
     ibkr_by: dict[str, float] = {}
     if ibkr_rows:
