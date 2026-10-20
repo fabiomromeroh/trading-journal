@@ -2,7 +2,7 @@
 {% set no_boost = true %}
 {% block title %}Settings · Trading Journal{% endblock %}
 {% block head %}
-<link rel="stylesheet" href="/static/settings.css?v=4">
+<link rel="stylesheet" href="/static/settings.css?v=5">
 {% endblock %}
 {% block content %}
 <div id="settings-page">
@@ -27,7 +27,7 @@
   <div class="conn-head mb-2">
     <h2 class="card-h">Sync history</h2>
     <div class="acct-actions">
-      <button hx-post="/sync" hx-target="#sync-panel" hx-vals='{"mode":"new"}' class="btn btn-p text-xs">Sync new</button>
+      <button hx-post="/sync" hx-target="#sync-panel" hx-vals='{"mode":"new"}' title="Sync all runs every connected account except Interactive Brokers, which syncs from its own account. Reads fills after each stored cursor." class="btn btn-p text-xs">Sync new</button>
       <button hx-post="/sync" hx-target="#sync-panel" hx-vals='{"mode":"full"}' hx-confirm="Re-read the full history for every connected account? Existing fills are kept." class="btn btn-s text-xs">Full history</button>
     </div>
   </div>

@@ -368,6 +368,21 @@ def settings_ctx(db: Session) -> dict:
                      "enc_key": bool(get_settings().token_encryption_key)}}
 
 
+def connection_ctx(db: Session, t212_instruments: bool = False) -> dict:
+    """Credential status only, for the Edit/Add modals. No instrument audit, balances or broker calls."""
+    creds = t212.load_credentials(db)
+    ib = ibkr.load_credentials(db)
+    insts = list(db.scalars(select(Instrument).where(Instrument.source_key == "t212").order_by(Instrument.symbol))) if t212_instruments else []
+    enc = bool(get_settings().token_encryption_key)
+    return {"t212": {"connected": creds is not None, "masked": t212.mask(creds["key"]) if creds else None,
+                     "practice": bool(creds and creds.get("env") == "demo"), "last": t212.last_status(db),
+                     "instruments": insts, "scope_help": t212.SCOPE_HELP, "enc_key": enc},
+            "ibkr": {"connected": ib is not None, "query_id": (ib or {}).get("query_id"),
+                     "currency": (ib or {}).get("currency") or "USD", "last": ibkr.last_status(db),
+                     "how_to": ibkr.HOW_TO, "history_start": ibkr.history_start_date(db).isoformat(),
+                     "history_status": "", "cooldown_s": int(ibkr.cooldown_left()), "enc_key": enc}}
+
+
 def _ibkr_balance_checks(db: Session, mapped) -> list[dict]:
     """Per-account journal NAV vs IBKR ending NAV/cash. No estimation."""
     from app.balance import broker_snapshots

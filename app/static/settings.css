@@ -299,3 +299,9 @@ dialog.acct-modal::backdrop { background: rgba(2, 6, 23, .72); }
   .acct-cards { display: none; }
   .acct-table-wrap { display: block; overflow-x: clip; max-width: 100%; }
 }
+
+/* Minimal accounts screen */
+.attn-dot{display:inline-block;width:.5rem;height:.5rem;border-radius:9999px;background:#fbbf24;margin-left:.35rem;vertical-align:middle}
+.help-q{display:inline-flex;align-items:center;justify-content:center;width:1rem;height:1rem;margin-left:.35rem;border-radius:9999px;border:1px solid #475569;color:#94a3b8;font-size:10px;cursor:help;vertical-align:middle}
+#acct-modal-loading{padding:1rem 0}
+button[aria-busy="true"]{opacity:.6;cursor:progress}

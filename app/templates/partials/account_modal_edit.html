@@ -28,7 +28,7 @@
     </label>
     <div class="set-field"><span class="card-h">Save</span><button class="btn btn-s text-xs">Save</button></div>
   </form>
-  <p class="text-xs text-slate-500 mb-2">{{ panel.row.broker_label }}{% if panel.row.masked %} · {{ panel.row.masked }}{% endif %} · {{ a.currency }}. Saving these fields does not sync and does not call the broker.</p>
+  <p class="text-xs text-slate-500 mb-2">{{ panel.row.broker_label }}{% if panel.row.masked %} · {{ panel.row.masked }}{% endif %} · {{ a.currency }} <span class="help-q" tabindex="0" title="Saving these fields does not sync and does not call the broker." aria-label="Saving these fields does not sync and does not call the broker.">?</span></p>
   {% if panel.bucket == 'ibkr' %}
     {% with which = 'ibkr' %}{% include "partials/account_connect_forms.html" %}{% endwith %}
   {% elif panel.bucket == 't212' %}

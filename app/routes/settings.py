@@ -532,16 +532,12 @@ def account_detail(key: str, request: Request, db: Session = Depends(get_db)):
 
 @router.get("/settings/accounts/{key}/edit")
 def account_edit_modal(key: str, request: Request, db: Session = Depends(get_db)):
-    from app.account_grid import load_panel, modal_brokers
-    panel = load_panel(request, db, key)
-    if panel is None or panel.get("kind") == "empty":
+    from app.account_grid import load_edit
+    ctx = load_edit(request, db, key)
+    if ctx is None:
         from fastapi import HTTPException
         raise HTTPException(404, "Unknown account")
-    ctx = {"request": request, "panel": panel, **modal_brokers(request, db)}
-    if panel.get("kind") == "account":
-        ctx["ibkr"] = panel["ibkr"]
-        ctx["t212"] = panel["t212"]
-    return templates.TemplateResponse(request, "partials/account_modal_edit.html", ctx)
+    return templates.TemplateResponse(request, "partials/account_modal_edit.html", {"request": request, **ctx})
 
 
 @router.get("/settings/accounts/{account_id}/ibkr-rebuild")
